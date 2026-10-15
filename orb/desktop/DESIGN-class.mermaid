@@ -1,0 +1,91 @@
+classDiagram
+    class RuntimeLocator {
+        +resolveRuntime() PythonRuntime
+        +frontEnv(rt) Record~string,string~
+        +runtimeArgs() string[]
+        +probeImport(rt) bool
+        -APP_ROOT : string
+        -RUNTIME_DIR : string
+        -cacheMs : int
+    }
+    class PythonRuntime {
+        +exePath : string
+        +sitePackages : string
+        +source : string
+        +version : string
+        +ok : bool
+        +hint : string
+    }
+    class WindowsServerDef {
+        +label : string
+        +command : string
+        +args : string[]
+        +env : Record~string,string~
+    }
+    class FrontHealth {
+        +state : string
+        +mode : string
+        +exeExists : bool
+        +depExists : bool
+        +connected : bool
+        +telemetryEnvOff : bool
+        +telemetryStubbed : bool
+        +hint : string
+        +repairable : bool
+    }
+    class BridgeAPI {
+        +GET_api_status() StatusPayload
+        +GET_api_front() FrontHealth
+        +POST_api_repair() RepairResult
+        +GET_api_wb_cli() CliStatus
+        +POST_api_asr_prepare() PrepareResult
+    }
+    class CliStatus {
+        +found : bool
+        +source : string
+        +fileName : string
+        +hint : string
+    }
+    class AsrRuntime {
+        +dir : string
+        +py : string
+        +conf : AsrConf
+        +effective : EffDevice
+        +ready : bool
+        +needDownload : bool
+    }
+    class AsrConf {
+        +device : string
+        +compute : string
+        +model : string
+        +lang : string
+    }
+    class EffDevice {
+        +device : string
+        +compute : string
+        +fellBack : bool
+        +reason : string
+    }
+    class SetupWizard {
+        +channels : ChannelCard[]
+        +once(orbState) bool
+        +gotoVisionSlot() void
+    }
+    class Packager {
+        +copyRuntime(out) void
+        +copyAsrSources(out) void
+        +verify(mustList) bool
+        +emitSfx(zip) string
+    }
+
+    RuntimeLocator ..> PythonRuntime : 产出
+    RuntimeLocator ..> WindowsServerDef : 组装
+    RuntimeLocator ..> FrontHealth : 支撑
+    BridgeAPI --> RuntimeLocator : 依赖
+    BridgeAPI ..> FrontHealth : 返回
+    BridgeAPI ..> CliStatus : 返回
+    BridgeAPI --> AsrRuntime : 管理
+    AsrRuntime *-- AsrConf
+    AsrRuntime *-- EffDevice
+    SetupWizard ..> BridgeAPI : 轮询状态
+    Packager ..> RuntimeLocator : 满足约定

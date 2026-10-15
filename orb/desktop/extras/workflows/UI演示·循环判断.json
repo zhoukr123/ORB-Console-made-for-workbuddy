@@ -1,0 +1,50 @@
+{
+  "name": "UI演示·循环判断",
+  "gap": 700,
+  "steps": [
+    {
+      "type": "set",
+      "name": "total",
+      "value": 3
+    },
+    {
+      "type": "loop",
+      "times": 3,
+      "body": [
+        {
+          "server": "windows",
+          "tool": "Move",
+          "args": {
+            "loc": [
+              300,
+              300
+            ]
+          }
+        },
+        {
+          "type": "if",
+          "when": {
+            "var": "i",
+            "equals": 1
+          },
+          "then": [
+            {
+              "server": "windows",
+              "tool": "Notification",
+              "args": {
+                "title": "提示",
+                "message": "第二轮"
+              }
+            }
+          ],
+          "else": []
+        }
+      ]
+    },
+    {
+      "server": "windows",
+      "tool": "Screenshot",
+      "args": {}
+    }
+  ]
+}

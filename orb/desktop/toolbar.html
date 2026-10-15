@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<style>
+  html, body {
+    margin: 0; height: 100%; background: transparent; overflow: hidden;
+    font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
+    user-select: none;
+  }
+  .bar {
+    height: 40px; margin: 2px; display: flex; align-items: stretch;
+    background: #ffffff; border: 0.5px solid #d3d1c7; border-radius: 10px;
+    box-shadow: 0 3px 14px rgba(38,33,92,.20); overflow: hidden;
+  }
+  button {
+    flex: 1; border: none; background: transparent; cursor: pointer;
+    font-family: inherit; font-size: 12.5px; color: #2c2c2a;
+    border-right: 0.5px solid #eceae3; white-space: nowrap;
+  }
+  button:last-child { border-right: none; }
+  button:hover { background: #eeedfe; color: #3c3489; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <button id="search">搜索</button>
+    <button id="translate">翻译</button>
+    <button id="send">发给 Agent</button>
+  </div>
+<script>
+  let text = "";
+  window.orb.onSelectionText((t) => { text = t || ""; });
+
+  document.getElementById('search').addEventListener('click', () => window.orb.toolbarAction('search', text));
+  document.getElementById('translate').addEventListener('click', () => window.orb.toolbarAction('translate', text));
+  document.getElementById('send').addEventListener('click', () => window.orb.toolbarAction('send', text));
+
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.orb.toolbarHide(); });
+  document.addEventListener('mouseleave', () => window.orb.toolbarHide());
+</script>
+</body>
+</html>

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orb 控制台</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: "Microsoft YaHei", "微软雅黑", "MSYH", sans-serif;
+    background: #f4f5f7; color: #2c2c2a;
+  }
+  .stage {
+    height: 100%; padding: 32px 40px;
+    display: flex; flex-direction: column;
+  }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 6px; }
+  .sub { font-size: 13px; color: #5f5e5a; line-height: 1.7; }
+  .hint {
+    margin-top: 18px; font-size: 13px; color: #5f5e5a;
+    background: #ffffff; border: 0.5px solid #d3d1c7;
+    border-radius: 12px; padding: 14px 18px; max-width: 620px; line-height: 1.8;
+  }
+  .hint b { font-weight: 500; color: #2c2c2a; }
+
+  .orb {
+    position: fixed; width: 62px; height: 62px; border-radius: 50%;
+    background: #534ab7; border: none; cursor: grab;
+    display: flex; align-items: center; justify-content: center;
+    right: 34px; bottom: 96px; z-index: 40;
+  }
+  .orb:active { cursor: grabbing; }
+  .orb .dot {
+    width: 20px; height: 20px; border-radius: 50%;
+    background: #ffffff; opacity: .95;
+  }
+  .orb.busy { background: #ba7517; }
+
+  .panel {
+    position: fixed; width: 392px; z-index: 50;
+    background: #ffffff; border: 0.5px solid #d3d1c7;
+    border-radius: 16px; box-shadow: 0 2px 12px rgba(0,0,0,.08);
+    display: none; flex-direction: column; overflow: hidden;
+  }
+  .panel.open { display: flex; }
+  .panel header {
+    padding: 14px 18px; border-bottom: 0.5px solid #e8e6df;
+    font-size: 14px; font-weight: 500; display: flex;
+    align-items: center; justify-content: space-between;
+  }
+  .panel header button {
+    border: none; background: transparent; cursor: pointer;
+    font-size: 18px; color: #888780; font-family: inherit; line-height: 1;
+  }
+  .body { padding: 14px 18px 18px; max-height: 60vh; overflow: auto; }
+
+  .sect { font-size: 12px; color: #888780; margin: 14px 0 8px; }
+  .sect:first-child { margin-top: 0; }
+
+  .row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 12px; border: 0.5px solid #e8e6df;
+    border-radius: 8px; margin-bottom: 6px; font-size: 13px;
+  }
+  .state { display: flex; align-items: center; gap: 8px; }
+  .led { width: 8px; height: 8px; border-radius: 50%; background: #b4b2a9; }
+  .led.on { background: #1d9e75; }
+  .led.off { background: #e24b4a; }
+  .tools { font-size: 12px; color: #888780; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .grid button, .wide {
+    font-family: inherit; font-size: 13px; padding: 9px 10px;
+    border: 0.5px solid #d3d1c7; border-radius: 8px;
+    background: #faf9f6; color: #2c2c2a; cursor: pointer; text-align: left;
+  }
+  .grid button:hover, .wide:hover { background: #f1efe8; }
+  .wide { width: 100%; margin-top: 6px; }
+
+  textarea {
+    width: 100%; font-family: inherit; font-size: 13px; line-height: 1.6;
+    padding: 10px 12px; border: 0.5px solid #d3d1c7;
+    border-radius: 8px; resize: vertical; min-height: 76px; background: #faf9f6;
+  }
+  textarea:focus, input:focus { outline: none; border-color: #534ab7; }
+
+  .out {
+    margin-top: 10px; padding: 10px 12px; background: #f4f5f7;
+    border-radius: 8px; font-size: 12px; line-height: 1.7;
+    color: #444441; white-space: pre-wrap; word-break: break-word;
+    max-height: 190px; overflow: auto; display: none;
+  }
+  .out.show { display: block; }
+  .pending { color: #ba7517; }
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <h1>Orb 控制台</h1>
+  <p class="sub">悬浮球停在右下角。点开面板即可直接操作电脑、派发后台任务。<br>球体可拖动；拖到屏幕边缘会收纳成小条。</p>
+  <div class="hint">
+    <b>前台轨道</b>：截图、列窗口、开应用、点坐标、输文字 —— 立刻执行，结果直接显示。<br>
+    <b>后台轨道</b>：把重活派给 DeepSeek Harness 后台会话，派发后立刻返回，可继续做别的；完成后结果自动填回面板。
+  </div>
+</div>
+
+<button class="orb" id="orb" title="Orb 控制台"><span class="dot"></span></button>
+
+<div class="panel" id="panel">
+  <header>
+    <span>Orb 控制台</span>
+    <button id="close" title="收起">×</button>
+  </header>
+  <div class="body">
+    <div class="sect">连接状态</div>
+    <div id="status"></div>
+
+    <div class="sect">前台轨道 · 电脑操作</div>
+    <div class="grid">
+      <button data-act="screenshot">截图看屏幕</button>
+      <button data-act="windows">列出窗口</button>
+      <button data-act="app">打开应用</button>
+      <button data-act="type">输入文字</button>
+      <button data-act="click">点击坐标</button>
+      <button data-act="key">按快捷键</button>
+    </div>
+
+    <div class="sect">后台轨道 · 派给 DeepSeek Harness</div>
+    <textarea id="task" placeholder="把任务一次写全：要处理的文件路径、要做什么、期望产出什么。后台会话看不到我们的对话。"></textarea>
+    <button class="wide" id="dispatch">派发到后台</button>
+
+    <div class="out" id="out"></div>
+  </div>
+</div>
+
+<script>
+const orb = document.getElementById('orb');
+const panel = document.getElementById('panel');
+const out = document.getElementById('out');
+const statusBox = document.getElementById('status');
+
+function placePanel() {
+  const r = orb.getBoundingClientRect();
+  const w = 392, h = panel.offsetHeight || 520;
+  let left = r.left + r.width / 2 - w / 2;
+  let top = r.top - h - 12;
+  left = Math.max(12, Math.min(left, window.innerWidth - w - 12));
+  top = Math.max(12, Math.min(top, window.innerHeight - h - 12));
+  panel.style.left = left + 'px';
+  panel.style.top = top + 'px';
+}
+
+orb.addEventListener('click', () => {
+  if (orb.dataset.moved === '1') { orb.dataset.moved = '0'; return; }
+  panel.classList.toggle('open');
+  if (panel.classList.contains('open')) { placePanel(); refresh(); }
+});
+
+let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+orb.addEventListener('mousedown', (e) => {
+  dragging = true; orb.dataset.moved = '0';
+  sx = e.clientX; sy = e.clientY;
+  const r = orb.getBoundingClientRect(); ox = r.left; oy = r.top;
+  e.preventDefault();
+});
+window.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  const dx = e.clientX - sx, dy = e.clientY - sy;
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) orb.dataset.moved = '1';
+  orb.style.left = Math.max(0, Math.min(ox + dx, window.innerWidth - 62)) + 'px';
+  orb.style.top = Math.max(0, Math.min(oy + dy, window.innerHeight - 62)) + 'px';
+  orb.style.right = 'auto'; orb.style.bottom = 'auto';
+  if (panel.classList.contains('open')) placePanel();
+});
+window.addEventListener('mouseup', () => { dragging = false; });
+window.addEventListener('resize', () => { if (panel.classList.contains('open')) placePanel(); });
+
+document.getElementById('close').addEventListener('click', () => panel.classList.remove('open'));
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  return await r.json();
+}
+
+async function refresh() {
+  statusBox.innerHTML = '<div class="row"><span>正在检测…</span></div>';
+  try {
+    const s = await api('/api/status');
+    statusBox.innerHTML = '';
+    for (const [key, v] of Object.entries(s)) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const n = v.tools ? v.tools.length : 0;
+      row.innerHTML =
+        '<span class="state"><i class="led ' + (v.ok ? 'on' : 'off') + '"></i>' +
+        v.label + '</span>' +
+        '<span class="tools">' + (v.ok ? n + ' 个工具' : '连接失败') + '</span>';
+      statusBox.appendChild(row);
+    }
+  } catch (e) {
+    statusBox.innerHTML = '<div class="row"><span class="pending">桥接服务未响应</span></div>';
+  }
+}
+
+function show(text, pending) {
+  out.classList.add('show');
+  out.innerHTML = pending ? '<span class="pending">' + text + '</span>' : text;
+  out.scrollTop = out.scrollHeight;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
+
+const ACTS = {
+  screenshot: { server: 'windows', tool: 'Screenshot', args: {} },
+  windows:    { server: 'windows', tool: 'DisplayInventory', args: {} },
+  app:        { server: 'windows', tool: 'App', args: {}, ask: '要打开哪个应用？' },
+  type:       { server: 'windows', tool: 'Type', args: {}, ask: '要输入什么文字？' },
+  click:      { server: 'windows', tool: 'Click', args: {}, ask: '点击坐标，格式：x, y' },
+  key:        { server: 'windows', tool: 'Shortcut', args: {}, ask: '快捷键，例如 ctrl+c' },
+};
+
+document.querySelectorAll('[data-act]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const act = ACTS[btn.dataset.act];
+    const args = { ...act.args };
+    if (act.ask) {
+      const v = prompt(act.ask);
+      if (v === null) return;
+      const s = v.trim();
+      if (act.tool === 'App') args.name = s;
+      else if (act.tool === 'Type') args.text = s;
+      else if (act.tool === 'Click') {
+        const p = s.split(',').map(n => parseInt(n.trim(), 10));
+        if (p.length !== 2 || p.some(isNaN)) { show('坐标格式不对，应为：x, y'); return; }
+        args.x = p[0]; args.y = p[1];
+      } else if (act.tool === 'Shortcut') args.shortcut = s;
+    }
+    show('执行中：' + act.tool + ' …', true);
+    orb.classList.add('busy');
+    try {
+      const r = await api('/api/call', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ server: act.server, tool: act.tool, args })
+      });
+      if (!r.ok) { show('调用失败：' + esc(r.error)); return; }
+      const parts = (r.result?.content || []).map(c =>
+        c.type === 'text' ? c.text : '[' + c.type + ']');
+      show(esc(parts.join('\n') || '(无文本返回)'));
+    } catch (e) {
+      show('请求失败：' + esc(e.message));
+    } finally {
+      orb.classList.remove('busy');
+    }
+  });
+});
+
+const jobs = new Map();
+
+document.getElementById('dispatch').addEventListener('click', async () => {
+  const task = document.getElementById('task').value.trim();
+  if (!task) { show('先写点任务内容'); return; }
+  show('已派发到后台，正在排队执行…', true);
+  try {
+    const r = await api('/api/dispatch', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ server: 'workbuddy', tool: 'workbuddy_execute', args: { task } })
+    });
+    if (!r.ok) { show('派发失败：' + esc(r.error)); return; }
+    jobs.set(r.jobId, true);
+    poll(r.jobId);
+  } catch (e) {
+    show('派发失败：' + esc(e.message));
+  }
+});
+
+function poll(id) {
+  const timer = setInterval(async () => {
+    let r;
+    try { r = await api('/api/job/' + id); } catch { return; }
+    if (!r.ok) { clearInterval(timer); return; }
+    const j = r.job;
+    if (j.status === 'running') {
+      const s = Math.round((Date.now() - j.startedAt) / 1000);
+      show('后台执行中… 已用时 ' + s + ' 秒', true);
+      return;
+    }
+    clearInterval(timer);
+    if (j.status === 'error') { show('后台任务出错：' + esc(j.error)); return; }
+    const parts = (j.result?.content || []).map(c => c.type === 'text' ? c.text : '[' + c.type + ']');
+    show('后台任务完成：\n\n' + esc(parts.join('\n') || '(无文本返回)'));
+  }, 2000);
+}
+</script>
+</body>
+</html>

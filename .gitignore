@@ -1,0 +1,170 @@
+# ============================================================
+# ORB 控制台 · 开源仓库忽略清单
+# 原则：只进「自研源码 + 文档 + 构建脚本」，一切
+#   ① 专有/第三方打包产物   ② 含凭证的文件
+#   ③ 运行时数据 / 缓存 / 审计   ④ 构建产物与备份
+# 一律不得进入公开仓库。下面是分类清单。
+# ============================================================
+
+# ---------- 1. 红线：专有前端打包产物（开源即侵权） ----------
+# WorkBuddy 专有前端资源（lib-chat-ui / server.js / workbuddy-provider /
+# copilot-icon / ui-ardot 等），不属于本项目，绝不可再分发。
+orb/voice_extract/
+voice_extract/
+# 图标备份目录：里面是 WorkBuddy 品牌素材（卡通头像 / 头像版图标）的历史备份，
+# 属第三方素材，非本项目资产，也不参与构建，不再随仓库分发。
+# （工具链只依赖 desktop/icon.png・icon-64.png・icon.ico 三个正式图标位。）
+orb/.icon-backup/
+
+# ---------- 2. 红线：含真实凭证的文件 ----------
+# 桥接层运行时生成的访问令牌（36 字符 UUID），泄漏等于本机被远程控制。
+orb/.bridge.json
+.bridge.json
+**/.bridge.json
+# 子进程 PID 台账（运行时生成）
+orb/.children-*.json
+**/.children-*.json
+# 各类凭据 / 令牌 / 私钥
+**/.credentials.yaml
+**/credentials.json
+**/*token*.json
+**/*.key
+**/*.pem
+**/*.pfx
+**/.env
+**/.env.*
+!**/.env.example
+# 本地覆盖配置（自用机的私有路径写在这里，**永不入库 / 永不随包**；
+# 仓库里只留模板 orb/local.conf.example）
+orb/local.conf
+**/local.conf
+!**/local.conf.example
+
+# ---------- 3. Python 虚拟环境与模型权重（4GB 级） ----------
+asr/venv/
+asr/models/
+**/venv/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# ---------- 4. 本地运行数据 / 缓存 / 审计 / 历史 ----------
+.orbdata/
+orb/desktop/.orbdata/
+history/
+cache/
+cache*/
+.cache/
+audit/
+# ⚠️ 只对**项目根**的 workflows/ 生效：那是开发态录制产生的个人数据。
+# 必须写成 /workflows/（锚定根）—— 不带前导斜杠的话，git 会在**任意层级**
+# 匹配同名目录，把随仓库走的示例工作流 orb/desktop/extras/workflows/ 一起吃掉，
+# 别人克隆仓库后打包就一个示例工作流都没有了。
+/workflows/
+!orb/desktop/extras/workflows/
+**/.cache/
+**/_backup/
+**/_bench/
+**/refs/
+**/NVIDIA Corporation/
+
+# ---------- 5. 构建产物 ----------
+# ⚠️ git 的 .gitignore **不支持行尾注释**：`模式  # 注释` 里的 `#` 不是注释符，
+#    整行会被当成一个永远匹配不到的模式（规则静默失效）。注释必须独占一行。
+dist/
+dist-electron/
+out/
+build/
+release/
+node_modules/
+# 原生模块编译产物（源码 orb/native/src/ 保留）
+orb/native/dist/
+orb/native/**/*.exe
+orb/native/**/*.obj
+orb/native/**/*.o
+# 内嵌 Python 运行时（构建期生成，仅进 Release 二进制，不进仓库）
+orb/runtime/
+resources/runtime/
+resources/asr/
+**/LICENSES.chromium.html
+
+# ---------- 6. 备份 / 临时 / 日志 ----------
+*.bak
+*.bak-*
+*.koubak
+*.koubak*
+*.perfbak*
+*.log
+*.tmp
+*.temp
+wb-callback.log
+dist-electron-build.log
+~$*
+Thumbs.db
+desktop.ini
+
+# ---------- 6b. 归档 / 旧版桌面端残留 ----------
+_desktop_archive/
+**/_archive/
+
+# ---------- 7. 截图与调试中间产物 ----------
+.ocr-*.png
+.selftest-shot.png
+.children-*.json
+orb/.selftest-shot.png
+**/_wbverify*.html
+**/_probe.cjs
+**/_restart_diag.cjs
+**/_slider_diag.cjs
+**/_inline_check.cjs
+
+# ---------- 7b. 界面调参对照图（开发过程产物） ----------
+# 项目根散落着一批开发期截图：方案三* 圆角/配色候选、极光* 浓淡对照、
+# 滑轨错位修复对照、界面文案清理对照、orb-panel-* / orb-sendrow-* / ui_* 等。
+# 它们是逐轮调参的中间产物，不是项目资产，公开仓库只保留一张对外预览图。
+# 注意 `/*.png` 带前导斜杠，只作用于**项目根这一层**，不会误伤
+# orb/desktop/icon.png（托盘/球体/头像三处共用，运行时必需）。
+/*.png
+!ORB界面预览.png
+/*.svg
+!ORB界面预览.svg
+# orb/ 顶层的中间截图同理
+/orb/icon-applied.png
+/orb/icon-before-after.png
+/orb/orb-ui-final.png
+/orb/screenshot-*.png
+
+# ---------- 7c. 本机审批记录 / 一次性调试输出 ----------
+# approvals.json 是宿主对本机命令的授权台账，含本机路径与命令原文。
+/approvals.json
+/watch_question_pending.json
+/whatpage.txt
+
+# ---------- 7d. voice_extract 逆向脚本（一次性，全部硬编码本机绝对路径） ----------
+# 这批 Python 脚本用于从 app.asar 里提取 WorkBuddy 专有前端产物（voice_extract/，
+# 已在 §1 红线排除）。它们除了写死作者机器的盘符与家目录外别无用处，不进仓库。
+/orb/context_daemon.py
+/orb/context_libchat.py
+/orb/context_provider.py
+/orb/context_voice.py
+/orb/extract2.py
+/orb/extract_main.py
+/orb/extract_voice.py
+/orb/find_voice.py
+/orb/scan_voice.py
+/orb/asar_voice.py
+
+# ---------- 8. 本机私有脚本 / 一次性实验脚本 ----------
+# 根目录的一批一次性调试脚本（nav.mjs / probe*.mjs / watch_*.mjs / hs_*.mjs …）
+# 属开发过程产物，随仓库公开前请逐个人工确认；这里先整体排除根目录散落的 .mjs
+/*.mjs
+!/*.md
+# orb/ 下同批一次性脚本：下划线前缀是"开发期临时脚本"的约定（_render_*.mjs 等），
+# 里面写死了开发机路径与一次性任务，不该进公开仓库。
+orb/_*.mjs
+
+# ---------- 9. 编辑器 / 系统 ----------
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,113 @@
+{
+  "name": "orb-desktop",
+  "private": true,
+  "version": "1.0.0",
+  "main": "main.js",
+  "description": "ORB 控制台 · 桌面端（Electron）",
+  "author": "ORB",
+  "scripts": {
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.orb.console",
+    "productName": "ORB 控制台",
+    "copyright": "ORB",
+    "compression": "maximum",
+    "asar": false,
+    "npmRebuild": false,
+    "nodeGypRebuild": false,
+    "directories": {
+      "output": "D:/workbuddy_ORB控制台/dist-electron",
+      "buildResources": "build-res"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "panel.html",
+      "ball.html",
+      "border.html",
+      "subtitle.html",
+      "toolbar.html",
+      "voice.js",
+      "icon.png",
+      "icon.ico",
+      "icon-64.png",
+      "selection-watch.ps1",
+      "package.json",
+      "!**/*.bak*",
+      "!**/*.koubak*",
+      "!**/*.perfbak*",
+      "!_*",
+      "!*.log"
+    ],
+    "extraResources": [
+      {
+        "from": "../bridge.mjs",
+        "to": "bridge.mjs"
+      },
+      {
+        "from": "../mousehook.mjs",
+        "to": "mousehook.mjs"
+      },
+      {
+        "from": "../bridge.conf",
+        "to": "bridge.conf"
+      },
+      {
+        "from": "../native/dist",
+        "to": "native/dist"
+      },
+      {
+        "from": "../node_modules",
+        "to": "node_modules",
+        "filter": [
+          "**/*",
+          "!**/.bin/**",
+          "!**/*.md",
+          "!**/*.ts",
+          "!**/test/**",
+          "!**/tests/**"
+        ]
+      },
+      {
+        "from": "../../使用说明.md",
+        "to": "extras/使用说明.md"
+      },
+      {
+        "from": "extras/workflows",
+        "to": "extras/workflows",
+        "filter": [
+          "**/*.json"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icon.ico",
+      "artifactName": "ORB控制台-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "ORB控制台-${version}-便携版.${ext}",
+      "requestExecutionLevel": "user"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "ORB控制台-${version}-安装版.${ext}"
+    }
+  }
+}

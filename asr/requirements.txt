@@ -1,0 +1,10 @@
+# ORB 本地离线语音识别 —— 用户端一键安装时获取（**不随任何发布物分发**）
+#
+# 安装方式：asr\prepare.ps1（由面板「安装本地离线识别」按钮触发），
+# 它会先建 asr/venv，再 pip install -r 本文件，最后下载 small 权重。
+# 这些依赖（含 av → FFmpeg 解码库）属用户自行获取，许可证由各自项目提供，
+# 详见 THIRD-PARTY-NOTICES.md「仅在用户端运行时安装的」一节。
+faster-whisper>=1.0.0
+fastapi>=0.110.0
+uvicorn>=0.29.0
+huggingface-hub>=0.23.0

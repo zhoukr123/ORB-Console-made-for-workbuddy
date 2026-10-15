@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  /* 整个窗体都是拖拽区（右下角留原生缩放边）；按钮 no-drag */
+  #wrap {
+    -webkit-app-region: drag;
+    box-sizing: border-box; height: 100%;
+    background: rgba(10, 12, 18, .82);
+    border: 1px solid rgba(158, 203, 255, .28);
+    border-radius: 12px;
+    padding: 8px 18px 10px;
+    display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  }
+  .line { color: #fff; font: 14px/1.45 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+          text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .line.cur { color: #9ecbff; font-size: 16px; }
+  .line.old { opacity: .5; }
+  .line.draft { color: #cfcfcf; opacity: .8; font-style: italic; }
+  .line.draft::after { content: " …"; color: #9ecbff; }
+  #bar { -webkit-app-region: no-drag; position: absolute; top: 2px; right: 6px;
+         display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
+  #wrap:hover #bar { opacity: .85; }
+  #bar button { background: transparent; border: 0; color: #fff; cursor: pointer; font-size: 12px; padding: 2px 5px; }
+</style>
+<div id="wrap">
+  <div id="bar">
+    <button id="hide" title="隐藏悬浮窗（字幕服务继续在后台跑，可从面板再打开）">✕</button>
+  </div>
+  <div class="line cur">（实时字幕：等待系统声音…）</div>
+</div>
+<script>
+  const wrap = document.getElementById('wrap');
+  function render(items, draft) {
+    // 终稿行（保留最近 2 条历史）
+    const done = items || [];
+    if (done.length || draft) {
+      const take = done.slice(-2);
+      wrap.querySelectorAll('.line').forEach((n) => n.remove());
+      for (const it of take) {
+        const d = document.createElement('div');
+        d.className = 'line' + (it === take[take.length - 1] && !draft ? ' cur' : ' old');
+        d.textContent = it.text || '';
+        wrap.appendChild(d);
+      }
+      if (draft) {
+        const d = document.createElement('div');
+        d.className = 'line draft';
+        d.textContent = draft;
+        wrap.appendChild(d);
+      }
+    }
+  }
+  window.orb.onSubtitleLines(render);
+  document.getElementById('hide').onclick = () => window.orb.setSubtitle(false);
+</script>

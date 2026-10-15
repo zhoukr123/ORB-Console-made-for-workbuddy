@@ -1,0 +1,125 @@
+# ORB 控制台 · 发布工作流（手动触发）
+#
+# ⚠️ 未验证（2026-10-15 写）：本文件**尚未在任何 CI runner 上真实跑通过**。
+#   它依赖两件在本机之外没验证过的事：
+#     ① GitHub windows-latest 上能否用 MSVC(cl.exe) 编译出五个原生组件；
+#     ② `build-runtime.ps1` 能否在 CI 上拉到内嵌 Python 并装出干净依赖集。
+#   因此设计上刻意做成：
+#     - **只有 workflow_dispatch**（手动点），没有 push / tag 自动触发，不会自己跑；
+#     - 首次使用请先在 fork 上试跑一次，确认产物与本地 `node orb/pack.cjs` 一致后再依赖它；
+#     - **兜底方案永远是手动**：`node orb/pack.cjs` 这条路径已完整跑通。
+#
+# 设计约束（来自 DESIGN-开箱即用增量设计.md §9 T05）：
+#   **不在 CI 里塞任何 Key** —— 除 GitHub 自动提供的 GITHUB_TOKEN（仅用于上传 Release）外，
+#   本文件不引用任何 secrets，也不注入任何业务凭据。
+#
+# 产物：单文件便携版 exe、便携目录 zip、使用说明.md。
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（如 1.0.0）。留空则用 orb/desktop/package.json 的 version'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装桥的依赖
+        # pack.cjs 会硬校验 orb/node_modules（桥要 @modelcontextprotocol/sdk 等），缺失直接失败
+        run: npm install --no-audit --no-fund
+        working-directory: orb
+
+      - name: 编译原生组件（MSVC）
+        # 四个脚本分别产出：orb-input.exe / orb-foreground.exe / orb-selection.exe / orb-sfx.exe
+        # 前三个 pack.cjs 会硬校验（缺失直接失败）；sfx 桩缺失时 pack.cjs 只跳过单文件版，不阻断
+        shell: pwsh
+        run: |
+          .\build.ps1
+          .\build-foreground.ps1
+          .\build-selection.ps1
+          .\build-sfx.ps1
+        working-directory: orb/native
+
+      - name: 构建前台通道 Python 运行时
+        # 产出 orb/runtime/python（含 python.exe + 精简 site-packages + LICENSE.txt）。
+        # 这是"干净机双击即用"的关键；pack.cjs 会校验 python.exe 与 LICENSE.txt 都在。
+        shell: pwsh
+        run: .\build-runtime.ps1
+        working-directory: orb/native
+
+      - name: 打包便携版
+        run: node orb/pack.cjs
+
+      - name: 解析版本号
+        shell: pwsh
+        run: |
+          $v = '${{ github.event.inputs.version }}'.Trim()
+          if (-not $v) {
+            $v = (Get-Content orb/desktop/package.json -Raw | ConvertFrom-Json).version
+          }
+          if (-not $v) { $v = '1.0.0' }
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "version = $v"
+
+      - name: 定位产物
+        # pack.cjs 的输出目录带时间戳，这里取最新的一份
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path dist -Filter '*-便携版.exe' -File |
+                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $zip = Get-ChildItem -Path dist -Filter '*.zip' -File |
+                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $exe) { throw '找不到单文件便携版 exe' }
+          if (-not $zip) { throw '找不到便携目录 zip' }
+          "EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ZIP=$($zip.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "exe = $($exe.FullName)"
+          Write-Host "zip = $($zip.FullName)"
+
+      - name: 创建 Release 并上传
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: ORB 控制台 v${{ env.VERSION }}
+          body: |
+            ## 下载哪个
+
+            - **`ORB控制台-...-便携版.exe`** —— 单文件自解压，双击即用（推荐）。
+            - **`ORB控制台-...-便携目录.zip`** —— 便携目录版，给想自己看文件的人。
+
+            ## 首次运行请注意
+
+            1. **会弹「Windows 已保护你的电脑」**：发布版没有代码签名证书。
+               点「**更多信息 → 仍要运行**」即可，只拦这一次。
+            2. **会先解压到 `%LOCALAPPDATA%\ORBConsole`**（约 500 MB，实测 6 秒左右），
+               之后启动约 1 秒，不再重复解压。
+            3. **本地语音识别是按需下载**：包内只有源码，首次点「安装本地离线识别」
+               才会下载权重与依赖（合计约 680 MB）。不装也能用，会降级到浏览器内置引擎。
+            4. **视觉通道要填你自己的 Key**：算力成本在用户侧，项目无法代付。
+               在「设置 → 视觉模型」里填接口地址与 API Key。
+            5. **后台长任务需要自己装 CodeBuddy CLI**：它是专有软件，本项目不随包分发。
+               详见随包的《使用说明.md》§九。
+
+            完整说明见随包的 `使用说明.md`。
+          files: |
+            ${{ env.EXE }}
+            ${{ env.ZIP }}
+            使用说明.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

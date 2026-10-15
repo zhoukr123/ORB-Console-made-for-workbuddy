@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: transparent; overflow: hidden;
+    font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
+    user-select: none; cursor: grab;
+  }
+  body:active { cursor: grabbing; }
+  .ball {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ball img {
+    width: 66px; height: 66px; display: block;
+    filter: drop-shadow(0 2px 6px rgba(38, 33, 92, .35));
+    transition: transform .18s ease;
+    -webkit-user-drag: none;
+  }
+  body.hot .ball img { transform: scale(1.06); }
+
+  body.docked { cursor: pointer; }
+  body.docked .ball img { display: none; }
+  body.docked .ball { background: linear-gradient(160deg, #b4b2a9, #5f5e5a); }
+  body.dock-left .ball { border-radius: 0 8px 8px 0; }
+  body.dock-right .ball { border-radius: 8px 0 0 8px; }
+
+  /* 思考动效：蓝色光晕自图标向外同步扩大/缩小（呼吸感）。
+     原来是橙黄色描边脉冲（#ef9f27），与 logo 的蓝不搭，显得脏。 */
+  .halo {
+    display: none; position: absolute; inset: 5px; z-index: 0;
+    border-radius: 50%;
+    /* 纯蓝径向光晕，边缘完全透明，缩放时不会看到硬边 */
+    background: radial-gradient(circle at 50% 50%,
+                rgba(8, 94, 200, .52) 0%,
+                rgba(8, 94, 200, .30) 44%,
+                rgba(8, 94, 200, .12) 66%,
+                rgba(8, 94, 200, 0) 78%);
+    will-change: transform, opacity;
+  }
+  /* 第二层：一圈细蓝环，跟光晕同节奏，让"扩大"更明确 */
+  .halo::after {
+    content: ''; position: absolute; inset: 7px; border-radius: 50%;
+    border: 1.5px solid rgba(8, 94, 200, .68);
+    opacity: .9;
+  }
+  /* logo 压在光晕之上 */
+  .ball { position: relative; z-index: 1; }
+
+  body.busy .halo { display: block; animation: breathe 1.7s cubic-bezier(.45,0,.55,1) infinite; }
+  body.busy .ball img { animation: bob 1.7s cubic-bezier(.45,0,.55,1) infinite; }
+
+  /* 同一组 transform 同时驱动光晕与蓝环 → 视觉上"同步扩大/缩小" */
+  @keyframes breathe {
+    0%, 100% { transform: scale(.86); opacity: .45; }
+    50%      { transform: scale(1.14); opacity: 1; }
+  }
+  @keyframes bob {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.05); }
+  }
+</style>
+</head>
+<body>
+  <div class="ball"><img id="icon" src="icon.png" alt="Orb"></div>
+  <div class="halo"></div>
+
+<script>
+  const body = document.body;
+  const icon = document.getElementById('icon');
+
+  function syncDocked(side) {
+    const docked = window.innerWidth < 40;
+    body.classList.toggle('docked', docked);
+    body.classList.remove('dock-left', 'dock-right');
+    if (docked) body.classList.add('dock-' + (side || (window.screenX < 40 ? 'left' : 'right')));
+  }
+  syncDocked();
+  window.addEventListener('resize', () => syncDocked());
+  window.orb.onDockState((side) => setTimeout(() => syncDocked(side), 40));
+
+  body.addEventListener('mouseenter', () => {
+    body.classList.add('hot');
+    window.orb.hover(true);
+    if (window.innerWidth < 40) window.orb.undock();
+  });
+  body.addEventListener('mouseleave', () => {
+    body.classList.remove('hot');
+    window.orb.hover(false);
+  });
+
+  let downAt = null;
+  window.addEventListener('mousedown', (e) => {
+    if (e.button === 2) return;
+    downAt = { x: e.screenX, y: e.screenY };
+    window.orb.dragBegin();
+  });
+  window.addEventListener('mouseup', (e) => {
+    if (e.button === 2) return;
+    if (!downAt) return;
+    downAt = null;
+    window.orb.dragEnd();
+  });
+  window.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    window.orb.contextMenu();
+  });
+
+  window.orb.onBusy((v) => body.classList.toggle('busy', !!v));
+  window.orb.onPanelState((open) => body.classList.toggle('active', !!open));
+  window.orb.onAvatar((url) => { if (url) icon.src = url; });
+
+  window.orb.getState().then((s) => { if (s && s.avatar) icon.src = s.avatar; });
+</script>
+</body>
+</html>

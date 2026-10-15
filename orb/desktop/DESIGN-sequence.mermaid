@@ -1,0 +1,30 @@
+sequenceDiagram
+    participant U as 用户
+    participant M as Electron main.js
+    participant B as bridge.mjs
+    participant R as runtime.mjs
+    participant P as python.exe (windows-mcp)
+    participant W as Win32/UIA
+
+    U->>M: 双击 ORB 控制台.exe
+    M->>M: DATA_ROOT=%APPDATA%/ORB 控制台 (打包态)
+    M->>B: spawn(NODE_EXE, bridge.mjs) + ORB_DATA_DIR
+    Note over M: NODE_EXE 打包态 = electron.exe + ELECTRON_RUN_AS_NODE=1
+    B->>B: server.listen(19387) → reapStaleChildren()
+    B->>R: resolveRuntime()
+    R-->>B: {exePath: resources/runtime/python/python.exe, source:"embedded", ok:true}
+    B->>R: frontEnv(rt)
+    R-->>B: {ANONYMIZED_TELEMETRY:false, POSTHOG_API_KEY:"", WINDOWS_MCP_SCREENSHOT_BACKEND:"pillow"}
+    U->>B: GET /api/status (带 X-Orb-Token)
+    B->>P: spawn python -m windows_mcp serve --transport stdio --exclude-tools Registry
+    P->>P: import infrastructure → posthog stub (no-op)
+    P->>W: Desktop() / Tree() 初始化 UIA
+    P-->>B: stdio 握手 → listTools(19 工具)
+    B-->>U: {windows:{ok:true}, frontHealth:{state:"ok", telemetry:{...}}}
+    U->>B: POST /api/call {server:"windows", tool:"Screenshot"}
+    B->>P: tools/call Screenshot
+    P->>W: ImageGrab.grab(all_screens=True)
+    W-->>P: PIL Image
+    P-->>B: image content
+    B-->>U: {ok:true, result:{content:[{type:"image"}]}}
+    Note over U,B: 无 posthog 出站、无 WorkBuddy 依赖、无需预装 Python

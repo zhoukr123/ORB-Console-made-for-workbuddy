@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Orb 控制台 · 图标规格（唯一真相）</title>
+<style>
+  body {
+    margin: 0; padding: 24px 28px 40px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #FFFFFF; color: #2C2C2A; font-size: 13px; line-height: 1.6;
+  }
+  h1 { font-size: 15px; font-weight: 500; margin: 0 0 4px; }
+  h2 { font-size: 14px; font-weight: 500; margin: 28px 0 12px; padding-top: 18px; border-top: 1px solid #ECEAE3; }
+  h2:first-of-type { border-top: none; padding-top: 0; }
+  p.sub { color: #928F86; margin: 0 0 18px; font-size: 12px; }
+  .spec {
+    font-size: 12px; color: #5F5E5A; background: #F4F3EF;
+    border-radius: 8px; padding: 10px 14px; margin-bottom: 18px;
+  }
+  .spec b { color: #3C3489; font-weight: 500; }
+  .row { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+  .item { text-align: center; }
+  .box {
+    width: 29px; height: 29px; display: flex; align-items: center; justify-content: center;
+    border-radius: 7px; background: #FAF9F6;
+  }
+  .box.sunken { background: #F4F3EF; }
+  .cap { font-size: 11px; color: #928F86; margin-top: 8px; }
+  .key { font-size: 10.5px; color: #B4B2A9; font-family: Consolas, monospace; margin-top: 2px; }
+  pre {
+    background: #F4F3EF; border-radius: 8px; padding: 14px 16px;
+    font-family: Consolas, "Courier New", monospace; font-size: 11.5px;
+    line-height: 1.7; color: #2C2C2A; overflow-x: auto; margin: 0 0 14px;
+    white-space: pre;
+  }
+  .note { font-size: 11.5px; color: #928F86; margin: 0 0 14px; }
+  .warn {
+    background: #FCEBEB; border-radius: 8px; padding: 10px 14px;
+    font-size: 11.5px; color: #A32D2D; margin-bottom: 18px;
+  }
+  /* ---- 动效演示 ---- */
+  .demo { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; margin-bottom: 8px; }
+  .stage {
+    width: 120px; height: 120px; border-radius: 14px; background: #FAF9F6;
+    display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden;
+    border: 1px solid #ECEAE3;
+  }
+  .stage.hovermode { cursor: pointer; }
+  .demo-cap { font-size: 11px; color: #928F86; text-align: center; margin-top: 7px; }
+
+  /* 固定：针尖向外延伸再回缩。只动 transform，不触发重排 */
+  @keyframes pinthrust {
+    0%   { transform: translate(0, 0); }
+    45%  { transform: translate(3.4px, 3.4px); }   /* 针端朝右下扎出 */
+    100% { transform: translate(0, 0); }
+  }
+  .stage.hovermode:hover .pinpath { animation: pinthrust .62s cubic-bezier(.34,1.4,.5,1); }
+
+  /* 录制：红三角外圈出现圆环，顺时针扩散并淡出 */
+  @keyframes recring {
+    0%   { transform: scale(.72) rotate(0deg);   opacity: 0; }
+    22%  { opacity: .85; }
+    100% { transform: scale(1.5) rotate(360deg); opacity: 0; }
+  }
+  .recring {
+    transform-origin: 12px 12px;
+    animation: recring 1.6s cubic-bezier(.25,.6,.35,1) infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .stage.hovermode:hover .pinpath { animation: none; }
+    .recring { animation: none; opacity: 0; }
+  }
+
+</style>
+</head>
+<body>
+
+<h1>Orb 控制台 · 图标规格</h1>
+<p class="sub">唯一真相文件。任何界面、卡片、实现都必须从这里取图标，不得凭记忆重画。</p>
+
+<div class="warn">
+  <b>改动规则</b>：修改任何图标前，先改本文件；改完在下面的预览区确认渲染无误，再同步到 panel.html。<br>
+  禁止在别处「顺手」改图标 —— 这正是之前顶栏图标反复漂移的原因。
+</div>
+
+<h2>全局规格</h2>
+<div class="spec">
+  面板底色 <b>#FFFFFF</b>（源码 <code>--bg: #ffffff</code>）<br>
+  网格 <b>24 × 24</b> viewBox<br>
+  显示尺寸 <b>18px</b>（顶栏）/ <b>16px</b>（工具方阵）/ <b>14px</b>（分组标签）<br>
+  按钮容器 <b>29 × 29</b>（顶栏）/ <b>30 × 30</b>（工具方阵）<br>
+  顶栏描边 <b>2.3</b> · 设置放射盘描边 <b>2.0</b> · 工具图标描边 <b>2.0</b><br>
+  线帽 <b>round</b> · 线接 <b>round</b><br>
+  <b>线色（白底专用）</b>：紫 <b>#3C3489</b> · 灰 <b>#5F5E5A</b> · 红 <b>#D8443F</b><br>
+  <b>禁用</b>：#CECBF6 / #EDEDF2 / #E24B4A —— 这些是深色底配色，白底上对比度不足
+</div>
+
+<h2>一、顶栏六枚（白色面板 #FFFFFF）</h2>
+<div class="spec" style="background:#FCEBEB;color:#A32D2D">
+  <b>配色更正</b>：面板真实底色是<b>白色 #FFFFFF</b>（源码 <code>--bg: #ffffff</code>），
+  <b>不是深紫</b>。因此图标线色必须用深色，<b>禁止再用 #CECBF6</b> —— 它在白底对比度仅 1.56 : 1，远低于 WCAG AA 的 3 : 1。<br>
+  正确取值：紫线 <b>#3C3489</b>（10.27 : 1）· 灰线 <b>#5F5E5A</b>（6.49 : 1）· 红件 <b>#D8443F</b>（4.36 : 1）
+</div>
+<div class="row">
+  <div class="item">
+    <div class="box">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3C3489" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3.5 8.2V5.4A1.9 1.9 0 0 1 5.4 3.5h2.8"/>
+        <path d="M15.8 3.5h2.8a1.9 1.9 0 0 1 1.9 1.9v2.8"/>
+        <path d="M20.5 15.8v2.8a1.9 1.9 0 0 1-1.9 1.9h-2.8"/>
+        <path d="M8.2 20.5H5.4a1.9 1.9 0 0 1-1.9-1.9v-2.8"/>
+        <path d="M12 7.4v4.6l3 1.9"/>
+      </svg>
+    </div>
+    <div class="cap">历史</div>
+    <div class="key">hist</div>
+  </div>
+
+  <div class="item">
+    <div class="box">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <path d="M5.4 3.4 19.4 12 5.4 20.6Z" fill="#D8443F"/>
+      </svg>
+    </div>
+    <div class="cap">录制</div>
+    <div class="key">rec</div>
+  </div>
+
+  <div class="item">
+    <div class="box">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="8.4" stroke="#D8443F" stroke-width="2.3"/>
+        <path d="M6.4 17.6 17.6 6.4" stroke="#D8443F" stroke-width="2.3" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="cap">急停</div>
+    <div class="key">stopBtn</div>
+  </div>
+
+  <div class="item">
+    <div class="box">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5F5E5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3.2"/>
+        <circle cx="12" cy="12" r="6.4"/>
+        <path d="M12 2.6v2.6M12 18.8v2.6M2.6 12h2.6M18.8 12h2.6M5.4 5.4l1.85 1.85M16.75 16.75l1.85 1.85M18.6 5.4l-1.85 1.85M7.25 16.75 5.4 18.6"/>
+      </svg>
+    </div>
+    <div class="cap">设置</div>
+    <div class="key">vis</div>
+  </div>
+
+  <div class="item">
+    <div class="box">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3C3489" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M15.4 3.6 20.4 8.6 17.9 11.1 16.6 10.6 12.9 14.3v3.1l-2.3 2.3-3.3-3.3-2.3 2.3-1.6-1.6 2.3-2.3-3.3-3.3 2.3-2.3h3.1l3.7-3.7-.5-1.3Z"/>
+      </svg>
+    </div>
+    <div class="cap">固定</div>
+    <div class="key">pin</div>
+  </div>
+
+  <div class="item">
+    <div class="box">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3C3489" stroke-width="2.3" stroke-linecap="round">
+        <path d="M6.4 6.4 17.6 17.6M17.6 6.4 6.4 17.6"/>
+      </svg>
+    </div>
+    <div class="cap">收起</div>
+    <div class="key">close</div>
+  </div>
+</div>
+
+<h2>二、顶栏动效（hover 触发）</h2>
+<div class="spec">
+  两条动效共用同一套约束：<b>只动 transform / opacity</b>，不碰 width/height/left，不触发重排；<br>
+  缓动 <b>cubic-bezier(.34,1.4,.5,1)</b>（带回弹）与 <b>cubic-bezier(.25,.6,.35,1)</b>（顺滑扩散）；<br>
+  全部保留 <b>prefers-reduced-motion</b> 降级。
+</div>
+
+<div class="demo">
+  <div>
+    <div class="stage hovermode" id="pinStage">
+      <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#3C3489" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+        <path class="pinpath" d="M15.4 3.6 20.4 8.6 17.9 11.1 16.6 10.6 12.9 14.3v3.1l-2.3 2.3-3.3-3.3-2.3 2.3-1.6-1.6 2.3-2.3-3.3-3.3 2.3-2.3h3.1l3.7-3.7-.5-1.3Z"/>
+      </svg>
+    </div>
+    <div class="demo-cap">固定 · 针端延伸回缩<br>（鼠标移上来）</div>
+  </div>
+
+  <div>
+    <div class="stage">
+      <svg width="60" height="60" viewBox="0 0 24 24" fill="none">
+        <circle class="recring" cx="12" cy="12" r="6.6" stroke="#D8443F" stroke-width="1.5" stroke-dasharray="5 3.6" stroke-linecap="round"/>
+        <circle class="recring" cx="12" cy="12" r="6.6" stroke="#D8443F" stroke-width="1.5" stroke-dasharray="5 3.6" stroke-linecap="round" style="animation-delay:.8s"/>
+        <path d="M5.4 3.4 19.4 12 5.4 20.6Z" fill="#D8443F"/>
+      </svg>
+    </div>
+    <div class="demo-cap">录制 · 圆环顺时针扩散淡出<br>（持续循环）</div>
+  </div>
+
+  <div>
+    <div class="stage">
+      <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#D8443F" stroke-width="2.3">
+        <circle cx="12" cy="12" r="8.4"/>
+        <path d="M6.4 17.6 17.6 6.4" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="demo-cap">急停 · 本次不加动效<br>（红色已足够警示）</div>
+  </div>
+
+  <div>
+    <div class="stage">
+      <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#5F5E5A" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="3.2"/>
+        <circle cx="12" cy="12" r="6.4"/>
+        <path d="M12 2.6v2.6M12 18.8v2.6M2.6 12h2.6M18.8 12h2.6M5.4 5.4l1.85 1.85M16.75 16.75l1.85 1.85M18.6 5.4l-1.85 1.85M7.25 16.75 5.4 18.6"/>
+      </svg>
+    </div>
+    <div class="demo-cap">设置 · 放射盘缓转<br>（本次未定，待议）</div>
+  </div>
+</div>
+
+<h2>三、源码（直接粘贴，勿改数值）</h2>
+
+<p class="note">历史 · 回转箭头 + 时针</p>
+<pre>M3.5 8.2V5.4A1.9 1.9 0 0 1 5.4 3.5h2.8
+M15.8 3.5h2.8a1.9 1.9 0 0 1 1.9 1.9v2.8
+M20.5 15.8v2.8a1.9 1.9 0 0 1-1.9 1.9h-2.8
+M8.2 20.5H5.4a1.9 1.9 0 0 1-1.9-1.9v-2.8
+M12 7.4v4.6l3 1.9</pre>
+
+<p class="note">录制 · 红色实心三角（fill，无边框）。高度 17.2，占网格 67%</p>
+<pre>M5.4 3.4 19.4 12 5.4 20.6Z   fill=#D8443F
+旧值 M8.2 5.4 18.6 12 8.2 18.6Z（仅占网格高度 42%，明显偏小，已废弃）</pre>
+
+<p class="note">急停 · 红圈 r8.4 + 斜线</p>
+<pre>circle cx=12 cy=12 r=8.4
+M6.4 17.6 17.6 6.4
+both stroke=#D8443F stroke-width=2.3</pre>
+
+  <p class="note">设置 · 同心圆双环 + 八条放射线（白底灰 #5F5E5A，stroke 2.0）</p>
+<pre>circle cx=12 cy=12 r=3.2
+circle cx=12 cy=12 r=6.4
+M12 2.6v2.6M12 18.8v2.6M2.6 12h2.6M18.8 12h2.6
+M5.4 5.4l1.85 1.85M16.75 16.75l1.85 1.85M18.6 5.4l-1.85 1.85M7.25 16.75 5.4 18.6</pre>
+
+<p class="note">固定 · 图钉（斜置钉身 + 钉帽 + 针尖）</p>
+<pre>M15.4 3.6 20.4 8.6 17.9 11.1 16.6 10.6 12.9 14.3v3.1l-2.3 2.3-3.3-3.3-2.3 2.3-1.6-1.6 2.3-2.3-3.3-3.3 2.3-2.3h3.1l3.7-3.7-.5-1.3Z</pre>
+
+<p class="note">固定动效 · 针端向外扎出再回缩（hover 触发，0.62s）</p>
+<pre>@keyframes pinthrust {
+  0%   { transform: translate(0, 0); }
+  45%  { transform: translate(3.4px, 3.4px); }
+  100% { transform: translate(0, 0); }
+}
+.pinpath { animation: pinthrust .62s cubic-bezier(.34,1.4,.5,1); }
+/* 针尖朝右下，所以位移向量取 (+,+)；如改钉身角度，位移向量要跟着改 */</pre>
+
+<p class="note">录制动效 · 外圈出现圆环，顺时针扩散并淡出（无限循环，1.6s）</p>
+<pre>@keyframes recring {
+  0%   { transform: scale(.72) rotate(0deg);   opacity: 0; }
+  22%  { opacity: .85; }
+  100% { transform: scale(1.5) rotate(360deg); opacity: 0; }
+}
+.recring {
+  transform-origin: 12px 12px;          /* 绕 24 网格中心旋转 */
+  animation: recring 1.6s cubic-bezier(.25,.6,.35,1) infinite;
+}
+/* 双环错峰：第二环 animation-delay: .8s，形成连续扩散感 */
+/* 环体: circle r=6.6 stroke=#D8443F stroke-width=1.5
+        stroke-dasharray="5 3.6" stroke-linecap=round
+   虚线 + round 帽 = 顺时针转起来有明显的"跑动"粒子感 */</pre>
+
+<p class="note">收起 · 叉</p>
+<pre>M6.4 6.4 17.6 17.6M17.6 6.4 6.4 17.6</pre>
+
+<h2>四、工具方阵</h2>
+<div class="spec">
+  容器 <b>30 × 30</b> · 图标 <b>16px</b> 显示（24 网格）· 描边 <b>2.0</b> · 线色 <b>currentColor</b>（继承按钮色）<br>
+  默认 <b>#5F5E5A</b> · 悬停 <b>#3C3489</b> + 底 <b>#EEEDFE</b> · 激活 <b>#3C3489</b> + 底 <b>#EEEDFE</b>
+</div>
+<div class="row">
+  <div class="item">
+    <div class="box sunken">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">
+        <path d="M5 7.2h5v3.4H5ZM14 7.2h5v3.4h-5ZM5 14h5v3.4H5"/>
+        <path d="M16.5 12.4v7M13.6 16.4h5.8" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="cap">取词</div>
+  </div>
+  <div class="item">
+    <div class="box sunken">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">
+        <path d="M2.4 12S6 6.2 12 6.2 21.6 12 21.6 12 18 17.8 12 17.8 2.4 12 2.4 12Z"/>
+        <circle cx="12" cy="12" r="2.8"/>
+      </svg>
+    </div>
+    <div class="cap">看屏幕</div>
+  </div>
+  <div class="item">
+    <div class="box sunken">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="2.6" y="2.6" width="18.8" height="18.8" rx="4.4"/>
+        <path d="M9 9h6v6H9Z"/>
+        <path d="M12 2.6v6.4M12 15v6.4M2.6 12h6.4M15 12h6.4" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="cap">命令</div>
+  </div>
+  <div class="item">
+    <div class="box sunken">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5F5E5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M15.4 3.6 20.4 8.6 17.9 11.1 16.6 10.6 12.9 14.3v3.1l-2.3 2.3-3.3-3.3-2.3 2.3-1.6-1.6 2.3-2.3-3.3-3.3 2.3-2.3h3.1l3.7-3.7-.5-1.3Z"/>
+      </svg>
+    </div>
+    <div class="cap">固定</div>
+  </div>
+</div>
+
+<h2>五、自检清单（改完逐条过）</h2>
+<div class="spec">
+  1. 面板底是<b>白色 #FFFFFF</b>，所有图标线色必须是深色（紫 #3C3489 / 灰 #5F5E5A / 红 #D8443F）<br>
+  2. 急停是<b>红圈 + 斜线</b>，不是横置胶囊、不是八角警示框<br>
+  3. 设置是<b>同心圆双环 + 八条放射线</b>，颜色<b>深灰 #5F5E5A</b>，不是齿轮、不带红色徽标<br>
+  4. 录制是<b>红色实心三角</b>（fill，无 stroke、无外框），高度必须 <b>17.2</b>（M5.4 3.4 → 19.4 → 5.4 20.6），不能缩回旧值<br>
+  5. 顶栏描边保持 <b>2.3</b>，不要降到 1.9<br>
+  6. 图标尺寸 <b>18px</b>，容器 <b>29px</b><br>
+  7. 圆角统一：容器 7px、Logo 6px<br>
+  8. 红色只出现在<b>录制三角</b>和<b>急停圈线</b>两处<br>
+  9. 固定是<b>图钉</b>（斜 45° 钉身），不是心形、不是图钉加号<br>
+  10. 固定动效是<b>针端向外位移</b>，不是整体缩放、不是旋转<br>
+  11. 录制动效的圆环是<b>顺时针</b>（rotate 正方向），且必须<b>淡出</b>不能硬切<br>
+  12. 所有动效只允许动 <b>transform / opacity</b>，必须带 <b>prefers-reduced-motion</b> 降级<br>
+  13. 检查对比度：任何线色对白底必须 <b>≥ 3 : 1</b>，#CECBF6 类浅色一律不可用
+</div>
+
+</body>
+</html>
