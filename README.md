@@ -34,16 +34,19 @@
 ### 方式一：下载便携版（推荐）
 
 到 [Releases](https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases) 下载
-`ORB控制台-<版本>-便携版.exe`，双击即可。
+`ORB-Console-<版本>-portable.exe`，双击即可。
 
 它是**自解压单文件**：运行后把自己展开到 `%LOCALAPPDATA%\ORBConsole` 并启动，
 不需要安装、不写注册表、不需要预装 Node 或 Python（运行时随包自带）。
 
 - 数据目录：`%APPDATA%\ORB 控制台`
 - 首次运行如遇 SmartScreen 提示，选「更多信息 → 仍要运行」（未购买代码签名证书）
-- 卸载：运行同目录下的 `卸载 ORB 控制台.cmd`，会把上面两个目录和临时文件一并清掉
+- 卸载：运行同目录下的 `uninstall-ORB-Console.cmd`，会把上面两个目录和临时文件一并清掉
 
-也可以下载 `ORB控制台-<版本>-便携目录.zip`，解压后直接运行里面的启动脚本。
+也可以下载 `ORB-Console-<版本>-portable.zip`，解压后直接运行里面的启动脚本。
+
+> 发布资产的文件名由 GitHub 强制转为 ASCII，所以下载下来的名字是英文的；
+> 中文名称显示在每个资产右侧的说明文字里。
 
 ### 方式二：从源码运行
 
