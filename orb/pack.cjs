@@ -35,6 +35,10 @@ const ZIP_NAME = `${OUT_NAME}.zip`;
 const APP_FILES = [
   'main.js', 'preload.js', 'panel.html', 'ball.html', 'border.html',
   'subtitle.html', 'toolbar.html', 'voice.js',
+  /* 录屏链路（2026-10-21 新增）：storage.js / mp4finalize.js 被 main.js 引用，
+     recbar.html + recbar-preload.js 是悬浮控制条（main.js 用 __dirname 定位）。
+     漏一个 = 发布版录屏/存储/悬浮条静默失效，而开发态完全正常、测不出来。 */
+  'storage.js', 'mp4finalize.js', 'recbar.html', 'recbar-preload.js',
   'icon.png', 'icon.ico', 'icon-64.png', 'selection-watch.ps1', 'package.json',
 ];
 /* 随包附带的配置文件（都放在包根，桥的 DATA_DIR 在开发态就是项目根，行为一致）：
