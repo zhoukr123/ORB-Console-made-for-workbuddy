@@ -652,7 +652,10 @@
   html.no-motion .hist-hd,
   html.no-motion .pedit,
   html.no-motion .front-state,
-  html.no-motion .slot-actions .login-row { animation: none !important; }
+  html.no-motion .slot-actions .login-row,
+  html.no-motion .pinned.cap,
+  html.no-motion .pinned.cap-on .capdot,
+  html.no-motion .pinned.cap-on.cap-paused .capdot { animation: none !important; }
   html.no-motion .setnav-i:hover,
   html.no-motion .themecard:hover,
   html.no-motion .sheet .row2 button:hover,
@@ -702,6 +705,43 @@
     display: block;
   }
   .themecard .swatch.s3 i { box-shadow: inset 0 1px 0 rgba(255,255,255,.9); }
+
+  /* 存储页：路径与统计只使用三套主题共有的中性色 / accent 令牌。 */
+  .storage-root {
+    padding: 8px 9px; margin-bottom: 8px; border: 1px solid var(--border);
+    border-radius: var(--r-sm); background: var(--bg-sunken); color: var(--fg);
+    font-family: ui-monospace, Consolas, monospace; font-size:calc(10.5px * var(--fs-scale));
+    line-height: 1.55; word-break: break-all;
+  }
+  .storage-grid { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .storage-item {
+    display: grid; grid-template-columns: 18px minmax(0,1fr) auto; gap: 7px; align-items: center;
+    padding: 7px 8px; border: 1px solid var(--border); border-radius: var(--r-sm);
+    background: var(--bg-soft); color: var(--fg-soft);
+  }
+  .storage-item svg { width: 16px; height: 16px; color: var(--accent); }
+  /* 子目录行可点：打开该目录（主进程 storage-open 只认子目录类型，
+     根目录没有对应通道，所以根目录那行的「打开」落在录屏上） */
+  .storage-item { cursor: pointer; transition: border-color .14s var(--ease), background .14s var(--ease); }
+  .storage-item:hover { border-color: var(--accent); background: var(--bg-sunken); color: var(--fg); }
+  .storage-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .storage-item .storage-name { min-width: 0; }
+  .storage-item .storage-name b { display: block; color: var(--fg); font-size:calc(11.5px * var(--fs-scale)); }
+  .storage-item .storage-path {
+    display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--fg-muted); font-size:calc(10px * var(--fs-scale));
+  }
+  .storage-count { white-space: nowrap; color: var(--accent-fg); font-size:calc(10.5px * var(--fs-scale)); }
+  .storage-space { color: var(--fg-muted); font-size:calc(11px * var(--fs-scale)); margin: 7px 1px 0; }
+  .storage-move {
+    margin-top: 8px; padding: 8px 9px; border: 1px solid var(--accent);
+    border-radius: var(--r-sm); background: var(--accent-soft); color: var(--fg-soft);
+    font-size:calc(11px * var(--fs-scale)); line-height: 1.55;
+  }
+  .storage-move[hidden] { display: none; }
+  .storage-move b { color: var(--accent-fg); }
+  .storage-move .row2 { margin-top: 7px; }
+  .storage-actions { justify-content: flex-start !important; flex-wrap: wrap; }
 
   /* ===== 路由四枚的 hover 动效 =====
      和顶栏同一套语言：只动图形内部，按钮尺寸位置不变。 */
@@ -1209,6 +1249,22 @@
     display: flex; flex-direction: column; gap: 6px;
   }
   .tools-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  /* 常驻行：第 4 个键（录屏）进来后必须仍是一行。
+     实测：baseline 需 399.5px > 可用 373px 会换行；收紧 + nowrap 后
+     字号 1.0/1.1/1.2 三档均 scroll === client（不换行、不溢出）。 */
+  .tools-row.pinnedrow { flex-wrap: nowrap; gap: 4px; }
+  .tools-row.pinnedrow .pinned {
+    flex: 0 1 auto; min-width: 0;
+    gap: 4px; padding: 0 7px 0 6px;
+  }
+  .tools-row.pinnedrow .pinned svg { width: 15px; height: 15px; }
+  .tools-row.pinnedrow .pinned span {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tools-row.pinnedrow .more-btn { flex: 0 0 auto; padding: 0 8px; }
+  .tools-row.pinnedrow .more-btn b { display: none; }
+  .tools-row.pinnedrow.tight { gap: 3px; }
+  .tools-row.pinnedrow.tight .pinned { padding: 0 5px; }
   /* 常驻键：图标 + 悬停才出现的文字。比纯图标好认，比常显文字省地方。
      用 grid 叠同一格：「图标」与「文字」互相淡入淡出，宽度由文字撑开。 */
   .pinned {
@@ -1230,6 +1286,19 @@
   /* 急停常驻且永不变紫 —— 它是刹车，不是普通工具。红色只做强调，不做动效。 */
   .pinned.danger { color: #D8443F; border-color: #f0c9c7; background: #fdf4f3; }
   .pinned.danger:hover { color: #fff; background: #D8443F; border-color: #D8443F; }
+  /* 录屏键：准备/录制/收尾阶段反色，圆点仅在录制中呼吸。 */
+  .pinned.cap-on { color: #fff; background: #D8443F; border-color: #D8443F; }
+  .pinned.cap-on:hover { color: #fff; background: #D8443F; border-color: #D8443F; }
+  .pinned.cap-on .capdot { animation: cappulse 1.2s var(--ease) infinite; transform-origin: 12px 12px; }
+  @keyframes cappulse { 0%,100% { opacity: 1; transform: scale(1) } 50% { opacity: .35; transform: scale(.82) } }
+  .pinned.cap { animation: capin var(--dur-2) var(--ease) backwards; }
+  @keyframes capin { from { opacity: 0; transform: translateY(-3px) scale(.96) } to { opacity: 1; transform: none } }
+  /* 录屏键暂停态：白底 + 主题色描边（与 hover 同一套颜色语言），
+     圆点停呼吸并退到半透明 —— 只切 class，不抹 SVG、不换图形。 */
+  .pinned.cap-on.cap-paused { color: var(--accent-fg); background: #fff; border-color: var(--accent); }
+  .pinned.cap-on.cap-paused:hover { color: var(--accent-fg); background: #fff; border-color: var(--accent); }
+  .pinned.cap-on.cap-paused .capdot { animation: none; opacity: .45; }
+  @media (prefers-reduced-motion: reduce) { .pinned.cap-on .capdot, .pinned.cap, .pinned.cap-on.cap-paused .capdot { animation: none } }
 
   /* 「更多」入口：与常驻键同高，视觉上轻一档，暗示"还有东西在后面" */
   .more-btn {
@@ -2040,8 +2109,8 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
          图标统一 24×24 网格 / currentColor，和工具区同一套规范。 -->
     <!-- 时钟：外圈 + 指针。指针单独成 path，hover 时它自己转一圈 -->
     <button class="iconbtn ico hist" id="hist" title="会话历史" aria-label="会话历史"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path class="hand" d="M12 7.2V12l3.4 2"/></svg></button>
-    <!-- 录制：红色实心箭头（三角） -->
-    <button class="iconbtn ico rec" id="rec" title="录制工作流：录一遍操作，以后一键重放" aria-label="录制工作流"><svg viewBox="0 0 24 24" fill="none" stroke="none"><path class="arrow" d="M9 6.2 18.4 12 9 17.8Z" fill="currentColor"/></svg></button>
+    <!-- 录操作：工作流录制，红色实心箭头（三角）；与工具栏「录屏」区分 -->
+    <button class="iconbtn ico rec" id="rec" title="录操作：录一遍操作，以后一键重放" aria-label="录操作"><svg viewBox="0 0 24 24" fill="none" stroke="none"><path class="arrow" d="M9 6.2 18.4 12 9 17.8Z" fill="currentColor"/></svg></button>
     <!-- 急停：红圈 + 斜杠。斜杠单独成 path，hover 时顺时针转 90° -->
     <button class="iconbtn ico danger stop" id="stopBtn" title="急停：立即停止所有自动化（不是停录制）｜热键 Ctrl+Alt+Backspace｜急停用于中断当前前台执行与录制，不影响已派发的后台任务" aria-label="急停，立即停止所有自动化；用于中断当前前台执行与录制，不影响已派发的后台任务"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="8.6"/><path class="slash" d="M6.1 6.1 17.9 17.9"/></svg></button>
     <!-- 设置：同心圆 + 放射线（齿）。同心圆不动，齿转 90° -->
@@ -2119,6 +2188,7 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
       <button class="setnav-i" data-pane="voice" title="语音" aria-label="语音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2.6" width="6" height="11" rx="3"/><path d="M5.4 11.4a6.6 6.6 0 0 0 13.2 0M12 18v3.4M8.6 21.4h6.8"/></svg></button>
       <button class="setnav-i" data-pane="safe" title="安全" aria-label="安全"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8 20 6v6c0 4.6-3.2 8-8 9.2-4.8-1.2-8-4.6-8-9.2V6Z"/><path d="M9 12l2.2 2.2L15.4 10"/></svg></button>
       <button class="setnav-i" data-pane="chan" title="通道" aria-label="通道"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 9.4h12l-3-3M19.4 14.6h-12l3 3"/></svg></button>
+      <button class="setnav-i" data-pane="storage" title="存储" aria-label="存储"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.4 6.4A1.8 1.8 0 0 1 5.2 4.6h3.6l2 2.4h8a1.8 1.8 0 0 1 1.8 1.8v8.8a1.8 1.8 0 0 1-1.8 1.8H5.2a1.8 1.8 0 0 1-1.8-1.8Z"/><path d="M3.4 10h17.2"/></svg></button>
       <button class="setnav-i" data-pane="about" title="关于" aria-label="关于"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path d="M12 11v5.4"/><circle cx="12" cy="7.8" r="1.1" fill="currentColor" stroke="none"/></svg></button>
     </nav>
     <div class="setpanes">
@@ -2288,6 +2358,42 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
              （CSP 是 default-src 'self'，不在此处放可点击外链）。 -->
         <div class="slotmsg" id="wb-climsg"></div>
       </div>
+      </div>
+
+      <div class="setpane" data-pane="storage">
+        <div class="slotbox">
+          <div class="slothead">长期文件存储 <span class="hint">录屏、历史与截屏统一放在这里</span></div>
+          <div class="slotnote">切换位置后会在新根目录下创建三个分类目录。<b>旧文件不会自动搬移</b>，由你明确选择。</div>
+          <div class="field"><label>当前根目录</label><div class="storage-root" id="storageRoot">读取中…</div></div>
+          <div class="storage-grid">
+            <div class="storage-item" data-storage-kind="recordings" role="button" tabindex="0" title="打开录屏目录">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.2" width="18" height="15.6" rx="2.4"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/></svg>
+              <span class="storage-name"><b>录屏</b><span class="storage-path" id="storagePathRecordings">recordings</span></span><span class="storage-count" id="storageCountRecordings">—</span>
+            </div>
+            <div class="storage-item" data-storage-kind="history" role="button" tabindex="0" title="打开历史目录">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.2V12l3.4 2"/></svg>
+              <span class="storage-name"><b>历史</b><span class="storage-path" id="storagePathHistory">history</span></span><span class="storage-count" id="storageCountHistory">—</span>
+            </div>
+            <div class="storage-item" data-storage-kind="screenshots" role="button" tabindex="0" title="打开截屏目录">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.6" y="6" width="18.8" height="13.4" rx="2.6"/><circle cx="12" cy="12.6" r="3.4"/><path d="M8.4 6 9.6 3.6h4.8L15.6 6"/></svg>
+              <span class="storage-name"><b>截屏</b><span class="storage-path" id="storagePathScreenshots">screenshots</span></span><span class="storage-count" id="storageCountScreenshots">—</span>
+            </div>
+          </div>
+          <div class="storage-space" id="storageSpace">可用空间：读取中…</div>
+          <div class="row2 slot-actions storage-actions">
+            <button class="pri" id="storageChange">更改</button>
+            <button id="storageOpen" title="打开录屏目录（录屏文件都在这里）">打开</button>
+            <button id="storageReset">恢复默认</button>
+          </div>
+          <div class="slotmsg" id="storageMsg"></div>
+          <div class="storage-move" id="storageMove" hidden>
+            <b>存储位置已切换。</b><span id="storageMoveText"></span>
+            <div class="row2">
+              <button class="pri" id="storageMigrate">搬过来</button>
+              <button id="storageLeave">留在原地</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="setpane" data-pane="about">
@@ -3719,6 +3825,7 @@ function autoRoute(text) {
 
 /* ---------- 工具面板 ---------- */
 const TOOLS = [
+  { id: 'RecordCap', label: '录屏' },
   { id: 'Screenshot', label: '截图' },
   { id: 'Snapshot', label: '看屏幕' },
   { id: 'OCR', label: '取词' },
@@ -3762,17 +3869,15 @@ const TOOLS = [
  *   · /api/call 能调全部 30 项，但需要 X-Orb-Token（存在 .bridge.json）
  *   · 后台通道 /api/dispatch 实测可用（返回「你好」），不依赖未登录的 CLI
  *
- * 现常驻 3 个：
- *   看屏幕 / 实时字幕 / 鼠标位置
+ * 现常驻 4 个：
+ *   看屏幕 / 实时字幕 / 鼠标位置 / 录屏
  *
- * 另有两个常驻界面键（不在 TOOLS 表里，走 runToolInner 专用分支）：
+ * 另有一个关键界面键（不在 TOOLS 常驻分级里，走顶栏专用分支）：
  *   急停 —— 唯一能停下自动化的东西，必须伸手就有
  *
- * 已移出常驻：
- *   截图 —— agent 能调，/api/call 也通，且「看屏幕」通常是更常用的那个
- *   录制 —— 顶栏那枚「录制」仍在，功能没丢，避免两处重复
+ * 注意：顶栏「录操作」是工作流录制；工具栏「录屏」是视频录屏，两者互不影响。
  *
- * 其余 27 项收进「更多」浮层（不是删除，只是不进常驻行）；
+ * 其余工具收进「更多」浮层（不是删除，只是不进常驻行）；
  * 按「你想做什么」分四段铺开，悬浮即知功能，不用再点第二层。
  * --------------------------------------------------------------- */
 const TIER_PINNED = ['Snapshot', 'RTSUB', 'CursorPos'];
@@ -3821,8 +3926,9 @@ const TOOL_ICONS = {
   Move:              ICO('<path d="M12 2.6v18.8M2.6 12h18.8"/><path d="M9 5.6 12 2.6l3 3M9 18.4 12 21.4l3-3M5.6 9 2.6 12l3 3M18.4 9l3 3-3 3"/>'),
   Wait:              ICO('<circle cx="12" cy="13.2" r="7.6"/><path d="M12 9.4v3.8l2.6 1.6"/><path d="M9.4 2.6h5.2M12 2.6v3"/>'),
   WaitFor:           ICO('<circle cx="12" cy="12" r="8.4"/><path d="M12 6.6v5.4l3.4 2.2"/><path d="M19.4 19.4 22 22" stroke-width="2.4"/>'),
-  /* 录制：实心圆点（录制的通用符号）。用 fill 而非 stroke —— 实心点比空心圈更像"在录" */
+  /* 录操作：工作流录制的实心圆点；录屏复用同一图形，但给内点 capdot 状态类。 */
   Record:            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><circle cx="12" cy="12" r="3.6" fill="currentColor" stroke="none"/></svg>',
+  RecordCap:         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><circle class="capdot" cx="12" cy="12" r="3.6" fill="currentColor" stroke="none"/></svg>',
   /* 急停：红色圆 + 斜杠（禁止符号）。这是国际通用的"紧急停止"表达，
      比文字"急停"快一个数量级的识别速度 —— 紧急时这很关键。 */
   Panic:             '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="8.6"/><path d="M6.1 6.1 17.9 17.9"/></svg>',
@@ -3850,23 +3956,24 @@ function buildTools() {
 
   /* ---------- 第一行：常驻键 ---------- */
   const row = document.createElement('div');
-  row.className = 'tools-row';
+  row.className = 'tools-row pinnedrow';
 
-  /* 录制键已移除（顶栏那枚仍在，功能没丢）。setRecUi 里对 #toolRec 的查询
-     带 null 保护，所以这里不建它也不会报错 —— 保留那段代码是为了
-     将来若要放回来，改一行 pinnedOrder 即可。 */
+  /* 工作流「录操作」键仍只在顶栏；工具栏新增的是视频录屏 RecordCap。
+     两者必须分开：setRecUi 仍可安全查询历史遗留的 #toolRec 空节点，
+     视频录屏键固定使用 #toolCap，避免被工作流状态改文案。 */
 
   /* 急停常驻键已按用户要求从工具区移除 —— 理由：工具行是被高频点击的地方，
      把「停止一切自动化」这种破坏性动作放在那里，误触代价过高。
      急停功能没丢：顶栏 #stopBtn 图标 + 热键 Ctrl+Alt+Backspace + 命令面板首条仍在。
      renderStop 里对 #toolStop 的查询带 null 保护，所以这里不建它也不会报错 ——
      保留那段代码是为了将来若要把急停放回工具行，改一行 pinnedOrder 即可。 */
-  const pinnedOrder = [...TIER_PINNED];
+  const pinnedOrder = [...TIER_PINNED, 'RecordCap'];
   for (const id of pinnedOrder) {
     const t = TOOLS.find((x) => x.id === id);
     if (!t) continue;
     const b = document.createElement('button');
-    b.className = 'pinned';
+    b.className = 'pinned' + (id === 'RecordCap' ? ' cap' : '');
+    if (id === 'RecordCap') b.id = 'toolCap';
     b.title = t.label;
     b.innerHTML = (TOOL_ICONS[id] || ICO_FALLBACK) + '<span>' + esc(t.label) + '</span>';
     b.addEventListener('click', () => runTool(id));
@@ -3916,6 +4023,10 @@ function buildTools() {
     }
   }
   toolsBox.appendChild(panel);
+
+  captureController.render();
+  /* 未来再加常驻键或系统字体异常偏宽时，再收紧一档；更多键始终不收缩。 */
+  if (row.scrollWidth > row.clientWidth + 1) row.classList.add('tight');
 }
 
 
@@ -4050,6 +4161,621 @@ async function withHold(fn) {
 function holdSheet() { holdPanel(); }
 function releaseSheet() { releasePanel(); }
 
+/* ---------- 整屏录制 ---------- */
+const CAPTURE_PROFILES = [
+  { mimeType: 'video/mp4;codecs="avc1.42E01E"', extension: 'mp4', label: 'H.264 Baseline' },
+  { mimeType: 'video/mp4;codecs="avc1.4D401F"', extension: 'mp4', label: 'H.264 Main' },
+  { mimeType: 'video/mp4;codecs="avc1.640028"', extension: 'mp4', label: 'H.264 High' },
+  { mimeType: 'video/webm;codecs="vp9"', extension: 'webm', label: 'WebM VP9' },
+];
+const CAPTURE_VIDEO_BITS_PER_SECOND = 4000000;
+
+function formatDuration(ms) {
+  const total = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return String(minutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0');
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return '—';
+  if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+  if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return Math.round(n) + ' B';
+}
+
+/**
+ * 管理整屏录制的完整生命周期：探测编码器、采集、流式回传、收尾与 UI 状态。
+ * MP4 候选全部显式指定 H.264 codec；WebM 只作为诚实标注扩展名的最终兜底。
+ */
+class CaptureController {
+  constructor() {
+    this.phase = 'idle';
+    this.sourceId = '';
+    this.mimeType = '';
+    this.extension = '';
+    this.startedAt = 0;
+    this.bytes = 0;
+    this.stream = null;
+    this.recorder = null;
+    this.sessionId = '';
+    this.timer = null;
+    this.hideTimer = null;
+    this.chunkChain = Promise.resolve();
+    this.attemptToken = 0;
+    this.ownsHold = false;
+    this.runtimeFailing = false;
+    this.panelHiddenByCapture = false;
+    /* 暂停态：paused 时 MediaRecorder 停在 paused，pausedAt 记录暂停发生时刻，
+       继续时把暂停耗掉的墙上时间从 startedAt 里扣掉，保证计时是真实录制时长。 */
+    this.paused = false;
+    this.pausedAt = 0;
+    /* aborting：取消流程有多个 await 停顿，防止悬浮条上的「取消」被连点两次
+       把 capAbort / 提示 / 退场事件跑两遍。 */
+    this.aborting = false;
+  }
+
+  /** 在空闲态开始录制，在录制态停止并保存。 */
+  async toggle() {
+    if (this.phase === 'recording') {
+      await this.stop();
+      return;
+    }
+    if (this.phase === 'preparing' || this.phase === 'finalizing') return;
+    await this.start();
+  }
+
+  /** 探测可用编码器并开始 1080p / 30fps / 4Mbps 的整屏无声录制。 */
+  async start() {
+    if (this.phase === 'preparing' || this.phase === 'recording' || this.phase === 'finalizing') return;
+    this.phase = 'preparing';
+    this.runtimeFailing = false;
+    this.lockPanel();
+    this.render();
+
+    try {
+      const profiles = CAPTURE_PROFILES.filter((profile) => {
+        try { return !!window.MediaRecorder && MediaRecorder.isTypeSupported(profile.mimeType); }
+        catch { return false; }
+      });
+      if (!profiles.length) throw new Error('当前 Chromium 没有可用的视频编码器');
+
+      const rawSources = await window.orb.capSources();
+      const sources = Array.isArray(rawSources) ? rawSources : (rawSources && rawSources.sources) || [];
+      const source = sources.find((item) => item && item.id === 'screen:0:0')
+        || sources.find((item) => item && String(item.id || '').startsWith('screen:'));
+      if (!source || !source.id) throw new Error('没有找到可录制的整屏来源');
+      this.sourceId = source.id;
+      this.stream = await this.openDesktopStream(source.id);
+      this.watchStreamEnd();
+
+      const failures = [];
+      for (const profile of profiles) {
+        try {
+          if (!this.stream || !this.stream.active) {
+            this.stream = await this.openDesktopStream(source.id);
+            this.watchStreamEnd();
+          }
+          await this.startProfile(profile);
+          this.phase = 'recording';
+          this.render();
+          /* 悬浮控制条登场：只在录制真正站稳（首分片已验证）后广播 start，
+             失败回滚路径走下面的 catch，不会误发。 */
+          this.recBarEvent('start');
+          this.startTimer();
+          addMsg('Orb', profile.extension === 'mp4'
+            ? '录屏已开始：1080p / 30fps / 4Mbps / 无音频。面板将暂时隐藏；录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点悬浮球也能唤回面板。'
+            : '本机 H.264 编码器不可用，已降级为 WebM（VP9）。面板将暂时隐藏；录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点悬浮球也能唤回面板。', 'sys');
+          this.hideTimer = setTimeout(() => {
+            this.hideTimer = null;
+            if (this.phase !== 'recording') return;
+            this.panelHiddenByCapture = true;
+            window.orb.closePanel();
+          }, 240);
+          return;
+        } catch (error) {
+          failures.push(profile.label + '：' + String((error && error.message) || error));
+          await this.cleanupAttempt();
+        }
+      }
+      throw new Error('所有编码方案都启动失败。' + failures.join(' ｜ '));
+    } catch (error) {
+      this.stopTracks();
+      this.phase = 'error';
+      this.render();
+      this.unlockPanel();
+      addMsg('Orb', '录屏启动失败：' + esc(String((error && error.message) || error)), 'err');
+      this.phase = 'idle';
+      this.render();
+    }
+  }
+
+  /** 通过 Electron desktopCapturer 返回的 sourceId 取得整屏视频流。 */
+  async openDesktopStream(sourceId) {
+    return navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          chromeMediaSourceId: sourceId,
+          maxWidth: 1920,
+          maxHeight: 1080,
+          minFrameRate: 30,
+          maxFrameRate: 30,
+        },
+      },
+    });
+  }
+
+  /**
+   * 尝试一个 MIME 档位；只有首个非空分片成功写入主进程才算启动成功。
+   * 这能捕获 isTypeSupported 假阳性导致的 EncodingError，并继续尝试下一档。
+   */
+  async startProfile(profile) {
+    const token = ++this.attemptToken;
+    this.mimeType = profile.mimeType;
+    this.extension = profile.extension;
+    this.bytes = 0;
+    this.chunkChain = Promise.resolve();
+
+    const opened = await window.orb.capOpen({
+      kind: 'recordings',
+      extension: profile.extension,
+      ext: profile.extension,
+      mime: profile.mimeType,
+      mimeType: profile.mimeType,
+      sourceId: this.sourceId,
+      width: 1920,
+      height: 1080,
+      frameRate: 30,
+      videoBitsPerSecond: CAPTURE_VIDEO_BITS_PER_SECOND,
+      startedAt: Date.now(),
+    });
+    if (opened && opened.ok === false) throw new Error(opened.error || '主进程未能创建录屏文件');
+    this.sessionId = typeof opened === 'string'
+      ? opened : String((opened && (opened.sessionId || opened.id)) || '');
+    if (!this.sessionId) throw new Error('主进程没有返回录屏会话 ID');
+
+    let recorder;
+    try {
+      recorder = new MediaRecorder(this.stream, {
+        mimeType: profile.mimeType,
+        videoBitsPerSecond: CAPTURE_VIDEO_BITS_PER_SECOND,
+      });
+    } catch (error) {
+      throw new Error('创建 ' + profile.label + ' 编码器失败：' + String((error && error.message) || error));
+    }
+    this.recorder = recorder;
+
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        fn(value);
+      };
+      const timeout = setTimeout(() => {
+        finish(reject, new Error(profile.label + ' 在 2.8 秒内没有产出视频分片'));
+      }, 2800);
+
+      recorder.ondataavailable = (event) => {
+        if (token !== this.attemptToken || !event.data || event.data.size === 0) return;
+        const pending = this.queueChunk(event.data, token);
+        if (!settled) pending.then(() => finish(resolve)).catch((error) => finish(reject, error));
+        else pending.catch((error) => this.onRuntimeError(error));
+      };
+      recorder.onerror = (event) => {
+        const mediaError = event && event.error;
+        const message = mediaError
+          ? ((mediaError.name ? mediaError.name + ': ' : '') + (mediaError.message || '编码失败'))
+          : 'MediaRecorder 编码失败';
+        const error = new Error(message);
+        if (!settled) finish(reject, error);
+        else this.onRuntimeError(error);
+      };
+
+      try {
+        this.startedAt = Date.now();
+        recorder.start(1000);
+      }
+      catch (error) { finish(reject, error); }
+    });
+  }
+
+  /** 将 Blob 严格按事件顺序转成 ArrayBuffer 并流式追加到主进程临时文件。 */
+  queueChunk(blob, token) {
+    this.chunkChain = this.chunkChain.then(async () => {
+      if (token !== this.attemptToken) return;
+      const buffer = await blob.arrayBuffer();
+      if (token !== this.attemptToken || buffer.byteLength === 0) return;
+      const result = await window.orb.capChunk(this.sessionId, buffer);
+      if (result === false || (result && result.ok === false)) {
+        throw new Error((result && result.error) || '录屏分片写入失败');
+      }
+      this.bytes += buffer.byteLength;
+    });
+    return this.chunkChain;
+  }
+
+  /** 停止录制，等待最后分片落盘，再让主进程原子收尾。 */
+  async stop() {
+    if (this.phase !== 'recording') return;
+    this.phase = 'finalizing';
+    this.render();
+    this.stopTimer();
+    if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+    this.restorePanel();
+
+    const recorder = this.recorder;
+    const sessionId = this.sessionId;
+    /* 真实录制时长 = 墙上时间扣掉暂停区间。暂停中停止时，暂停那段还没折回
+       startedAt，直接用 now - startedAt 会把暂停时间算进成片里 —— 那不是伪造，
+       是不准。主进程 cap-close 优先用这里传过去的 ms 补 mvhd.duration。 */
+    const now = Date.now();
+    const durationMs = this.paused && this.pausedAt
+      ? Math.max(0, this.pausedAt - this.startedAt)
+      : Math.max(0, now - this.startedAt);
+    try {
+      if (recorder && recorder.state !== 'inactive') {
+        await new Promise((resolve, reject) => {
+          const previousError = recorder.onerror;
+          recorder.onstop = () => resolve();
+          recorder.onerror = (event) => {
+            if (typeof previousError === 'function') previousError.call(recorder, event);
+            const error = event && event.error;
+            reject(new Error(error ? (error.name + ': ' + error.message) : '停止编码失败'));
+          };
+          try { recorder.stop(); } catch (error) { reject(error); }
+        });
+      }
+      await this.chunkChain;
+      const saved = await window.orb.capClose(sessionId, { ms: durationMs });
+      if (saved === false || (saved && saved.ok === false)) {
+        throw new Error((saved && saved.error) || '主进程收尾失败');
+      }
+      const result = saved || {};
+      const bytes = Number(result.bytes != null ? result.bytes : this.bytes);
+      const path = String(result.path || result.filePath || '');
+      const wasWebm = this.extension === 'webm';
+
+      this.stopTracks();
+      this.sessionId = '';
+      this.recorder = null;
+      this.paused = false;
+      this.pausedAt = 0;
+      this.phase = 'saved';
+      this.render();
+      this.unlockPanel();
+      this.recBarEvent('stop');
+      this.showSaved(result, path, bytes, durationMs, wasWebm);
+      this.phase = 'idle';
+      this.render();
+    } catch (error) {
+      try { if (sessionId) await window.orb.capAbort(sessionId); } catch {}
+      this.stopTracks();
+      this.sessionId = '';
+      this.recorder = null;
+      this.paused = false;
+      this.pausedAt = 0;
+      this.phase = 'error';
+      this.render();
+      this.unlockPanel();
+      this.recBarEvent('stop');
+      addMsg('Orb', '录屏保存失败：' + esc(String((error && error.message) || error)), 'err');
+      this.phase = 'idle';
+      this.render();
+    }
+  }
+
+  /** 暂停录制（悬浮控制条「暂停」）：MediaRecorder 进 paused，计时与呼吸动效同步停摆。 */
+  pause() {
+    if (this.phase !== 'recording' || this.paused) return;
+    if (!this.recorder || this.recorder.state !== 'recording') {
+      /* 编码器已经不在录了（视频源结束等）：暂停没有意义，
+         直接按异常收尾，别把 UI 骗成"已暂停"。 */
+      this.onRuntimeError(new Error('录屏已停止，无法暂停'));
+      return;
+    }
+    try {
+      this.recorder.pause();
+    } catch (error) {
+      addMsg('Orb', '暂停录屏失败：' + esc(String((error && error.message) || error)), 'err');
+      return;
+    }
+    this.paused = true;
+    this.pausedAt = Date.now();
+    this.render();
+    this.recBarEvent('pause');   // 控制条靠事件切「继续」图标并停表
+  }
+
+  /** 继续录制（悬浮控制条「继续」）：把暂停耗掉的墙上时间从 startedAt 里扣掉。 */
+  resume() {
+    if (this.phase !== 'recording' || !this.paused) return;
+    if (!this.recorder || this.recorder.state === 'inactive') {
+      this.onRuntimeError(new Error('录屏已停止，无法继续'));
+      return;
+    }
+    try {
+      if (this.recorder.state === 'paused') this.recorder.resume();
+    } catch (error) {
+      addMsg('Orb', '继续录屏失败：' + esc(String((error && error.message) || error)), 'err');
+      return;
+    }
+    this.paused = false;
+    if (this.pausedAt) {
+      this.startedAt += Date.now() - this.pausedAt;
+      this.pausedAt = 0;
+    }
+    this.render();
+    this.recBarEvent('resume');   // 控制条靠事件切回「暂停」图标并续走
+  }
+
+  /**
+   * 取消本次录制（悬浮控制条「取消」，或零内容异常的兜底出口）。
+   * 独立实现，不借 stop() 的 catch：取消的语义是「什么都不留」，
+   * 而 stop 失败的语义是「想保存但没成」—— 给用户的交代不同，消息也不能混。
+   * 只在录制稳态（recording）接受；finalizing 阶段保存已进入主进程原子收尾，
+   * 此时取消会和 cap-close 抢同一个会话，直接忽略。
+   */
+  async abort(notice) {
+    if (this.phase !== 'recording' || this.aborting) return;
+    this.aborting = true;
+    try {
+      this.stopTimer();
+      if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+      const sessionId = this.sessionId;
+      ++this.attemptToken;   // 作废在途分片的写入资格
+      const recorder = this.recorder;
+      this.recorder = null;
+      if (recorder) {
+        recorder.ondataavailable = null;
+        recorder.onerror = null;
+        try {
+          if (recorder.state !== 'inactive') {
+            await new Promise((resolve) => {
+              let settled = false;
+              const done = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(guard);
+                resolve();
+              };
+              const guard = setTimeout(done, 1500);   // 个别实现 onstop 不触发，也不能卡死取消流程
+              recorder.onstop = done;
+              try { recorder.stop(); } catch { done(); }
+            });
+          }
+        } catch { /* 停不下来也继续清理：会话作废后，迟到的分片写了也没人要 */ }
+        recorder.onstop = null;
+      }
+      try { await this.chunkChain; } catch {}
+      try { if (sessionId) await window.orb.capAbort(sessionId); } catch {}
+      this.stopTracks();
+      this.sessionId = '';
+      this.paused = false;
+      this.pausedAt = 0;
+      this.phase = 'idle';
+      this.render();
+      this.unlockPanel();
+      this.restorePanel();
+      addMsg('Orb', (notice && notice.text) || '已取消本次录制，未保存文件。', (notice && notice.kind) || 'sys');
+      this.recBarEvent('stop');
+    } finally {
+      this.aborting = false;
+    }
+  }
+
+  /**
+   * 向悬浮录屏控制条广播生命周期事件（start / pause / resume / stop）。
+   * ⚠️ 三方契约定死是 { type } 对象（rec-cmd-to-bar → rec:event），不是裸字符串 ——
+   * 控制条侧严格以事件驱动 UI，本地不自作主张，所以暂停/继续也必须回播，
+   * 否则用户点了「暂停」，控制条的图标和计时器还停在录制态。
+   * 契约未就绪时静默跳过。
+   */
+  recBarEvent(type) {
+    try {
+      const orb = window.orb || {};
+      if (typeof orb.sendRecBarEvent === 'function') orb.sendRecBarEvent({ type: String(type || '') });
+    } catch { /* 悬浮条不在场不影响录制主流程 */ }
+  }
+
+  /** 悬浮控制条指令入口：pause / resume / finish / abort。 */
+  onRecCmd(cmd) {
+    const command = String(cmd || '');
+    if (command === 'pause') this.pause();
+    else if (command === 'resume') this.resume();
+    else if (command === 'finish') this.stop();
+    else if (command === 'abort') this.abort();
+  }
+
+  /** 桌面流被系统/用户结束（停止共享、拔显示器）时立刻按异常收尾，不等用户点停止。 */
+  watchStreamEnd() {
+    const stream = this.stream;
+    if (!stream || typeof stream.getTracks !== 'function') return;
+    for (const track of stream.getTracks()) {
+      if (!track || typeof track.addEventListener !== 'function') continue;
+      track.addEventListener('ended', () => {
+        if (this.phase === 'recording') {
+          this.onRuntimeError(new Error('屏幕共享已停止（视频源结束）'));
+        }
+      });
+    }
+  }
+
+  /** 清理一次未通过首分片验证的编码尝试，保留桌面流供下一档复用。 */
+  async cleanupAttempt() {
+    ++this.attemptToken;
+    const recorder = this.recorder;
+    const sessionId = this.sessionId;
+    this.recorder = null;
+    this.sessionId = '';
+    if (recorder) {
+      recorder.ondataavailable = null;
+      recorder.onerror = null;
+      recorder.onstop = null;
+      try { if (recorder.state !== 'inactive') recorder.stop(); } catch {}
+    }
+    try { await this.chunkChain; } catch {}
+    try { if (sessionId) await window.orb.capAbort(sessionId); } catch {}
+    this.chunkChain = Promise.resolve();
+  }
+
+  /** 录制已经进入稳定态后发生的写入/编码错误：有内容就尽力收尾，零内容就取消。 */
+  async onRuntimeError(error) {
+    if (this.phase !== 'recording' || this.runtimeFailing) return;
+    this.runtimeFailing = true;
+    this.stopTimer();
+    if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+    const message = String((error && error.message) || error);
+    try {
+      if (this.bytes > 0) {
+        /* 已经攒到过至少一个分片：走正常收尾链，能救多少救多少。
+           stop() 自己的成功/失败出口都会发 recBarEvent('stop')。 */
+        await this.stop();
+      } else {
+        /* 一个分片都没落盘：没有可救的内容，按取消处理
+           （abort() 的异常出口同样会发 recBarEvent('stop')）。 */
+        await this.abort({ text: '录屏中断且未产出任何内容，已清理：' + esc(message), kind: 'err' });
+      }
+    } catch (fallbackError) {
+      /* 兜底里的兜底：连收尾/取消都抛了，也只能把状态恢复成干净空场。 */
+      try { if (this.sessionId) await window.orb.capAbort(this.sessionId); } catch {}
+      this.stopTracks();
+      this.sessionId = '';
+      this.recorder = null;
+      this.paused = false;
+      this.pausedAt = 0;
+      this.phase = 'idle';
+      this.render();
+      this.unlockPanel();
+      this.recBarEvent('stop');
+      addMsg('Orb', '录屏中断，恢复失败：' + esc(String((fallbackError && fallbackError.message) || fallbackError)), 'err');
+    } finally {
+      this.runtimeFailing = false;
+    }
+  }
+
+  /** 在消息气泡中展示保存结果，并提供明确的打开文件夹动作。 */
+  showSaved(result, path, bytes, durationMs, wasWebm) {
+    const actualMs = Number(result.ms != null ? result.ms : (result.durationMs != null ? result.durationMs : durationMs));
+    const prefix = wasWebm ? '本机 H.264 编码器不可用，已诚实保存为 WebM。' : '已保存录屏。';
+    const details = (path ? '<br><span class="muted">' + esc(path) + '</span>' : '')
+      + '<br><span class="muted">' + esc(formatBytes(bytes)) + ' · ' + esc(formatDuration(actualMs)) + '</span>'
+      + '<br><button class="mbtn cap-open-folder" style="margin-top:7px">打开文件夹</button>';
+    const node = addMsg('Orb', prefix + details, 'sys');
+    const button = node && node.querySelector('.cap-open-folder');
+    if (button) button.addEventListener('click', async () => {
+      try { await window.orb.storageOpen('recordings'); }
+      catch (error) { addMsg('Orb', '打开录屏文件夹失败：' + esc(String((error && error.message) || error)), 'err'); }
+    });
+  }
+
+  /** 根据 phase 更新常驻键的高亮、计时、标题与可访问状态。 */
+  render() {
+    const button = document.getElementById('toolCap');
+    if (!button) return;
+    const active = this.phase === 'preparing' || this.phase === 'recording' || this.phase === 'finalizing';
+    button.classList.toggle('cap-on', active);
+    /* 暂停态只切 class 与文案，不抹 SVG —— 图形还是那个录屏圆点，
+       停呼吸 + 半透明 + 白底，就足以和"正在录"区分开。 */
+    const paused = this.phase === 'recording' && this.paused;
+    button.classList.toggle('cap-paused', paused);
+    button.disabled = this.phase === 'preparing' || this.phase === 'finalizing';
+    button.setAttribute('aria-pressed', this.phase === 'recording' ? 'true' : 'false');
+    const span = button.querySelector('span');
+    if (span) {
+      if (this.phase === 'preparing') span.textContent = '准备中';
+      else if (paused) span.textContent = '已暂停';
+      else if (this.phase === 'recording') span.textContent = formatDuration(Date.now() - this.startedAt);
+      else if (this.phase === 'finalizing') span.textContent = '保存中';
+      else span.textContent = '录屏';
+    }
+    button.title = paused
+      ? ('录屏已暂停（已录 ' + formatDuration(Math.max(0, this.pausedAt - this.startedAt)) + '）· 点此停止；继续请用悬浮控制条')
+      : (this.phase === 'recording'
+        ? ('停止录屏 · 已录 ' + formatDuration(Date.now() - this.startedAt))
+        : (this.phase === 'preparing' ? '正在准备整屏录制…' : (this.phase === 'finalizing' ? '正在保存录屏…' : '录屏：整屏 1080p / 30fps / 4Mbps / 无音频')));
+  }
+
+  /** 开始每秒刷新一次按钮上的录制时长。 */
+  startTimer() {
+    this.stopTimer();
+    this.timer = setInterval(() => this.render(), 1000);
+  }
+
+  /** 停止计时 UI。 */
+  stopTimer() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  /** 停掉所有桌面视频轨，释放 Chromium 桌面采集器。 */
+  stopTracks() {
+    if (this.stream) {
+      for (const track of this.stream.getTracks()) {
+        try { track.stop(); } catch {}
+      }
+    }
+    this.stream = null;
+  }
+
+  /** 录制全程额外持有一次面板锁，避免自动折叠逻辑误释放。 */
+  lockPanel() {
+    if (this.ownsHold) return;
+    this.ownsHold = true;
+    holdPanel();
+  }
+
+  /** 释放 CaptureController 自己持有的那一层面板锁。 */
+  unlockPanel() {
+    if (!this.ownsHold) return;
+    this.ownsHold = false;
+    releasePanel();
+  }
+
+  /** 停止/失败时恢复录屏开始时主动隐藏的面板。 */
+  restorePanel() {
+    if (!this.panelHiddenByCapture) return;
+    this.panelHiddenByCapture = false;
+    try { window.orb.openPanel(); } catch {}
+  }
+
+  /** 页面真正销毁时尽力中止临时文件，避免遗留 .part。 */
+  dispose() {
+    this.stopTimer();
+    if (this.hideTimer) clearTimeout(this.hideTimer);
+    ++this.attemptToken;
+    try {
+      if (this.recorder && this.recorder.state !== 'inactive') this.recorder.stop();
+    } catch {}
+    this.stopTracks();
+    if (this.sessionId) {
+      try { window.orb.capAbort(this.sessionId); } catch {}
+    }
+    /* 面板渲染进程重载（triggerReload）时录制已经不存在了，
+       悬浮控制条若还挂着就是"骗人"——必须让它退场。 */
+    this.recBarEvent('stop');
+  }
+}
+
+const captureController = new CaptureController();
+window.addEventListener('beforeunload', () => captureController.dispose());
+
+/* ---------- 悬浮录屏控制条：指令通道 ----------
+   控制条窗口（recbar.html）由主进程创建，指令经 preload 白名单 onRecCmd 进来。
+   渲染层只按契约调用并判空：桥没落这个通道时，面板照常能录屏，只是没有悬浮条。 */
+let recBarCmdBound = false;
+function bindRecBarCommands() {
+  if (recBarCmdBound) return;
+  const orb = window.orb || {};
+  if (typeof orb.onRecCmd !== 'function') return;
+  recBarCmdBound = true;   // 绑定成功才落标记，防 init 重入时绑重
+  orb.onRecCmd((cmd) => captureController.onRecCmd(cmd));
+}
+
 async function runTool(id) {
   return withHold(() => runToolInner(id));
 }
@@ -4059,7 +4785,8 @@ async function runToolInner(id) {
      它只做"停止"这一件减少危险的事。若只读权限下按不动急停，
      那这个按钮在最需要它的时候就废了。 */
   if (id === 'Panic') { await togglePanic(); return; }
-  // 录制启停也不改电脑状态（只开钩子），同样不进门限
+  if (id === 'RecordCap') { await captureController.toggle(); return; }
+  // 工作流录制启停也不改电脑状态（只开钩子），同样不进门限
   if (id === 'Record') { await toggleRecord(); return; }
 
   if (id === 'PowerShell' && !canRun('full')) { addMsg('Orb', '「完全访问」才允许跑命令。', 'err'); return; }
@@ -4847,6 +5574,181 @@ function loadMotion() {
   applyMotion(on);
 }
 
+/* ---------- 设置 › 存储 ---------- */
+let storageLastState = null;
+let storagePreviousRoot = '';
+
+function storageSubdirInfo(state, kind) {
+  const subdirs = (state && (state.subdirs || state.dirs)) || {};
+  const raw = subdirs[kind];
+  if (typeof raw === 'string') return { path: raw, count: 0 };
+  if (typeof raw === 'number') return { path: kind, count: raw };
+  const info = raw || {};
+  const count = info.count != null ? info.count
+    : (info.files != null ? info.files : (Array.isArray(info.entries) ? info.entries.length : 0));
+  return { path: String(info.path || info.dir || kind), count: Number(count || 0) };
+}
+
+function renderStorageSettings(state) {
+  storageLastState = state || {};
+  const root = String(storageLastState.root || storageLastState.storageRoot || '');
+  const rootEl = document.getElementById('storageRoot');
+  if (rootEl) rootEl.textContent = root || '（不可用）';
+
+  const rows = [
+    ['recordings', 'storagePathRecordings', 'storageCountRecordings'],
+    ['history', 'storagePathHistory', 'storageCountHistory'],
+    ['screenshots', 'storagePathScreenshots', 'storageCountScreenshots'],
+  ];
+  for (const [kind, pathId, countId] of rows) {
+    const info = storageSubdirInfo(storageLastState, kind);
+    const pathEl = document.getElementById(pathId);
+    const countEl = document.getElementById(countId);
+    if (pathEl) { pathEl.textContent = info.path; pathEl.title = info.path; }
+    if (countEl) countEl.textContent = info.count + ' 个文件';
+  }
+
+  const free = storageLastState.freeBytes != null ? storageLastState.freeBytes
+    : (storageLastState.free != null ? storageLastState.free
+      : (storageLastState.disk && storageLastState.disk.freeBytes));
+  const space = document.getElementById('storageSpace');
+  if (space) space.textContent = '可用空间：' + formatBytes(free);
+}
+
+/** 从主进程读取当前存储根、三个子目录统计与可用空间。 */
+async function loadStorageSettings() {
+  const msg = document.getElementById('storageMsg');
+  try {
+    const state = await window.orb.storageGet();
+    if (state && state.ok === false) throw new Error(state.error || '读取失败');
+    renderStorageSettings(state || {});
+    if (msg) msg.textContent = '';
+  } catch (error) {
+    if (msg) msg.textContent = '读取存储位置失败：' + String((error && error.message) || error);
+  }
+}
+
+function showStorageMigration(previousRoot, nextRoot) {
+  const box = document.getElementById('storageMove');
+  const text = document.getElementById('storageMoveText');
+  storagePreviousRoot = previousRoot || '';
+  if (!box || !previousRoot || previousRoot === nextRoot) {
+    if (box) box.hidden = true;
+    return;
+  }
+  if (text) text.textContent = '旧文件仍在 ' + previousRoot + '。要搬到新位置吗？';
+  box.hidden = false;
+}
+
+/** 应用新根目录；只切换，不自动迁移旧文件。 */
+async function applyStorageRoot(nextRoot) {
+  const msg = document.getElementById('storageMsg');
+  const before = storageLastState || {};
+  const previousRoot = String(before.root || before.storageRoot || '');
+  if (msg) msg.textContent = '正在切换并创建分类目录…';
+  const result = await window.orb.storageSet(nextRoot);
+  if (result === false || (result && result.ok === false)) {
+    throw new Error((result && result.error) || '切换存储位置失败');
+  }
+  await loadStorageSettings();
+  const currentRoot = String((storageLastState && (storageLastState.root || storageLastState.storageRoot)) || '');
+  const prev = String((result && (result.previousRoot || result.prevRoot || result.prev || result.from)) || previousRoot);
+  showStorageMigration(result && result.needMigrate === false ? '' : prev, currentRoot);
+  if (msg) msg.textContent = '已切换到 ' + currentRoot + '；旧文件不会自动搬移。';
+}
+
+function bindStorageUI() {
+  const change = document.getElementById('storageChange');
+  const open = document.getElementById('storageOpen');
+  const reset = document.getElementById('storageReset');
+  const migrate = document.getElementById('storageMigrate');
+  const leave = document.getElementById('storageLeave');
+  const msg = document.getElementById('storageMsg');
+
+  if (change) change.addEventListener('click', async () => {
+    change.disabled = true;
+    try {
+      const picked = await window.orb.storagePick();
+      const selected = typeof picked === 'string' ? picked
+        : String((picked && (picked.path || picked.root)) || '');
+      if (!selected) return;
+      await applyStorageRoot(selected);
+    } catch (error) {
+      if (msg) msg.textContent = '更改失败：' + String((error && error.message) || error);
+    } finally {
+      change.disabled = false;
+    }
+  });
+
+  if (open) open.addEventListener('click', async () => {
+    try {
+      /* 主进程 storage-open → storage.openSubdir(kind) 只认子目录类型
+         （recordings/history/screenshots/tmp），没有"打开根目录"的通道。
+         根目录行的「打开」落在录屏上，title 已写明白，不假装能开根。 */
+      const result = await window.orb.storageOpen('recordings');
+      if (result === false || (result && result.ok === false)) throw new Error((result && result.error) || '打开失败');
+    } catch (error) {
+      if (msg) msg.textContent = '打开失败：' + String((error && error.message) || error);
+    }
+  });
+
+  /* 子目录行即入口：点行或回车/空格打开对应目录。 */
+  document.querySelectorAll('.storage-item[data-storage-kind]').forEach((item) => {
+    const kind = String(item.dataset.storageKind || '');
+    if (!kind) return;
+    const openKind = async () => {
+      try {
+        const result = await window.orb.storageOpen(kind);
+        if (result === false || (result && result.ok === false)) throw new Error((result && result.error) || '打开失败');
+      } catch (error) {
+        if (msg) msg.textContent = '打开失败：' + String((error && error.message) || error);
+      }
+    };
+    item.addEventListener('click', openKind);
+    item.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openKind(); }
+    });
+  });
+
+  if (reset) reset.addEventListener('click', async () => {
+    reset.disabled = true;
+    try { await applyStorageRoot(null); }
+    catch (error) { if (msg) msg.textContent = '恢复默认失败：' + String((error && error.message) || error); }
+    finally { reset.disabled = false; }
+  });
+
+  if (migrate) migrate.addEventListener('click', async () => {
+    migrate.disabled = true;
+    if (msg) msg.textContent = '正在搬移旧文件，请不要关闭 ORB…';
+    try {
+      const result = await window.orb.storageMigrate();
+      if (result === false || (result && result.ok === false)) throw new Error((result && result.error) || '搬移失败');
+      const movedRaw = result && result.moved;
+      const failedRaw = result && result.failed;
+      const moved = Array.isArray(movedRaw) ? movedRaw.length : Number(movedRaw || 0);
+      const failed = Array.isArray(failedRaw) ? failedRaw.length : Number(failedRaw || 0);
+      if (msg) msg.textContent = '搬移完成：已搬 ' + moved + ' 个，失败 ' + failed + ' 个。失败项仍保留在旧位置。';
+      const box = document.getElementById('storageMove');
+      if (box) box.hidden = true;
+      storagePreviousRoot = '';
+      await loadStorageSettings();
+    } catch (error) {
+      if (msg) msg.textContent = '搬移失败，旧文件保持不动：' + String((error && error.message) || error);
+    } finally {
+      migrate.disabled = false;
+    }
+  });
+
+  if (leave) leave.addEventListener('click', () => {
+    const box = document.getElementById('storageMove');
+    if (box) box.hidden = true;
+    if (msg) msg.textContent = storagePreviousRoot
+      ? '已保留旧文件在 ' + storagePreviousRoot + '。之后的新文件写入当前目录。'
+      : '旧文件已留在原地。';
+    storagePreviousRoot = '';
+  });
+}
+
 function bindThemeUI() {
   const nav = document.getElementById('setnav');
   if (nav) {
@@ -4856,6 +5758,7 @@ function bindThemeUI() {
         document.querySelectorAll('.setpane').forEach((p) => {
           p.classList.toggle('on', p.dataset.pane === b.dataset.pane);
         });
+        if (b.dataset.pane === 'storage') loadStorageSettings();
       });
     });
   }
@@ -4913,6 +5816,7 @@ function bindVisionSheet() {
   bindSlot('primary');
   bindSlot('backup');
   bindThemeUI();
+  bindStorageUI();
 
   // 前台通道：进面板时自检一次，修复按钮随时可点
   loadFrontHealth();
@@ -5386,8 +6290,8 @@ function setRecUi(on) {
     // 状态全交给 .on 类：录制中反色 + 红点呼吸 + 外圈顺时针扫环（CSS 里定义）。
     btn.classList.toggle('on', wfRecording);
     btn.title = wfRecording
-      ? '停止录制（正在录制工作流…）'
-      : '录制工作流：录一遍操作，以后一键重放';
+      ? '停止录操作（正在录制工作流…）'
+      : '录操作：录一遍操作，以后一键重放';
   }
   // 工具区常驻键：录制中变红 + 文字改「停止」（红点在 CSS 里跟着 .on 走）
   const tb = document.getElementById('toolRec');
@@ -5472,7 +6376,7 @@ async function openWorkflows() {
   if (!list.length) {
     const d = document.createElement('div');
     d.className = 'cmd-empty';
-    d.textContent = '还没有工作流。点顶部「录制」录一条，或 Ctrl+K 搜「用 AI 生成工作流」。';
+    d.textContent = '还没有工作流。点顶部「录操作」录一条，或 Ctrl+K 搜「用 AI 生成工作流」。';
     box.appendChild(d);
   }
 
@@ -5592,7 +6496,7 @@ async function openTriggers() {
 
 async function addTrigger(kind) {
   const wfs = await refreshWf();
-  if (!wfs.length) { addMsg('Orb', '还没有工作流——先点顶部「录制」录一条。', 'err'); return; }
+  if (!wfs.length) { addMsg('Orb', '还没有工作流——先点顶部「录操作」录一条。', 'err'); return; }
 
   const wfName = await askText('触发哪条工作流？可选：' + wfs.map((w) => w.name).join('、'), wfs[0].name);
   if (wfName === null) return;
@@ -6955,6 +7859,7 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
   loadMotion();
   syncAllSliders();
   bindVisionSheet();
+  bindRecBarCommands();
   bindWizard();
   document.getElementById('vis').addEventListener('click', () => openVisionSheet());
   document.getElementById('vis').classList.toggle('on', visionReady());
