@@ -4196,7 +4196,6 @@ class CaptureController {
     this.sourceId = '';
     this.mimeType = '';
     this.extension = '';
-    this.startedAt = 0;
     this.bytes = 0;
     this.stream = null;
     this.recorder = null;
@@ -4208,10 +4207,14 @@ class CaptureController {
     this.ownsHold = false;
     this.runtimeFailing = false;
     this.panelHiddenByCapture = false;
-    /* 暂停态：paused 时 MediaRecorder 停在 paused，pausedAt 记录暂停发生时刻，
-       继续时把暂停耗掉的墙上时间从 startedAt 里扣掉，保证计时是真实录制时长。 */
+    /* 净时长计量：netMs 累计已确认的录制毫秒，segStart 是当前这一段的起点。
+       暂停期间 MediaRecorder 不出帧，成片真实时长天然不含暂停段 ——
+       capClose({ms}) 会被主进程直接补写进 MP4 的 mvhd.duration，
+       所以传给它的必须是净时长，墙钟会把暂停段算进去、尾帧被拉长。 */
+    this.netMs = 0;
+    this.segStart = 0;
+    /* 暂停态：paused 时 MediaRecorder 停在 paused。 */
     this.paused = false;
-    this.pausedAt = 0;
     /* aborting：取消流程有多个 await 停顿，防止悬浮条上的「取消」被连点两次
        把 capAbort / 提示 / 退场事件跑两遍。 */
     this.aborting = false;
@@ -4260,6 +4263,9 @@ class CaptureController {
           }
           await this.startProfile(profile);
           this.phase = 'recording';
+          /* 净时长计量已在 startProfile 里从编码器启动那一刻起算
+             （内容从那一帧开始存在），这里不再重置 —— 首分片验证之前
+             还有几百毫秒到一秒的等待，挪到这里起算会少一截。 */
           this.render();
           /* 悬浮控制条登场：只在录制真正站稳（首分片已验证）后广播 start，
              失败回滚路径走下面的 catch，不会误发。 */
@@ -4378,7 +4384,10 @@ class CaptureController {
       };
 
       try {
-        this.startedAt = Date.now();
+        /* 净时长从编码器真正启动这一刻起算：内容从这一帧开始存在。
+           每次编码尝试都重置 —— 失败的尝试作废后，下一次从零开始。 */
+        this.netMs = 0;
+        this.segStart = Date.now();
         recorder.start(1000);
       }
       catch (error) { finish(reject, error); }
@@ -4411,13 +4420,11 @@ class CaptureController {
 
     const recorder = this.recorder;
     const sessionId = this.sessionId;
-    /* 真实录制时长 = 墙上时间扣掉暂停区间。暂停中停止时，暂停那段还没折回
-       startedAt，直接用 now - startedAt 会把暂停时间算进成片里 —— 那不是伪造，
-       是不准。主进程 cap-close 优先用这里传过去的 ms 补 mvhd.duration。 */
-    const now = Date.now();
-    const durationMs = this.paused && this.pausedAt
-      ? Math.max(0, this.pausedAt - this.startedAt)
-      : Math.max(0, now - this.startedAt);
+    /* 结算最后一段，拿到净录制时长（不含任何暂停段）。
+       主进程会把它直接补写进 MP4 的 mvhd.duration —— 漏传或传墙钟，
+       成片声明时长就会大于真实内容、尾帧被拉长。任何时候都不能漏传。 */
+    if (!this.paused) this.netMs += Date.now() - this.segStart;
+    const netMs = Math.round(this.netMs);
     try {
       if (recorder && recorder.state !== 'inactive') {
         await new Promise((resolve, reject) => {
@@ -4432,7 +4439,7 @@ class CaptureController {
         });
       }
       await this.chunkChain;
-      const saved = await window.orb.capClose(sessionId, { ms: durationMs });
+      const saved = await window.orb.capClose(sessionId, { ms: netMs });
       if (saved === false || (saved && saved.ok === false)) {
         throw new Error((saved && saved.error) || '主进程收尾失败');
       }
@@ -4445,12 +4452,13 @@ class CaptureController {
       this.sessionId = '';
       this.recorder = null;
       this.paused = false;
-      this.pausedAt = 0;
+      this.netMs = 0;
+      this.segStart = 0;
       this.phase = 'saved';
       this.render();
       this.unlockPanel();
       this.recBarEvent('stop');
-      this.showSaved(result, path, bytes, durationMs, wasWebm);
+      this.showSaved(result, path, bytes, netMs, wasWebm);
       this.phase = 'idle';
       this.render();
     } catch (error) {
@@ -4459,7 +4467,8 @@ class CaptureController {
       this.sessionId = '';
       this.recorder = null;
       this.paused = false;
-      this.pausedAt = 0;
+      this.netMs = 0;
+      this.segStart = 0;
       this.phase = 'error';
       this.render();
       this.unlockPanel();
@@ -4485,13 +4494,14 @@ class CaptureController {
       addMsg('Orb', '暂停录屏失败：' + esc(String((error && error.message) || error)), 'err');
       return;
     }
+    /* 结算这一段再停：净时长只认真正出了帧的时间。 */
+    this.netMs += Date.now() - this.segStart;
     this.paused = true;
-    this.pausedAt = Date.now();
     this.render();
     this.recBarEvent('pause');   // 控制条靠事件切「继续」图标并停表
   }
 
-  /** 继续录制（悬浮控制条「继续」）：把暂停耗掉的墙上时间从 startedAt 里扣掉。 */
+  /** 继续录制（悬浮控制条「继续」）：开新的计时段，净时长只累计真正出了帧的时间。 */
   resume() {
     if (this.phase !== 'recording' || !this.paused) return;
     if (!this.recorder || this.recorder.state === 'inactive') {
@@ -4504,11 +4514,8 @@ class CaptureController {
       addMsg('Orb', '继续录屏失败：' + esc(String((error && error.message) || error)), 'err');
       return;
     }
+    this.segStart = Date.now();   // 新的一段从继续这一刻起算
     this.paused = false;
-    if (this.pausedAt) {
-      this.startedAt += Date.now() - this.pausedAt;
-      this.pausedAt = 0;
-    }
     this.render();
     this.recBarEvent('resume');   // 控制条靠事件切回「暂停」图标并续走
   }
@@ -4556,7 +4563,8 @@ class CaptureController {
       this.stopTracks();
       this.sessionId = '';
       this.paused = false;
-      this.pausedAt = 0;
+      this.netMs = 0;
+      this.segStart = 0;
       this.phase = 'idle';
       this.render();
       this.unlockPanel();
@@ -4647,7 +4655,8 @@ class CaptureController {
       this.sessionId = '';
       this.recorder = null;
       this.paused = false;
-      this.pausedAt = 0;
+      this.netMs = 0;
+      this.segStart = 0;
       this.phase = 'idle';
       this.render();
       this.unlockPanel();
@@ -4689,14 +4698,14 @@ class CaptureController {
     if (span) {
       if (this.phase === 'preparing') span.textContent = '准备中';
       else if (paused) span.textContent = '已暂停';
-      else if (this.phase === 'recording') span.textContent = formatDuration(Date.now() - this.startedAt);
+      else if (this.phase === 'recording') span.textContent = formatDuration(this.netMs + (Date.now() - this.segStart));
       else if (this.phase === 'finalizing') span.textContent = '保存中';
       else span.textContent = '录屏';
     }
     button.title = paused
-      ? ('录屏已暂停（已录 ' + formatDuration(Math.max(0, this.pausedAt - this.startedAt)) + '）· 点此停止；继续请用悬浮控制条')
+      ? ('录屏已暂停（已录 ' + formatDuration(this.netMs) + '）· 点此停止；继续请用悬浮控制条')
       : (this.phase === 'recording'
-        ? ('停止录屏 · 已录 ' + formatDuration(Date.now() - this.startedAt))
+        ? ('停止录屏 · 已录 ' + formatDuration(this.netMs + (Date.now() - this.segStart)))
         : (this.phase === 'preparing' ? '正在准备整屏录制…' : (this.phase === 'finalizing' ? '正在保存录屏…' : '录屏：整屏 1080p / 30fps / 4Mbps / 无音频')));
   }
 
