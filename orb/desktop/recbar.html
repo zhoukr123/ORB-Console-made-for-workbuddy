@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:19387">
+<title>ORB 录制控制</title>
+<style>
+  /* ==================================================================
+     悬浮录屏控制条
+     ------------------------------------------------------------------
+     为什么单独一个窗口而不是把按钮画在面板里：录制一开始面板就会隐藏
+     （否则录出来的画面里全是 ORB 自己），面板一隐藏它的渲染进程定时器
+     就会被 Chromium 节流，计时器会越走越慢 —— 所以控制键和计时器
+     必须落在自己这个常驻可见的窗口上。
+     配色直接沿用面板 t1（星空·琥珀金）的深色令牌，不引入任何能量渐变类变量。
+     ================================================================== */
+  :root {
+    --bg: #12162b; --bg-soft: #171c35; --bg-sunken: #0e1224;
+    --fg: #e8eaf6; --fg-soft: #b9bfe0; --fg-muted: #7c85ad;
+    --border: #262c4d; --border-strong: #39406b;
+    --danger: #e8736a; --ok: #4fc98d;
+    --rec: #D8444F;                       /* 录制红点：固定色，不跟主题走 */
+    --r-sm: 8px;
+    --sh-lg: 0 18px 48px rgba(0,0,0,.55);
+    --ease: cubic-bezier(.22,.61,.36,1);
+    --dur-1: .14s;                        /* 微交互：hover / active */
+    --dur-2: .22s;                        /* 标准：状态切换 */
+    --dur-3: .32s;                        /* 入场 */
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    /* 窗口不是 transparent 的：透明窗口在合成/拖拽上坑多（拖拽边缘失效、
+       缩放时花屏）。所以背景铺与 pill 同色的纯色，圆角交给 pill 自己画。 */
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
+    overflow: hidden;
+    /* 控制条本身就是个小挂件，禁掉选中/拖拽默认行为，观感更接近原生 */
+    user-select: none; -webkit-user-select: none;
+    cursor: default;
+  }
+
+  /* ---------------- pill 主体 ---------------- */
+  .bar {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 12px 0 20px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 32px;
+    box-shadow: var(--sh-lg);
+    /* 拖拽区：只有 pill 这一块，按钮区域单独 no-drag */
+    -webkit-app-region: drag;
+  }
+
+  /* 左侧：红点 + 计时 */
+  .left { display: flex; align-items: center; gap: 10px; }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--rec);
+    flex: none;
+    /* 录制中：呼吸式闪烁。只动 opacity，不碰 transform —— 红点位置固定，
+       任何位移在 10px 直径上都会被看出抖动。 */
+    animation: dotBlink 1s steps(1, end) infinite;
+  }
+  /* 暂停：停闪并压暗 —— 用户要一眼看出"现在没在录" */
+  .bar.paused .dot { animation-play-state: paused; opacity: .35; }
+  @keyframes dotBlink { 0%, 45% { opacity: 1; } 46%, 100% { opacity: .35; } }
+
+  .time {
+    font-size: 15px; font-weight: 600; letter-spacing: .3px;
+    color: var(--fg);
+    /* 等宽数字：秒数跳动时宽度不能变，否则"01"到"08"会让整个 pill 呼吸 */
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+    min-width: 62px;
+  }
+
+  /* 右侧：三个图标钮 */
+  .btns { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
+  .btn {
+    width: 32px; height: 32px; flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 0; border-radius: 50%;
+    background: transparent; color: var(--fg-soft);
+    cursor: pointer; padding: 0;
+    -webkit-app-region: no-drag;
+    transition: transform var(--dur-1) var(--ease), color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+  }
+  .btn:hover { background: rgba(255,255,255,.07); color: var(--fg); transform: translateY(-1px); }
+  .btn:active { transform: scale(.94); }
+  .btn:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 1px; }
+  .btn svg { width: 22px; height: 22px; display: block; }
+
+  /* 完成 / 取消 的语义色：hover 才上色，平时保持中性，不抢红点的注意力 */
+  #btnFinish:hover { color: var(--ok); background: rgba(79,201,141,.14); }
+  #btnAbort:hover  { color: var(--rec); background: rgba(216,68,79,.16); }
+
+  /* 暂停 / 继续是同一个按钮的两种形态。
+     暂停图标 hover 时两条竖条向两侧各挪 1px —— 表达"再点一下就分开（继续）"。
+     只做这一种变形，不叠加缩放/旋转，避免小图标上动效打架。 */
+  .bar:not(.paused) #btnPP:hover .bar-l { transform: translateX(-1px); }
+  .bar:not(.paused) #btnPP:hover .bar-r { transform: translateX(1px); }
+  .ico-pause .bar-l, .ico-pause .bar-r { transition: transform var(--dur-1) var(--ease); }
+
+  /* 入场：按钮逐个 40ms stagger 落位。
+     fill-mode 只用 backwards：让"还没轮到"的按钮先停在起始态，
+     但**不能用 both** —— both 会把 to 态（translateY(0)/opacity:1）
+     在动画结束后继续钉住，万一哪天删了静态规则，元素就永远停在动画终态。 */
+  .bar .btn { animation: btnIn var(--dur-3) var(--ease) backwards; }
+  .bar .btns .btn:nth-child(1) { animation-delay: 0ms; }
+  .bar .btns .btn:nth-child(2) { animation-delay: 40ms; }
+  .bar .btns .btn:nth-child(3) { animation-delay: 80ms; }
+  @keyframes btnIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  /* ---------------- 双兜底：关动效 ----------------
+     ① 系统设置「减少动态效果」；② 页面被加上 html.no-motion（与面板同一套约定）。
+     两者都不能把红点闪烁一起干掉 —— 那是"正在录制"的唯一状态指示，
+     没了它用户会以为没在录。 */
+  @media (prefers-reduced-motion: reduce) {
+    .btn { animation: none; transition: none; }
+    .btn:hover { transform: none; }
+    .bar:not(.paused) #btnPP:hover .bar-l,
+    .bar:not(.paused) #btnPP:hover .bar-r { transform: none; }
+  }
+  html.no-motion .btn,
+  html.no-motion .btn:hover,
+  html.no-motion .bar:not(.paused) #btnPP:hover .bar-l,
+  html.no-motion .bar:not(.paused) #btnPP:hover .bar-r { animation: none; transform: none; }
+</style>
+</head>
+<body>
+  <!-- 语义化 + aria：纯图标按钮必须给辅助设备一条活路 -->
+  <div class="bar" id="bar">
+    <div class="left">
+      <span class="dot" id="dot" aria-hidden="true"></span>
+      <span class="time" id="time" aria-label="已录制时长">00:00</span>
+    </div>
+    <div class="btns">
+      <!-- 暂停 / 继续（同一按钮两态） -->
+      <button class="btn" id="btnPP" type="button" title="暂停" aria-label="暂停">
+        <svg class="ico-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <rect class="bar-l" x="7" y="5" width="3.6" height="14" rx="1.2"/>
+          <rect class="bar-r" x="13.4" y="5" width="3.6" height="14" rx="1.2"/>
+        </svg>
+        <svg class="ico-resume" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display:none">
+          <path d="M9 6.5 18 12 9 17.5Z"/>
+        </svg>
+      </button>
+      <!-- 取消 -->
+      <button class="btn" id="btnAbort" type="button" title="取消录制" aria-label="取消录制">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M7 7l10 10M17 7L7 17"/>
+        </svg>
+      </button>
+      <!-- 完成 -->
+      <button class="btn" id="btnFinish" type="button" title="完成录制" aria-label="完成录制">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5.5 12.5l4.2 4.2 8.8-9.4"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+<script>
+  /* ------------------------------------------------------------------
+     状态机（严格以主进程回传的 rec:event 为准，本地不自作主张）
+       start  → 清零 + 开始走时
+       pause  → 冻结 + 累计已录时长 + 切成「继续」三角
+       resume → 续走 + 切回「暂停」竖条
+       stop   → 停表（窗口会被主进程隐藏）
+     点按钮只负责发命令，UI 等事件回来再变 —— 否则主进程拒绝（比如
+     面板已经没了）时，本地状态会和真实录制状态对不上。
+     ------------------------------------------------------------------ */
+  var bar = document.getElementById("bar");
+  var timeEl = document.getElementById("time");
+  var btnPP = document.getElementById("btnPP");
+  var icoPause = bar.querySelector(".ico-pause");
+  var icoResume = bar.querySelector(".ico-resume");
+
+  var elapsedMs = 0;      // 已录制毫秒（不含当前这一段）
+  var segStartedAt = 0;   // 当前走时段的起点
+  var running = false;
+  var tickTimer = null;
+  var TICK_MS = 250;      // 250ms：秒数显示不需要更细，少一次重排是一次
+
+  function fmt(ms) {
+    var total = Math.max(0, Math.floor(ms / 1000));
+    var m = Math.floor(total / 60);
+    var s = total % 60;
+    return (m < 10 ? "0" + m : "" + m) + ":" + (s < 10 ? "0" + s : "" + s);
+  }
+  function paint() {
+    var cur = elapsedMs + (running ? (Date.now() - segStartedAt) : 0);
+    timeEl.textContent = fmt(cur);
+  }
+  function startTicker() {
+    stopTicker();
+    tickTimer = setInterval(paint, TICK_MS);
+  }
+  function stopTicker() {
+    if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+  }
+  /* 走时/暂停的视觉切换：暂停时给 bar 加 paused（停闪 + 切图标）。 */
+  function setPaused(paused) {
+    bar.classList.toggle("paused", !!paused);
+    var showResume = !!paused;
+    icoPause.style.display = showResume ? "none" : "";
+    icoResume.style.display = showResume ? "" : "none";
+    btnPP.title = showResume ? "继续" : "暂停";
+    btnPP.setAttribute("aria-label", showResume ? "继续" : "暂停");
+  }
+
+  function onEvent(payload) {
+    var t = payload && payload.type;
+    if (t === "start") {
+      elapsedMs = 0; segStartedAt = Date.now(); running = true;
+      setPaused(false);
+      paint();
+      startTicker();
+    } else if (t === "pause") {
+      // 先把这一段结算进 elapsedMs，再停表：顺序反了会丢掉 pause 前那半秒
+      elapsedMs += Date.now() - segStartedAt;
+      running = false;
+      stopTicker();
+      paint();
+      setPaused(true);
+    } else if (t === "resume") {
+      if (running) return;                 // 已经在跑了就别重置起点
+      segStartedAt = Date.now(); running = true;
+      setPaused(false);
+      startTicker();
+    } else if (t === "stop") {
+      running = false;
+      stopTicker();
+      setPaused(false);
+      // 终值保留一瞬（主进程紧接着会隐藏窗口），下次 start 再清零
+      paint();
+    }
+  }
+
+  function cmd(c) {
+    if (window.orb && typeof window.orb.sendBarCmd === "function") window.orb.sendBarCmd(c);
+  }
+  btnPP.addEventListener("click", function () {
+    cmd(running ? "pause" : "resume");
+  });
+  document.getElementById("btnAbort").addEventListener("click", function () { cmd("abort"); });
+  document.getElementById("btnFinish").addEventListener("click", function () { cmd("finish"); });
+
+  /* 键盘兜底：按钮本来就 focusable，回车/空格浏览器自己会触发 click，
+     这里只补 Esc = 取消，符合主流录屏软件的手感。 */
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") cmd("abort");
+  });
+
+  /* preload 注入的桥：先订阅再允许主进程发事件。
+     订阅放在 DOMContentLoaded 之前也没关系（preload 比页面脚本更早跑），
+     但统一在末尾显式做一次，读起来更清楚。 */
+  if (window.orb && typeof window.orb.onRecEvent === "function") {
+    window.orb.onRecEvent(onEvent);
+  }
+  paint();
+</script>
+</body>
+</html>

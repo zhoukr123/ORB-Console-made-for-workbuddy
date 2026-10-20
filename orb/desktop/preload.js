@@ -62,9 +62,32 @@ contextBridge.exposeInMainWorld("orb", {
   setBusy: (v) => ipcRenderer.send("busy", !!v),
   setObserving: (v) => ipcRenderer.send("observe", !!v),
 
-  /* 会话历史（落盘到 <控制台>/history/conversations.json） */
+  /* 会话历史（落盘到 <存储根>/history/conversations.json） */
   historyLoad: () => ipcRenderer.invoke("history-load"),
   historySave: (data) => ipcRenderer.invoke("history-save", data),
+
+  /* 长期文件的存储根目录：录屏 / 历史 / 截图都挂在它下面。
+     注意这里不给 fs、不给 shell、也不给通用 invoke ——
+     渲染层能做的只有"选目录 / 查用量 / 打开子目录"这三件具体的事。 */
+  storageGet: () => ipcRenderer.invoke("storage-get"),
+  storagePick: () => ipcRenderer.invoke("storage-pick"),
+  storageSet: (dir) => ipcRenderer.invoke("storage-set", dir),
+  storageMigrate: () => ipcRenderer.invoke("storage-migrate"),
+  storageOpen: (kind) => ipcRenderer.invoke("storage-open", kind),
+
+  /* 屏幕录制：抓流与编码在渲染进程（MediaRecorder 直出 MP4），
+     主进程负责落盘收尾。capChunk 传 ArrayBuffer，不接受 base64。 */
+  capSources: () => ipcRenderer.invoke("cap-sources"),
+  capOpen: (opts) => ipcRenderer.invoke("cap-open", opts),
+  capChunk: (sessionId, data) => ipcRenderer.invoke("cap-chunk", sessionId, data),
+  capClose: (sessionId, opts) => ipcRenderer.invoke("cap-close", sessionId, opts),
+  capAbort: (sessionId) => ipcRenderer.invoke("cap-abort", sessionId),
+
+  /* 悬浮控制条联动。面板录制开始后自己会隐藏，控制键落在独立悬浮窗上，
+     所以两条通道都是"转发"：面板把状态递给主进程，主进程再转给控制条；
+     控制条的用户操作同样经主进程回到这里。 */
+  onRecCmd: (cb) => ipcRenderer.on("rec:cmd", (_e, cmd) => cb(cmd)),
+  sendRecBarEvent: (payload) => ipcRenderer.send("rec-cmd-to-bar", payload),
 
   /* 剪贴板 */
   readClipboard: () => ipcRenderer.invoke("clipboard-read"),

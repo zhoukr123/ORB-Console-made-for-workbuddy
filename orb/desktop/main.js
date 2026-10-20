@@ -1,11 +1,16 @@
 const {
   app, BrowserWindow, ipcMain, screen, Tray, Menu, session,
-  globalShortcut, clipboard, shell, dialog,
+  globalShortcut, clipboard, shell, dialog, desktopCapturer,
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const net = require("node:net");
 const { spawn, execFile } = require("node:child_process");
+/* 长期文件存储（录屏 / 历史 / 截图）与 MP4 收尾逻辑单独成文件：
+   main.js 已经两千行，这两块的职责边界很清晰（磁盘目录管理、字节级容器修补），
+   拆出去既能单测，也让面板相关改动不必再动主流程。 */
+const storage = require("./storage");
+const mp4finalize = require("./mp4finalize");
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
@@ -34,6 +39,16 @@ try { fs.mkdirSync(DATA_ROOT, { recursive: true }); } catch {}
 try {
   if (app.isPackaged) app.setPath("userData", path.join(DATA_ROOT, ".orbdata"));
 } catch {}
+
+/* 把 DATA_ROOT 交给 storage 模块当默认根。
+ * 走注入而不是让 storage 自己 require("../main")：那会形成 require 环，
+ * 两边拿到的都是还没初始化完的半成品模块对象。 */
+storage.init({
+  dataRoot: DATA_ROOT,
+  getState: () => state,
+  setState: (patch) => saveState(patch),
+  log: (...a) => log(...a),
+});
 
 /* 打包态：把随包附带的使用说明释放到数据目录（DATA_ROOT 可写，用户也能自己改） */
 function ensureBundledExtras() {
@@ -202,6 +217,12 @@ const DOCK_RATIO = 0.2;
 const AVATAR_MAX = 2 * 1024 * 1024;
 
 let ball, panel, tray, borderWin, bridgeProc;
+/* 悬浮录屏控制条（T05）。懒创建：平时不占窗口，第一次开始录制才建。
+ * pendingRecEvents 是关键 —— 窗口 loadFile 到 did-finish-load 之间有一段时间，
+ * 用户在这期间按下「暂停」的话事件不能丢，否则控制条会显示成"还在录"而实际已暂停。 */
+let recbarWin = null;
+let recbarReady = false;
+const pendingRecEvents = [];
 let docked = null;
 let drag = null;
 let hoverOpenTimer = null;
@@ -272,6 +293,17 @@ const state = {
    * firstRun 不另外存：每次启动从 envWizardDone 反算，避免两份标记对不上。 */
   envWizardDone: false,
   firstRun: false,
+  /* 长期文件的存储根。留空 = 用默认位置（storage.resolveRoot() 回退 DATA_ROOT）。
+   * 一旦用户改过，录屏 / 会话历史 / 截图三个子目录就都跟着它走。 */
+  storageRoot: "",
+  /* 换存储根之前的旧值。保留它是为了两件事：
+   *   ① storage-migrate 靠它才知道从哪儿搬；
+   *   ② 用户改错了还能看出来自己原来用的是哪儿。
+   * 搬迁完成后会被清空，避免设置面板一直提示「有旧数据待搬迁」。 */
+  storageRootPrev: "",
+  /* 最近一次成功落盘的录屏，形如 { path, bytes, ms, mime }。
+   * 面板拿它可以做「上次录的在哪儿」的直达入口，不必自己再翻目录。 */
+  lastRecording: null,
 };
 
 /** 兼容早期的扁平结构（provider/baseUrl/... 直接在 vision 下） */
@@ -541,7 +573,21 @@ function createPanel() {
   panel.webContents.on("render-process-gone", (_e, d) => log("[panel] gone:", d.reason));
   panel.setAlwaysOnTop(true, "screen-saver");
   panel.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  panel.on("closed", () => { panel = null; });
+  panel.on("closed", () => {
+    panel = null;
+    /* 面板没了，控制条就没有存在的意义：隐藏而不是销毁，下次录制还能直接复用。
+     * 同时按录制态决定要不要清临时分片 —— 面板被强关时 cap-close 永远不会来，
+     * recordings 下会留下一个再也没人认领的 .part，越攒越多。 */
+    try {
+      if (recbarWin && !recbarWin.isDestroyed()) recbarWin.hide();
+      if (capSessions.size > 0) {
+        log("[cap] 面板已关闭，正在录制，清理临时分片");
+        purgeRecordingParts();
+      }
+    } catch (e) {
+      log("[recbar] 面板关闭收尾失败:", (e && e.message) || String(e));
+    }
+  });
 }
 
 function sendToPanel(channel, payload) {
@@ -549,6 +595,110 @@ function sendToPanel(channel, payload) {
 }
 function sendToBall(channel, payload) {
   if (ball && !ball.isDestroyed()) ball.webContents.send(channel, payload);
+}
+function sendToBar(channel, payload) {
+  if (recbarWin && !recbarWin.isDestroyed()) {
+    try { recbarWin.webContents.send(channel, payload); return true; } catch { /* 窗口正在销毁 */ }
+  }
+  return false;
+}
+
+/* ---------------- 悬浮录屏控制条 ----------------
+ * 录制一开始面板就会隐藏，控制键必须有个自己的家：一个 320×64 的
+ * 无边框置顶小窗，钉在屏幕顶部水平居中。为什么不用 transparent：
+ * 透明窗口的拖拽边缘判定和窗口缩放都有坑，所以背景铺纯色、圆角由内部 pill 画。
+ */
+function recbarBounds() {
+  const wa = screen.getPrimaryDisplay().workArea;
+  const w = 320, h = 64;
+  return { x: Math.round(wa.x + (wa.width - w) / 2), y: Math.round(wa.y + 20), width: w, height: h };
+}
+
+function createRecBar() {
+  if (recbarWin && !recbarWin.isDestroyed()) return recbarWin;
+  try {
+    recbarWin = new BrowserWindow({
+      ...recbarBounds(),
+      frame: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      show: false,
+      hasShadow: false,
+      /* 不用 transparent：见上面注释。颜色由 recbar.html 的 body 背景提供。 */
+      backgroundColor: "#12162b",
+      webPreferences: {
+        preload: path.join(__dirname, "recbar-preload.js"),
+        contextIsolation: true,
+        spellcheck: false,
+        /* 控制条常驻可见，但保险起见关掉节流 ——
+           计时器万一被节流，秒数会越走越慢，而用户没有任何办法察觉。 */
+        backgroundThrottling: false,
+      },
+    });
+    recbarReady = false;
+    recbarWin.loadFile(path.join(__dirname, "recbar.html"));
+    recbarWin.webContents.on("console-message", (e) => log(`[recbar:${e.level}] ${e.message}`));
+    recbarWin.webContents.on("render-process-gone", (_e, d) => log("[recbar] gone:", d.reason));
+    recbarWin.on("closed", () => { recbarWin = null; recbarReady = false; pendingRecEvents.length = 0; });
+    recbarWin.webContents.once("did-finish-load", () => {
+      recbarReady = true;
+      /* 把窗口就绪前攒下的事件按序补发。顺序不能乱：
+         pause 先于 resume 到达时，乱序会让计时器从"暂停态"直接跳到"续走态"。 */
+      const queued = pendingRecEvents.splice(0, pendingRecEvents.length);
+      for (const p of queued) sendToBar("rec:event", p);
+    });
+    return recbarWin;
+  } catch (e) {
+    /* 创建失败（极端情况：显示驱动异常 / 内存不足）不能让录制功能一起挂 ——
+       控制条只是个操作界面，主进程的落盘链路不依赖它。 */
+    log("[recbar] 创建失败:", (e && e.message) || String(e));
+    recbarWin = null;
+    recbarReady = false;
+    return null;
+  }
+}
+
+/** 向控制条广播一个事件；窗口没就绪就先入队，等 did-finish-load 后补发。 */
+function emitRecEvent(payload) {
+  if (recbarWin && !recbarWin.isDestroyed() && recbarReady) {
+    sendToBar("rec:event", payload);
+  } else {
+    pendingRecEvents.push(payload);
+    /* 队列上限：万一 did-finish-load 一直不来（页面脚本崩了），
+       不能让数组无限长。保留最早的一个 start，其它新的覆盖式跟进。 */
+    if (pendingRecEvents.length > 32) pendingRecEvents.splice(1, pendingRecEvents.length - 32);
+  }
+}
+
+/** 清理录制残留的临时分片。只删 .part —— 成品 mp4 一个字节都不碰。 */
+function purgeRecordingParts() {
+  /* 先把还开着的句柄关掉：Windows 上删不掉被占用的文件，
+     不先 close 的话这一趟大概率白跑。会话本身一并作废 —— 面板都没了，
+     录制不可能继续，留着句柄只会让 .part 永远删不掉。 */
+  try {
+    for (const id of Array.from(capSessions.keys())) capDrop(id, false);
+  } catch { /* 收尾路径不抛 */ }
+
+  /* 两处都要扫：
+   *  ① recordings/ 顶层 —— 按约定清理的位置（别的写入路径也可能落在这一层）；
+   *  ② recordings/.tmp/ —— 本实现真正写分片的地方（见 cap-open）。
+   * 都不递归：screenshots / history 与其它用户文件一概不碰。 */
+  for (const dir of [storage.pathOf("recordings"), storage.pathOf("tmp")]) {
+    try {
+      if (!dir || !fs.existsSync(dir)) continue;
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.endsWith(".part")) continue;
+        try { fs.unlinkSync(path.join(dir, name)); }
+        catch (e) { log("[cap] 删除残留分片失败:", name, (e && e.message) || String(e)); }
+      }
+    } catch (e) {
+      log("[cap] 清理 .part 失败:", dir, (e && e.message) || String(e));
+    }
+  }
 }
 
 /**
@@ -1553,6 +1703,16 @@ app.whenReady().then(async () => {
   // 没抢到单实例锁的进程不建任何 UI（它马上会退出）。
   if (!gotSingleInstanceLock) return;
   loadState();
+  /* 三个长期子目录要在任何读写之前就位。
+   * 放在 loadState() 之后是有讲究的：storage 要按 state.storageRoot 算路径，
+   * 早一步的话就只能看到默认值，历史又会写回老位置去。 */
+  try {
+    const sd = storage.ensureSubdirs();
+    if (!sd.ok) log("[storage] 子目录建立失败:", sd.error);
+    purgeStaleParts();
+  } catch (e) {
+    log("[storage] 初始化异常:", (e && e.message) || String(e));
+  }
   // 是否首次运行：以「首跑向导有没有看完」为准。同样的语义 main 这边只算一次，
   // 后面 get-state 直接把这个结果发给渲染层，不做二次推断。
   state.firstRun = !state.envWizardDone;
@@ -1778,6 +1938,15 @@ app.on("before-quit", (e) => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  /* 录制会话必须在这里收尾：面板崩溃或被强制关闭时，cap-close 永远不会被调用，
+     句柄一直挂着会让 .part 文件删不掉，下次启动还会在磁盘上留一层垃圾。 */
+  try {
+    for (const id of Array.from(capSessions.keys())) capDrop(id, true);
+  } catch { /* 退出路径上的清理不允许再抛 */ }
+  /* 控制条用 destroy 而不是 close：退出时不需要走它的 unload/closed 流程，
+     close 会等渲染进程回一次消息，白拖慢退出。 */
+  try { if (recbarWin && !recbarWin.isDestroyed()) recbarWin.destroy(); } catch { /* ignore */ }
+  recbarWin = null;
   clearInterval(borderTimer); borderTimer = null;
   stopSubtitleStream();
   clearInterval(tracker); tracker = null;
@@ -1941,36 +2110,425 @@ ipcMain.on("toolbar-action", (_e, action, text) => {
 
 /* ---------------- 会话历史落盘 ----------------
  * 需求：历史记录存到「控制台目录」下一级的独立文件夹，不再只躺在 localStorage 里。
- * 目录：<控制台>/history/conversations.json
+ * 目录：<存储根>/history/conversations.json
  * 读写都做容错：目录不存在自动建，文件损坏/缺失一律回退空数组，绝不让面板因此打不开。
  */
-/* 必须落在 DATA_ROOT 而不是 __dirname 上推：
- * 开发态两者指向同一处（所以一直没暴露），但打包后 __dirname 在只读的 app.asar 里，
- * 写盘会 EPERM —— 会话历史就永远只躺在 localStorage，进程一清就没了。
- * 「使用说明」当初踩过同一个坑（见 guidePath）。 */
-const HISTORY_DIR = path.join(DATA_ROOT, "history");
-const HISTORY_FILE = path.join(HISTORY_DIR, "conversations.json");
+/* 目录必须对**当前存储根**求值，而不是模块加载时算一次锁死：
+ * ① 原来写死 DATA_ROOT/history，打包后指向只读的 app.asar 目录，写盘直接 EPERM，
+ *    会话历史就永远只躺在 localStorage（「使用说明」当初踩过同一个坑）；
+ * ② 用户在设置面板改了存储根之后，历史应该跟着新根走，
+ *    写成模块级常量会导致整个进程生命周期里都用改之前算好的那个路径。 */
+const historyFile = () => path.join(storage.pathOf("history"), "conversations.json");
 
-ipcMain.handle("history-load", async () => {
+safeHandle("history-load", () => {
   try {
-    const raw = fs.readFileSync(HISTORY_FILE, "utf8");
+    const raw = fs.readFileSync(historyFile(), "utf8");
     const arr = JSON.parse(raw);
     return Array.isArray(arr) ? arr : [];
   } catch {
     return [];   // 首次运行 / 文件损坏都走这里
   }
-});
+}, []);
 
-ipcMain.handle("history-save", async (_e, data) => {
+safeHandle("history-save", (_e, data) => {
   try {
-    fs.mkdirSync(HISTORY_DIR, { recursive: true });
+    // 目录可能被用户手动删了，或者刚换过存储根 —— 每次写之前补建一次
+    fs.mkdirSync(storage.pathOf("history"), { recursive: true });
     const arr = Array.isArray(data) ? data : [];
-    fs.writeFileSync(HISTORY_FILE, JSON.stringify(arr, null, 2), "utf8");
+    /* 先写临时文件再 rename：直接 overwrite 时进程被杀会留下截断的 JSON，
+       下次 load 解析失败 → 整个历史列表凭空消失。rename 在同一卷内是原子的。 */
+    const file = historyFile();
+    // 后缀统一用 .part：搬迁逻辑会跳过这种半成品文件
+    const tmp = file + ".part";
+    fs.writeFileSync(tmp, JSON.stringify(arr, null, 2), "utf8");
+    fs.renameSync(tmp, file);
     return true;
   } catch (err) {
     // 落盘失败不能影响面板使用：localStorage 仍是保底
-    try { console.warn("[history] 保存失败:", err?.message ?? err); } catch {}
+    try { log("[history] 保存失败:", (err && err.message) || String(err)); } catch {}
     return false;
+  }
+}, false);
+
+/* ---------------- 长期文件的存储根目录 ----------------
+ * 面板「设置 → 存储」用这一组通道。
+ * 渲染层拿不到 fs / shell（contextIsolation + 白名单桥），所有路径解析、
+ * 可写性探测、搬迁都在主进程做；面板只负责把用户选的目录递过来。
+ */
+safeHandle("storage-get", () => {
+  const s = storage.stat();
+  return {
+    ok: s.ok,
+    root: s.root,
+    isDefault: s.isDefault,          // true = 用的是默认位置
+    rootExists: s.rootExists,        // 移动硬盘拔了会让这里变 false
+    free: s.free,
+    total: s.total,
+    dirs: s.dirs,                    // { recordings|history|screenshots: {path, exists, files, bytes} }
+    prev: typeof state.storageRootPrev === "string" ? state.storageRootPrev : "",
+    lastRecording: state.lastRecording || null,
+    error: s.error || null,
+  };
+}, () => ({ ok: false, root: storage.resolveRoot(), dirs: {}, free: 0, total: 0, error: "存储信息读取失败（详见 .orbdata/orb.log）" }));
+
+safeHandle("storage-pick", async () => {
+  // 挂在面板窗口上（而不是任意弹一个系统窗口）：面板是置顶的无边框窗口，
+  // 不指定父窗口时选择框可能被它盖住，用户会以为没反应。
+  const win = panel && !panel.isDestroyed() ? panel : undefined;
+  const r = await dialog.showOpenDialog(win, {
+    title: "选择录屏与历史的存储目录",
+    properties: ["openDirectory"],
+  });
+  if (r.canceled || !r.filePaths || !r.filePaths.length) return { ok: false, canceled: true, dir: "" };
+  return { ok: true, canceled: false, dir: r.filePaths[0] };
+}, () => ({ ok: false, canceled: true, dir: "" }));
+
+safeHandle("storage-set", (_e, dir) => {
+  /* 顺序：先改_STATE_再建子目录。反过来的话，万一新根不可用，
+     旧 state 没动，但新根下已经被建出空目录，用户会看到一个半吊子结果。 */
+  const r = storage.setRoot(dir);
+  if (!r.ok) {
+    return { ok: false, root: r.root, prev: r.prev, changed: false, needMigrate: false, error: r.reason || "设置失败" };
+  }
+  const sub = storage.ensureSubdirs();
+  return {
+    ok: true,
+    root: r.root,
+    prev: r.prev,
+    changed: r.changed,
+    needMigrate: r.needMigrate,     // 旧目录里有东西 → 面板据此提示"要不要搬过去"
+    dirs: sub.dirs,
+    error: sub.ok ? null : (sub.error || null),
+  };
+}, () => ({ ok: false, changed: false, needMigrate: false, error: "设置存储目录失败（详见 .orbdata/orb.log）" }));
+
+safeHandle("storage-migrate", () => {
+  const r = storage.migrate();
+  return {
+    ok: r.ok,
+    from: r.from,
+    to: r.to,
+    moved: r.moved,
+    skipped: r.skipped,
+    bytes: r.bytes,
+    errors: r.errors,
+    note: r.note || null,
+  };
+}, () => ({ ok: false, moved: 0, skipped: 0, bytes: 0, errors: ["搬迁失败（详见 .orbdata/orb.log）"], note: null }));
+
+safeHandle("storage-open", async (_e, kind) => storage.openSubdir(kind), () => ({ ok: false, path: null, error: "打开目录失败" }));
+
+/* ---------------- 屏幕录制 ----------------
+ * 分工是有硬约束的：getUserMedia / MediaRecorder 只能在渲染进程跑
+ * （要页面级的桌面源授权，主进程拿不到 media stream），
+ * 所以编码交给 panel.html；主进程负责它擅长的部分 ——
+ * 开句柄、追加写、rename 收尾、补 MP4 时长。
+ *
+ * 分片经 IPC 传 ArrayBuffer 而不是 base64：后者要多出 1/3 体积，
+ * 而且每片都要做一次字符串编解码，长录制时这部分开销是纯浪费。
+ */
+const CAP_MAX_SESSIONS = 3;               // 并行会话上限：多了说明有会话没被正常关闭
+const CAP_STALE_MS = 2 * 60 * 60 * 1000;  // 超过 2 小时还没关的会话一律视为泄漏
+const capSessions = new Map();            // sessionId -> { fd, file, bytes, chunks, startedAt, mime }
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+/** 时间戳文件名：用户不输入名字时用它，按修改时间排序就是按录制先后排序。 */
+function recStamp(d = new Date()) {
+  return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+}
+
+/** 同秒多次录制时不能互相覆盖 —— 宁可加序号，也不能让用户找不到一分钟前录的东西。 */
+function uniqueFile(dir, base, ext) {
+  let name = base + ext;
+  for (let i = 2; i <= 999; i++) {
+    if (!fs.existsSync(path.join(dir, name))) break;
+    name = `${base}-${i}${ext}`;
+  }
+  return path.join(dir, name);
+}
+
+/**
+ * 按实际 mime 决定扩展名。
+ * 这条是硬规则：**webm 绝不能存成 .mp4**。机器不支持 H.264 时 MediaRecorder
+ * 会回落到 webm，文件名骗人只会让播放器报一堆莫名其妙的错。
+ */
+function recExt(mime) {
+  const m = String(mime || "").toLowerCase();
+  if (m.includes("mp4")) return ".mp4";
+  if (m.includes("webm")) return ".webm";
+  if (m.includes("matroska") || m.includes("mkv")) return ".mkv";
+  return ".bin";
+}
+
+/** IPC 传过来的可能是 ArrayBuffer / Uint8Array / Buffer，统一成 Buffer（复制一份，避免底层缓冲被复用）。 */
+function toBuffer(data) {
+  if (data == null) return Buffer.alloc(0);
+  if (Buffer.isBuffer(data)) return Buffer.from(data);
+  if (data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data));
+  if (ArrayBuffer.isView(data)) return Buffer.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+  if (typeof data === "string") return Buffer.from(data, "base64");
+  return Buffer.alloc(0);
+}
+
+/** 关句柄并（可选）删临时文件。任何一步失败都不能往外抛 —— 清理走的是"尽力而为"语义。 */
+function capDrop(sessionId, removeTmp = true) {
+  const s = capSessions.get(sessionId);
+  if (!s) return { file: null, bytes: 0, removed: false };
+  capSessions.delete(sessionId);
+  try { if (typeof s.fd === "number") fs.closeSync(s.fd); } catch { /* 句柄可能已经失效 */ }
+  let removed = false;
+  if (removeTmp && s.file) {
+    try { if (fs.existsSync(s.file)) { fs.unlinkSync(s.file); removed = true; } } catch { /* 删不掉：至少句柄关了 */ }
+  }
+  return { file: s.file, bytes: s.bytes, removed };
+}
+
+/** 超过 2 小时还开着的会话，八成是渲染层崩过。趁下次开录把它们收掉，别占着句柄和磁盘。 */
+function capSweepStale(now = Date.now()) {
+  for (const [id, s] of Array.from(capSessions.entries())) {
+    if (now - (s.startedAt || now) < CAP_STALE_MS) continue;
+    log("[cap] 清理超时会话:", id);
+    capDrop(id, true);
+  }
+}
+
+/** 崩溃残留的 .part 文件不会被任何会话认领，启动时顺手清掉超过一天的。 */
+function purgeStaleParts() {
+  const dir = storage.pathOf("tmp");
+  const deadline = Date.now() - 24 * 60 * 60 * 1000;
+  try {
+    if (!fs.existsSync(dir)) return;
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".part")) continue;
+      const full = path.join(dir, name);
+      try {
+        if (fs.statSync(full).mtimeMs < deadline) fs.unlinkSync(full);
+      } catch { /* 正在被占用就下次再说 */ }
+    }
+  } catch { /* 临时目录读不了不影响启动 */ }
+}
+
+safeHandle("cap-sources", async () => {
+  /* types 必须显式给：不带 types 时 Electron 会连音频源一起枚举，
+     屏幕/窗口列表里混进一堆看不见的东西，面板展示会很乱。 */
+  const srcs = await desktopCapturer.getSources({ types: ["screen", "window"] });
+  return {
+    ok: true,
+    sources: srcs.map((s) => ({
+      id: s.id,
+      name: s.name,
+      displayId: s.display_id,
+      // 面板要按类型分流展示（屏幕 / 窗口），id 前缀是最可靠的判据
+      kind: String(s.id || "").startsWith("window:") ? "window" : "screen",
+    })),
+  };
+}, () => ({ ok: false, sources: [], error: "获取屏幕源失败（详见 .orbdata/orb.log）" }));
+
+safeHandle("cap-open", (_e, opts) => {
+  const o = opts && typeof opts === "object" ? opts : {};
+  capSweepStale();
+  // 已达上限：宁可明确失败，也不要让多个未关闭的会话静默堆积磁盘写入
+  if (capSessions.size >= CAP_MAX_SESSIONS) {
+    return { ok: false, sessionId: "", error: `同时进行的录制不能超过 ${CAP_MAX_SESSIONS} 个` };
+  }
+  const dir = storage.pathOf("tmp");
+  const id = `cap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    return { ok: false, sessionId: "", error: "临时目录不可用：" + ((e && e.message) || String(e)) };
+  }
+  let fd = -1;
+  const file = path.join(dir, `${id}.part`);
+  try {
+    fd = fs.openSync(file, "w");
+  } catch (e) {
+    return { ok: false, sessionId: "", error: "创建临时文件失败：" + ((e && e.message) || String(e)) };
+  }
+  capSessions.set(id, {
+    fd,
+    file,
+    bytes: 0,
+    chunks: 0,
+    startedAt: Date.now(),
+    mime: typeof o.mime === "string" ? o.mime : "",
+    sourceId: typeof o.sourceId === "string" ? o.sourceId : "",
+  });
+  log("[cap] 开始录制:", id, "mime =", String(o.mime || "").slice(0, 64));
+  return { ok: true, sessionId: id, file, mime: o.mime || "" };
+}, () => ({ ok: false, sessionId: "", error: "开始录制失败（详见 .orbdata/orb.log）" }));
+
+safeHandle("cap-chunk", (_e, sessionId, data) => {
+  const s = capSessions.get(sessionId);
+  if (!s) return { ok: false, bytes: 0, chunks: 0, error: "录制会话不存在或已结束" };
+  const buf = toBuffer(data);
+  if (!buf.length) return { ok: false, bytes: s.bytes, chunks: s.chunks, error: "分片为空" };
+  try {
+    let written = 0;
+    // writeSync 允许部分写入（磁盘满、信号中断都会），必须循环补齐，
+    // 否则一个分片少几个字节，整个 MP4 的 box 长度就全部错位了。
+    while (written < buf.length) {
+      written += fs.writeSync(s.fd, buf, written, buf.length - written, null);
+    }
+    s.bytes += written;
+    s.chunks += 1;
+    return { ok: true, bytes: s.bytes, chunks: s.chunks, received: written };
+  } catch (e) {
+    return { ok: false, bytes: s.bytes, chunks: s.chunks, error: "写入失败：" + ((e && e.message) || String(e)) };
+  }
+}, () => ({ ok: false, bytes: 0, chunks: 0, error: "分片写入失败（详见 .orbdata/orb.log）" }));
+
+safeHandle("cap-close", (_e, sessionId, opts) => {
+  const s = capSessions.get(sessionId);
+  if (!s) return { ok: false, path: "", error: "录制会话不存在或已结束" };
+  const o = opts && typeof opts === "object" ? opts : {};
+  capSessions.delete(sessionId);
+  let size = s.bytes;
+  try { fs.closeSync(s.fd); } catch { /* 已经关了 */ }
+  try { size = fs.statSync(s.file).size; } catch { /* 用内存里累计的值兜底 */ }
+
+  // 空文件 / 只有几十字节 → 不是有效录制，直接丢掉，别在目录里留垃圾
+  if (!size || size < 1024) {
+    const dropped = capDrop(sessionId, true);
+    log("[cap] 内容过短已丢弃:", sessionId, "bytes =", size);
+    return { ok: false, path: "", bytes: size, error: "录制内容为空或过短，已丢弃" + (dropped.removed ? "" : "（临时文件清理失败）") };
+  }
+
+  const ms = Number.isFinite(Number(o.ms)) && Number(o.ms) > 0
+    ? Number(o.ms)
+    : Date.now() - s.startedAt;
+  const ext = recExt(s.mime);
+  const baseName = typeof o.name === "string" && o.name.trim() ? o.name.trim() : "录屏-" + recStamp();
+  const dir = storage.pathOf("recordings");
+  const target = uniqueFile(dir, baseName, ext);
+  let viaCopy = false;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      // 同一个存储根里（临时目录就在 recordings/.tmp 下），rename 是原子操作
+      fs.renameSync(s.file, target);
+    } catch (e) {
+      // 跨卷 / 被杀软占用导致 rename 失败：退化成复制。慢一点，但内容不会丢。
+      fs.copyFileSync(s.file, target);
+      viaCopy = true;
+      try { fs.unlinkSync(s.file); } catch { /* 删不掉就留给下次全量清理 */ }
+    }
+  } catch (e) {
+    log("[cap] 落盘失败:", sessionId, (e && e.message) || String(e));
+    return { ok: false, path: "", bytes: size, ms, error: "写入目标目录失败：" + ((e && e.message) || String(e)) };
+  }
+
+  const out = {
+    ok: true,
+    path: target,
+    bytes: size,
+    ms,
+    mime: s.mime || "",
+    ext,
+    viaCopy,                         // true = rename 失败退回了复制；只影响速度，不影响可用性
+    valid: false,
+    durationMs: 0,
+    patched: false,
+    error: null,
+  };
+  /* 只有真正的 MP4 才走容器收尾：给 webm 文件跑 MP4 解析器毫无意义，
+     反过来如果用户机器不支持 H.264 而回落了 webm，这里的 ext 也不会是 .mp4。 */
+  if (ext === ".mp4") {
+    try {
+      const ins = mp4finalize.inspectFile(target);
+      out.valid = !!ins.ok;
+      if (!ins.ok) out.error = "MP4 结构不完整：" + (ins.error || "未知原因");
+      if (ins.ok) {
+        // MediaRecorder 中途停止时常常不写 mvhd.duration —— 缺了它，
+        // 资源管理器/PotPlayer 会显示 0 秒、进度条拖不动。只在缺失时补。
+        const patch = mp4finalize.patchDuration(target, ms);
+        // patch 失败时它的 durationMs 是 0，自然回落到 inspect 读到的值
+        out.durationMs = Number(patch.durationMs) || Number(ins.durationMs) || 0;
+        out.patched = !!patch.patched;
+      } else {
+        out.durationMs = ins.durationMs || 0;
+      }
+    } catch (e) {
+      // 收尾失败不影响文件本身：前面 rename 已经成功，用户可以自己在播放器里打开
+      out.error = "MP4 收尾检查失败：" + ((e && e.message) || String(e));
+    }
+  } else {
+    out.valid = true;   // 非 MP4 不做容器校验，交给将来的 webm 处理
+  }
+
+  saveState({ lastRecording: { path: target, bytes: size, ms, mime: s.mime || "" } });
+  log("[cap] 录制完成:", target, size, "bytes /", ms, "ms");
+  return out;
+}, () => ({ ok: false, path: "", bytes: 0, ms: 0, error: "结束录制失败（详见 .orbdata/orb.log）" }));
+
+safeHandle("cap-abort", (_e, sessionId) => {
+  const s = capSessions.get(sessionId);
+  if (!s) return { ok: true, removed: false, note: "会话不存在（可能已经结束）" };
+  const dropped = capDrop(sessionId, true);
+  log("[cap] 放弃录制:", sessionId);
+  return { ok: true, removed: dropped.removed, note: dropped.removed ? "已删除临时文件" : "临时文件清理失败" };
+}, () => ({ ok: false, removed: false, error: "放弃录制失败（详见 .orbdata/orb.log）" }));
+
+/* ---------------- 悬浮录屏控制条的事件转发 ----------------
+ * 三方协议（通道名已定死，任何一侧改名都会静默失效，改名前先打招呼）：
+ *   面板 → 主 : rec-cmd-to-bar  { type: 'start' | 'pause' | 'resume' | 'stop' }
+ *   控制条 → 主: rec-bar-cmd     'pause' | 'resume' | 'finish' | 'abort'
+ *   主 → 面板 : rec:cmd         'pause' | 'resume' | 'finish' | 'abort'
+ *   主 → 控制条: rec:event      { type: 'start' | 'pause' | 'resume' | 'stop' }
+ * 注意方向不对称：面板说的是"我想要暂停/继续"，控制条回的是"用户点了完成"。
+ * 语义不同名（pause/finish vs resume/abort）就是为了不让两边混淆。
+ */
+
+/* 面板 → 主进程 → 控制条 */
+ipcMain.on("rec-cmd-to-bar", (_e, payload) => {
+  const type = payload && payload.type;
+  try {
+    if (type === "start") {
+      /* 懒创建 + 显示。先 showInactive 再 show：showInactive 不抢焦点，
+         否则刚开始录制用户的键盘焦点就被从小软件上拽走了。
+         之后再补一次 setAlwaysOnTop(true)：全屏应用会把普通置顶窗盖掉，
+         录制全屏游戏/视频时控制条不能消失。 */
+      const win = createRecBar();
+      if (!win) return;
+      emitRecEvent(payload);
+      try {
+        win.showInactive();
+        win.show();
+        win.setAlwaysOnTop(true);
+      } catch (e) { log("[recbar] 显示失败:", (e && e.message) || String(e)); }
+    } else if (type === "pause" || type === "resume") {
+      // 控制条没建（理论上 start 之后一定在）就丢掉：事件没有意义
+      if (!recbarWin || recbarWin.isDestroyed()) return;
+      emitRecEvent(payload);
+    } else if (type === "stop") {
+      try { if (recbarWin && !recbarWin.isDestroyed()) recbarWin.hide(); } catch { /* 已经没了 */ }
+    } else {
+      log("[recbar] 未知事件类型:", String(type));
+    }
+  } catch (e) {
+    log("[recbar] 转发事件失败:", (e && e.message) || String(e));
+  }
+});
+
+/* 控制条 → 主进程 → 面板 */
+ipcMain.on("rec-bar-cmd", (_e, cmd) => {
+  const c = String(cmd || "");
+  try {
+    if (c !== "pause" && c !== "resume" && c !== "finish" && c !== "abort") {
+      log("[recbar] 未知命令:", c);
+      return;
+    }
+    // 面板没了（被强关 / 崩溃）：控制条再挂着只会让用户点一个没反应的按钮
+    if (!panel || panel.isDestroyed()) {
+      try { if (recbarWin && !recbarWin.isDestroyed()) recbarWin.hide(); } catch { /* ignore */ }
+      return;
+    }
+    sendToPanel("rec:cmd", c);
+  } catch (e) {
+    log("[recbar] 转发命令失败:", (e && e.message) || String(e));
   }
 });
 
