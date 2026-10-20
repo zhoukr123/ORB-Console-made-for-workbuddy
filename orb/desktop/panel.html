@@ -1618,6 +1618,26 @@
   /* 槽位内的操作行：比底部那排矮一点、左对齐，视觉上跟着自己那一栏 */
   .slot-actions { margin-top: 8px; margin-bottom: 8px; justify-content: flex-start; }
   .slot-actions button { padding: 5px 12px; font-size:calc(12px * var(--fs-scale)); }
+  /* 「项目与更新」（设置 → 关于）里的 GitHub 直达两连。
+     图标是内联 SVG：CSP 是 default-src 'self'，不引任何外部资源。
+     配色只走 --accent 三件套（三套主题都有定义、对比度有保障），不用 --energy* ——
+     后者在 t3 下未定义，var() 失效会变成透明底按钮。
+     hover 的 transform 沿用 .sheet .row2 button:hover（translateY(-1px)），这里只补配色，
+     所以选择器要带上 .sheet .row2 才能压过 [data-theme="t1"] .sheet .row2 button 的底色。 */
+  .gh-actions { flex-wrap: wrap; gap: 8px; }
+  .gh-actions button {
+    display: inline-flex; align-items: center; gap: 6px;
+    animation: ghbtnin var(--dur-3) var(--ease) backwards;
+  }
+  .sheet .row2.gh-actions button:hover {
+    background: var(--accent-soft); border-color: var(--accent); color: var(--accent-fg);
+  }
+  .gh-actions .ghico {
+    width: 14px; height: 14px; display: block; flex: 0 0 auto;
+    fill: currentColor; overflow: visible;
+  }
+  @keyframes ghbtnin { from { opacity: 0; transform: translateY(-3px) } to { opacity: 1; transform: none } }
+  html.no-motion .gh-actions button { animation: none !important; }
   /* 测试结果：贴着按钮，结果一出来就出现在眼睛正看着的地方 */
   .slotmsg {
     font-size:calc(11.5px * var(--fs-scale)); line-height: 1.6; color: var(--fg-soft);
@@ -2287,6 +2307,21 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
             <button id="openGuideDir" title="在文件管理器中定位该文件">在文件夹中显示</button>
           </div>
           <div class="slotmsg" id="guideMsg"></div>
+        </div>
+        <div class="slotbox">
+          <div class="slothead">项目与更新 <span class="hint">作者仓库在 GitHub</span></div>
+          <div class="slotnote">源码、问题反馈与新版本发布都在 GitHub 上 —— <b>两个按钮都用系统默认浏览器打开</b>，不会在面板里跳转。</div>
+          <div class="row2 slot-actions gh-actions">
+            <button id="openRepo" title="在系统默认浏览器中打开作者仓库主页（源码 / README / Issue）">
+              <svg class="ghico" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A7.995 7.995 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+              打开 GitHub 仓库
+            </button>
+            <button id="openReleases" title="在系统默认浏览器中打开 Release 页，查看最新版本与更新说明">
+              <svg class="ghico" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M1 7.775V2.75C1 1.784 1.784 1 2.75 1h5.025c.464 0 .91.184 1.238.513l6.25 6.25a1.75 1.75 0 0 1 0 2.474l-5.026 5.026a1.75 1.75 0 0 1-2.474 0l-6.25-6.25A1.752 1.752 0 0 1 1 7.775Zm1.5 0c0 .066.026.13.073.177l6.25 6.25a.25.25 0 0 0 .354 0l5.025-5.025a.25.25 0 0 0 0-.354l-6.25-6.25a.25.25 0 0 0-.177-.073H2.75a.25.25 0 0 0-.25.25ZM6 5a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z"/></svg>
+              查看最新版本
+            </button>
+          </div>
+          <div class="slotmsg" id="repoMsg"></div>
         </div>
         <div class="slotbox">
           <div class="slothead">快捷键</div>
@@ -4835,6 +4870,29 @@ function bindThemeUI() {
   if (g) g.addEventListener('click', openGuide);
   const gd = document.getElementById('openGuideDir');
   if (gd) gd.addEventListener('click', () => window.orb.openGuideDir && window.orb.openGuideDir());
+  const rp = document.getElementById('openRepo');
+  if (rp) rp.addEventListener('click', () => openOrbUrl(ORB_REPO_URL, '仓库主页'));
+  const rl = document.getElementById('openReleases');
+  if (rl) rl.addEventListener('click', () => openOrbUrl(ORB_RELEASE_URL, 'Release 页'));
+}
+
+/* ---------- 项目与更新：GitHub 直达入口（设置 → 关于） ----------
+   ⚠️ 只走 window.orb.openExternal（→ main.js 的 shell.openExternal → 系统默认浏览器）。
+   绝不用锚点外链（a 标签配 http 地址）：面板 CSP 是 default-src 'self'，
+   而且 Electron 里外链会在面板自身窗口内尝试打开 —— 表现为「点了不动」，甚至把面板顶掉。 */
+const ORB_REPO_URL = 'https://github.com/zhoukr123/ORB-Console-made-for-workbuddy';
+const ORB_RELEASE_URL = 'https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases';
+
+/* open-external 是 fire-and-forget（ipcRenderer.send，没有返回值），
+   所以这里只在"根本没唤起"时给个兜底提示，成功不打扰 —— 浏览器自己会弹到前台。 */
+function openOrbUrl(url, label) {
+  const msg = document.getElementById('repoMsg');
+  try {
+    window.orb.openExternal(url);
+    if (msg) msg.textContent = '已在默认浏览器打开' + label + '，切过去看一下。';
+  } catch {
+    if (msg) msg.textContent = '打开失败，没能唤起默认浏览器。可手动复制地址：' + url;
+  }
 }
 
 function openGuide() {

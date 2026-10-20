@@ -23,7 +23,7 @@ const { execSync } = require('child_process');
 const ROOT = process.env.ORB_ROOT ? path.resolve(process.env.ORB_ROOT) : path.resolve(__dirname, '..');
 const APP = path.join(ROOT, 'orb', 'desktop');
 const ELECTRON = path.join(APP, 'node_modules', 'electron', 'dist');
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 /* 输出目录带时间戳：不删旧构建。早先这里是 fs.rmSync(OUT) 一把清空，
    但批量删除会触发安全保护（3789 个文件远超阈值）而被拦截。
    版本化目录反而更好——每次构建都是可回溯的产物，旧的由用户自行清理。 */

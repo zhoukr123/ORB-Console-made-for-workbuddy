@@ -1,7 +1,7 @@
 {
   "name": "orb-desktop",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "main.js",
   "description": "ORB 控制台 · 桌面端（Electron）",
   "author": "ORB",
