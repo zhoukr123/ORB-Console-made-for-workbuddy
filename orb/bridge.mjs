@@ -1022,16 +1022,47 @@ function frontHealth() {
   };
 }
 
-/** 执行修复：重建 venv（若缺）-> pip 装 windows-mcp -> 断开旧 session 让下次调用重连 */
+/** 轻量重连：只重置会话，不动运行时。
+ *  「组件都在、只是 MCP 会话断了」（not-connected）时这一步就足够，毫秒级见效，
+ *  而且**对随包运行时同样有效** —— 这是发布包用户唯一够得着的「修复」。
+ *  注意必须走 disposeSession：session 对象没有 close 方法，只删 map 引用
+ *  会把 windows-mcp 子进程留成孤儿（见 afterInstall 里的同款注释）。 */
+function reconnectFront(steps) {
+  const push = (s) => { steps.push(s); log("[repair]", s); };
+  try {
+    disposeSession("windows");
+    connecting.delete("windows");
+    sessionBackoff.delete("windows");
+  } catch { /* ignore */ }
+  push("已重置前台连接，下次调用会自动重连");
+  return { ok: true, mode: "reconnect", steps, health: frontHealth() };
+}
+
+/** 执行修复。三档，按真实状态分流，别让用户陪跑：
+ *  ① 组件在、只是会话断（not-connected）→ 轻量重连（任何运行时来源都走这条，
+ *     不为这点事去跑 10-15 分钟的 pip）；
+ *  ② 随包运行时缺东西（解释器 / windows-mcp 不在）→ 拒绝：构建期产物不可重建，
+ *     只能重新下载完整安装包（或开发态重跑 build-runtime.ps1）；
+ *  ③ 解释器来自系统且没装 windows-mcp → 重建 venv + pip 安装（遗留修复路径，
+ *     开发态 / WorkBuddy venv 被更新清掉的场景）。 */
 function repairFront() {
   return new Promise((resolve) => {
     const steps = [];
     const push = (s) => { steps.push(s); log("[repair]", s); };
 
     const py = resolvePython();
+    const pkg = py.ok && hasWindowsMcp(py);
+    const connected = sessions.has("windows");
+
+    if (py.ok && pkg && !connected) {
+      push("组件已就位、会话未连上：走轻量重连（不重装）");
+      resolve(reconnectFront(steps));
+      return;
+    }
+
     if (py.ok && py.source === "bundled") {
-      /* 用的是随包运行时：它是构建期产物，里面没有 pip、也不该在用户机器上联网装包。
-         这里明确说"不能修"并给出可执行建议，而不是去跑一次注定失败的 pip。 */
+      /* 用的是随包运行时且缺东西：它是构建期产物，里面没有 pip、也不该在用户机器上
+         联网装包。这里明确说"不能修"并给出可执行建议，而不是去跑一次注定失败的 pip。 */
       push("当前使用随包运行时（构建期产物），不支持在线修复");
       resolve({
         ok: false,
@@ -2152,6 +2183,13 @@ function asrModelsAvailable() {
   } catch { /* models/ 不存在（没装）就是空列表 */ }
   return names;
 }
+/** 可追加下载的模型权重（name → HF repo）。
+ *  small 由一键安装（prepare.ps1）负责；medium 等额外模型走 /api/asr/model，
+ *  供首跑向导的「可选组件」勾选后下载（≈1.5GB，默认不勾）。 */
+const ASR_MODEL_REPOS = {
+  small: "Systran/faster-whisper-small",
+  medium: "Systran/faster-whisper-medium",
+};
 /* ASR 自动启动开关：ORB_ASR_AUTOSTART=0 可关掉。
  * 正常不用设；主要是给单测用 —— 测试会 spawn 真 bridge，
  * 若这时自动拉起 Whisper（small 模型 + GPU），又慢又会和用户当前会话抢显存。
@@ -3193,6 +3231,7 @@ async function handle(req, res) {
       // 原来只给 health，面板读 running 永远是 undefined → 按钮文案永远停在"启动"。
       running: !!h, health: !!h,
       modelsAvailable: (h && h.modelsAvailable) || asrModelsAvailable(),
+      model: (h && h.model) || readAsrConf().model || "small",
       device: (h && h.device) || readAsrConf().device || "auto",
       compute: (h && h.compute) || readAsrConf().compute || "auto",
       requested: { device: String(prev.device || "auto"), compute: String(prev.compute || "auto") },
@@ -3271,6 +3310,71 @@ async function handle(req, res) {
       lines: p ? p.lines.slice(-40) : [],
       elapsedMs: p ? Date.now() - p.startedAt : 0,
     });
+    return;
+  }
+
+  /* 追加下载某个模型权重（首跑「可选组件」用，例如 medium ≈1.5GB）：
+     直接用 asr/venv 里的 python 跑 download_model.py <repo> models/<name>。
+     进度并入 asrPrepare 单槽 —— 与一键安装互斥（同一时刻只跑一个），
+     面板轮询 /api/asr/prepare-progress 即可看到（download_model.py 的输出行
+     本身就是 [orb-asr] model <pct> …，解析规则现成）。
+     ⚠️ medium 依赖 venv + 依赖：没装过先走 /api/asr/prepare，这里只做「追加」。 */
+  if (req.method === "POST" && url.pathname === "/api/asr/model") {
+    const body = await readBody(req);
+    const name = String((body && body.name) || "").trim();
+    const repo = ASR_MODEL_REPOS[name];
+    if (!repo) {
+      send(res, 200, { ok: false, error: "不支持的模型名：" + (name || "(空)") + "（可用：" + Object.keys(ASR_MODEL_REPOS).join(" / ") + "）" });
+      return;
+    }
+    if (asrPrepare && asrPrepare.running) {
+      send(res, 200, { ok: false, running: true, error: "正在安装中，请稍候（进度可轮询 /api/asr/prepare-progress）" });
+      return;
+    }
+    if (!asrInstalled()) {
+      send(res, 200, {
+        ok: false, needInstall: true,
+        error: "还没安装本地识别（venv / 依赖未就绪）：请先完成「安装本地离线识别」，再来下 " + name + " 权重。",
+      });
+      return;
+    }
+    const dest = path.join(ASR_DIR, "models", name);
+    const proc = spawn(asrVenvPy(), [path.join(ASR_DIR, "download_model.py"), repo, dest],
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, cwd: ASR_DIR });
+    asrPrepare = {
+      running: true, proc, lines: [], step: "model", percent: 0,
+      ok: false, error: "", startedAt: Date.now(), code: null, model: name,
+    };
+    const onOut = (d) => {
+      for (const raw of String(d).split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line) continue;
+        asrPrepare.lines.push(line);
+        if (asrPrepare.lines.length > 200) asrPrepare.lines.shift();
+        const m = line.match(/^\[orb-asr\]\s+(\w+)\s+(\d+)(?:\s+(.*))?$/);
+        if (m) { asrPrepare.step = m[1]; asrPrepare.percent = Number(m[2]) || 0; }
+        log("[asr-model]", line);
+      }
+    };
+    proc.stdout.on("data", onOut);
+    proc.stderr.on("data", onOut);
+    proc.on("error", (e) => {
+      asrPrepare.running = false;
+      asrPrepare.ok = false;
+      asrPrepare.error = String(e?.message ?? e);
+      log("[asr-model] 启动异常:", asrPrepare.error);
+    });
+    proc.on("exit", (code) => {
+      asrPrepare.running = false;
+      asrPrepare.code = code;
+      asrPrepare.ok = code === 0;
+      if (code !== 0 && !asrPrepare.error) {
+        asrPrepare.error = "下载脚本退出码 " + code + "（支持断点续传，可直接重试）";
+      }
+      log("[asr-model] 结束，退出码", code);
+    });
+    if (proc) registerChild(proc.pid, "asr-model");
+    send(res, 200, { ok: true, started: true, running: true, model: name, dest });
     return;
   }
 

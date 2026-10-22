@@ -17,6 +17,7 @@
     --accent: #534ab7;
     --accent-soft: #eeedfe;
     --accent-fg: #3c3489;
+    --accent-ring: rgba(83,74,183,.08);   /* 选中chip外扩光晕（低α品牌色） */
     --danger: #d8443f;
     --danger-soft: #fdecec;
     --ok: #1d9e75;
@@ -41,8 +42,8 @@
   /* ---------- 三套主题：只改变量，不动任何布局 ----------
      切换成本 = 改 <html data-theme>，所以永远不会引起错位。
      每套都按用户最初的定义取色（名称后为最初的定义，现名以主题卡为准）：
-       t1 星空·琥珀金       —— 深色底，琥珀金做运行态高亮
-       t2 自然·青柠         —— 沿用现有紫罗兰，新增青柠做运行态
+       t1 深空              —— 深色底，琥珀金做运行态高亮
+       t2 白昼              —— 沿用现有紫罗兰，新增青柠做运行态
        t3 极光·氤氲（原「浅色玻璃拟态」）—— 亮色底不动，流光溢彩背景板 + 毛玻璃，紫色品牌色不变
      重要：深色面板配毛玻璃必须在玻璃层下垫一层纯色，
      否则文字对比度会掉出 WCAG AA（后改用玻璃层自带的不透明衬底，不再需要单独的衬垫令牌）。 */
@@ -57,7 +58,7 @@
     --sh-sm: 0 2px 8px rgba(0,0,0,.35);
     --sh-lg: 0 18px 48px rgba(0,0,0,.55);
   }
-  [data-theme="t2"] {
+  [data-theme="t2"], [data-theme="t4"] {
     --bg: #ffffff; --bg-soft: #faf9f6; --bg-sunken: #f4f3ef;
     --fg: #2c2c2a; --fg-soft: #5f5e5a; --fg-muted: #928f86;
     --border: #eceae3; --border-strong: #d9d6cc;
@@ -105,13 +106,22 @@
      fill/animation-name/opacity —— 不碰任何布局属性。
      ================================================================== */
 
-  /* ---------- 方案一 t1：星空·琥珀金 ---------- */
+  /* ---------- 方案一 t1：深空 ---------- */
   [data-theme="t1"] {
     --amber-bright:#ffc65c; --amber:#f0a92e; --amber-dim:#c98a1f;
     --amber-soft:#3a2c14; --amber-border:#8a6520; --amber-ink:#12162b;
     --amber-wash-faint:rgba(240,169,46,.04);
     --amber-wash:rgba(240,169,46,.10);
     --amber-glow:rgba(240,169,46,.32);
+    /* α 变体：自选色时一并重算，别让动画/投影里留下默认琥珀的硬编码 */
+    --amber-halo:rgba(240,169,46,.10);      /* 头像呼吸：静止外环 */
+    --amber-halo-hi:rgba(240,169,46,.16);   /* 头像呼吸：50% 外环 */
+    --amber-pulse:rgba(240,169,46,.20);     /* 活跃灯：静止 */
+    --amber-pulse-faint:rgba(240,169,46,.05); /* 活跃灯：50% */
+    --amber-inset:rgba(240,169,46,.10);     /* 执行条内阴影 */
+    --amber-ring:rgba(240,169,46,.14);      /* 输入聚焦环 */
+    --amber-key:rgba(240,169,46,.35);       /* 主行动键投影 */
+    --amber-bar-deep:#241a0c;      /* 执行条底部 */
     --run:var(--amber); --warn:var(--amber);
     /* 共享语义别名：三套主题用同一批名字，避免调用漂移 */
     --energy:var(--amber); --energy-bright:var(--amber-bright); --energy-deep:var(--amber-dim);
@@ -132,8 +142,8 @@
   [data-theme="t1"] header:hover img { box-shadow: 0 0 0 1.5px var(--amber), 0 2px 10px var(--amber-glow); }
   [data-theme="t1"] #avatar.busy { animation-name: avBreatheA; }
   @keyframes avBreatheA {
-    0%,100% { box-shadow: 0 0 0 1.5px var(--amber), 0 0 0 3px rgba(240,169,46,.10); }
-    50%     { box-shadow: 0 0 0 2px   var(--amber), 0 0 0 7px rgba(240,169,46,.16); }
+    0%,100% { box-shadow: 0 0 0 1.5px var(--amber), 0 0 0 3px var(--amber-halo); }
+    50%     { box-shadow: 0 0 0 2px   var(--amber), 0 0 0 7px var(--amber-halo-hi); }
   }
 
   /* 状态条：积分 chip + 活跃灯 + 暖铺层 */
@@ -163,16 +173,16 @@
   [data-theme="t1"] .led.on { background: var(--amber); animation-name: ledpulseA; }
   [data-theme="t1"] .led.off { background: var(--fg-muted); box-shadow: none; }
   @keyframes ledpulseA {
-    0%,100% { box-shadow: 0 0 0 3px rgba(240,169,46,.20); }
-    50%     { box-shadow: 0 0 0 6px rgba(240,169,46,.05); }
+    0%,100% { box-shadow: 0 0 0 3px var(--amber-pulse); }
+    50%     { box-shadow: 0 0 0 6px var(--amber-pulse-faint); }
   }
 
   /* 执行条：琥珀底 + 金扫光 */
   [data-theme="t1"] #liveBar {
-    background: linear-gradient(180deg, var(--amber-soft), #241a0c);
+    background: linear-gradient(180deg, var(--amber-soft), var(--amber-bar-deep));
     color: var(--amber-bright);
     border-bottom-color: var(--amber-border);
-    box-shadow: inset 0 0 24px rgba(240,169,46,.10);
+    box-shadow: inset 0 0 24px var(--amber-inset);
   }
 
   /* 消息区：Orb 强调条=琥珀（用户气泡保持靛蓝） */
@@ -182,7 +192,6 @@
 
   /* 工具区：更多入口 / 分段锚点吃琥珀（顺带修掉深色下 #fff 白闪） */
   [data-theme="t1"] .more-btn { border-color: var(--amber-border); color: var(--amber-dim); }
-  [data-theme="t1"] .more-btn b { color: var(--amber); opacity: .85; }
   [data-theme="t1"] .more-btn:hover,
   [data-theme="t1"] .more-btn.on { border-color: var(--amber); color: var(--amber-bright); background: var(--amber-soft); }
   [data-theme="t1"] .more-sec { color: var(--amber-dim); }
@@ -195,11 +204,11 @@
     background: radial-gradient(260px 80px at 50% 100%, var(--amber-wash), transparent 74%), var(--bg-soft);
     border-top-color: var(--amber-border);
   }
-  [data-theme="t1"] textarea:focus { border-color: var(--amber); box-shadow: 0 0 0 3px rgba(240,169,46,.14); }
+  [data-theme="t1"] textarea:focus { border-color: var(--amber); box-shadow: 0 0 0 3px var(--amber-ring); }
   [data-theme="t1"] .send {
     background: linear-gradient(180deg, var(--amber-bright), var(--amber));
     color: var(--amber-ink);
-    box-shadow: 0 1px 3px rgba(240,169,46,.35);
+    box-shadow: 0 1px 3px var(--amber-key);
   }
   [data-theme="t1"] .send:hover { box-shadow: 0 4px 14px var(--amber-glow); }
   [data-theme="t1"] .send:disabled { background: var(--border-strong); color: var(--fg-muted); box-shadow: none; }
@@ -220,7 +229,7 @@
   [data-theme="t1"] .field input,
   [data-theme="t1"] .field select { background: var(--bg-sunken); border-color: var(--border-strong); color: var(--fg); }
   [data-theme="t1"] .field input:focus,
-  [data-theme="t1"] .field select:focus { border-color: var(--amber); background: var(--bg); box-shadow: 0 0 0 3px rgba(240,169,46,.14); }
+  [data-theme="t1"] .field select:focus { border-color: var(--amber); background: var(--bg); box-shadow: 0 0 0 3px var(--amber-ring); }
   [data-theme="t1"] .sheet .row2 button { background: var(--bg-soft); border-color: var(--border-strong); color: var(--fg-soft); }
   [data-theme="t1"] .sheet .row2 button.pri,
   [data-theme="t1"] .sheet .row2 button.pri:hover {
@@ -249,6 +258,7 @@
   [data-theme="t1"] .wfe-head { background: var(--bg-soft); }
   [data-theme="t1"] .wfe-json:focus { background: var(--bg-sunken); }
   [data-theme="t1"] .pedit-tab.on { background: var(--bg); }
+  [data-theme="t1"] .pfield-in:focus { border-color: var(--amber); box-shadow: 0 0 0 3px var(--amber-ring); }
   [data-theme="t1"] .pfield-in,
   [data-theme="t1"] .pfield-pick,
   [data-theme="t1"] .pwait-num { background: var(--bg-sunken); }
@@ -258,73 +268,81 @@
   [data-theme="t1"] .shot { border-color: var(--border-strong); }
   [data-theme="t1"] .field input:hover,
   [data-theme="t1"] .field select:hover { border-color: var(--border-strong); }
-  [data-theme="t1"] .chip.sel { border-color: var(--accent); }
+  /* .chip.sel 的描边/光晕已改走 --accent / --accent-ring（基类），无需再按主题覆盖 */
 
-  /* ---------- 方案二 t2：自然·青柠 ---------- */
-  [data-theme="t2"] {
+  /* ---------- 方案二 t2：白昼 ---------- */
+  [data-theme="t2"], [data-theme="t4"] {
     --energy:#8fc93a; --energy-bright:#a8dd4f; --energy-deep:#4a6f10;
     --energy-soft:#eef7dc; --energy-edge:#649f18; --energy-ink:#1a2405;
     --energy-glow:rgba(143,201,58,.30);
+    /* α 变体：自选色时一并重算，别让动画/投影里留下默认青柠的硬编码 */
+    --energy-halo:rgba(143,201,58,.14);
+    --energy-halo-hi:rgba(143,201,58,.20);
+    --energy-pulse:rgba(143,201,58,.22);
+    --energy-pulse-faint:rgba(143,201,58,.06);
+    --energy-ring:rgba(143,201,58,.16);
+    --energy-key:rgba(143,201,58,.40);
+    --energy-bar-deep:#dcefc0;           /* 执行条底部 */
     --fg-quiet:#6a675e; --fg-muted:var(--fg-quiet);   /* 修既存 a11y：白底小字正文 ≥4.5 */
     --run:var(--energy);
   }
-  [data-theme="t2"] header {
+  [data-theme="t2"] header ,[data-theme="t4"] header {
     background: radial-gradient(120px 34px at 4% 0%, var(--energy-soft), transparent 72%),
                 linear-gradient(180deg, var(--bg) 0%, var(--bg-soft) 100%);
     border-bottom-color: var(--energy-edge);
   }
   /* 浅底：能量色不能当文字色（青柠 on 白仅 1.98:1），标题用深字 + 能量光晕 */
-  [data-theme="t2"] header .title { color: var(--fg); text-shadow: 0 0 14px var(--energy-glow); }
-  [data-theme="t2"] header img { box-shadow: 0 0 0 1.5px var(--energy-edge); }
-  [data-theme="t2"] #avatar.busy { animation-name: avBreatheT2; }
+  [data-theme="t2"] header .title ,[data-theme="t4"] header .title { color: var(--fg); text-shadow: 0 0 14px var(--energy-glow); }
+  [data-theme="t2"] header img ,[data-theme="t4"] header img { box-shadow: 0 0 0 1.5px var(--energy-edge); }
+  [data-theme="t2"] #avatar.busy ,[data-theme="t4"] #avatar.busy { animation-name: avBreatheT2; }
   @keyframes avBreatheT2 {
-    0%,100% { box-shadow: 0 0 0 1.5px var(--energy-edge), 0 0 0 3px rgba(143,201,58,.14); }
-    50%     { box-shadow: 0 0 0 2px   var(--energy),      0 0 0 7px rgba(143,201,58,.20); }
+    0%,100% { box-shadow: 0 0 0 1.5px var(--energy-edge), 0 0 0 3px var(--energy-halo); }
+    50%     { box-shadow: 0 0 0 2px   var(--energy),      0 0 0 7px var(--energy-halo-hi); }
   }
-  [data-theme="t2"] .strip {
+  [data-theme="t2"] .strip ,[data-theme="t4"] .strip {
     background: radial-gradient(220px 60px at 6% 50%, var(--energy-soft), transparent 70%), var(--bg-soft);
   }
-  [data-theme="t2"] .credit {
+  [data-theme="t2"] .credit ,[data-theme="t4"] .credit {
     border-color: var(--energy-edge);
     background: linear-gradient(180deg, var(--energy-soft), var(--bg-soft));
     color: var(--energy-deep);
   }
-  [data-theme="t2"] .credit-ico { fill: var(--energy-deep); }
-  [data-theme="t2"] .credit b { color: var(--energy-deep); }
-  [data-theme="t2"] .credit:hover { border-color: var(--energy); background: var(--energy-soft); box-shadow: 0 2px 10px var(--energy-glow); }
-  [data-theme="t2"] .led.on { background: var(--energy); animation-name: ledpulseT2; }
+  [data-theme="t2"] .credit-ico ,[data-theme="t4"] .credit-ico { fill: var(--energy-deep); }
+  [data-theme="t2"] .credit b ,[data-theme="t4"] .credit b { color: var(--energy-deep); }
+  [data-theme="t2"] .credit:hover ,[data-theme="t4"] .credit:hover { border-color: var(--energy); background: var(--energy-soft); box-shadow: 0 2px 10px var(--energy-glow); }
+  [data-theme="t2"] .led.on ,[data-theme="t4"] .led.on { background: var(--energy); animation-name: ledpulseT2; }
   @keyframes ledpulseT2 {
-    0%,100% { box-shadow: 0 0 0 3px rgba(143,201,58,.22); }
-    50%     { box-shadow: 0 0 0 6px rgba(143,201,58,.06); }
+    0%,100% { box-shadow: 0 0 0 3px var(--energy-pulse); }
+    50%     { box-shadow: 0 0 0 6px var(--energy-pulse-faint); }
   }
-  [data-theme="t2"] #liveBar { background: linear-gradient(180deg, var(--energy-soft), #dcefc0); color: var(--fg); border-bottom-color: var(--energy-edge); }
-  [data-theme="t2"] .msg.orb::before { background: var(--energy-edge); opacity: .7; }
-  [data-theme="t2"] .typing i { background: var(--energy-deep); }
-  [data-theme="t2"] .pending { color: var(--energy-deep); }
-  [data-theme="t2"] .more-btn { border-color: var(--energy-edge); color: var(--energy-deep); }
-  [data-theme="t2"] .more-btn b { color: var(--energy-deep); opacity: 1; }
-  [data-theme="t2"] .more-btn:hover,
-  [data-theme="t2"] .more-btn.on { border-color: var(--energy); color: var(--energy-deep); background: var(--energy-soft); }
-  [data-theme="t2"] .more-sec::before { background: var(--energy); opacity: .7; }
-  [data-theme="t2"] .pinned:hover,
-  [data-theme="t2"] .mcell:hover { background: var(--energy-soft); border-color: var(--energy); color: var(--energy-deep); }
-  [data-theme="t2"] .compose {
+  [data-theme="t2"] #liveBar ,[data-theme="t4"] #liveBar { background: linear-gradient(180deg, var(--energy-soft), var(--energy-bar-deep)); color: var(--fg); border-bottom-color: var(--energy-edge); }
+  [data-theme="t2"] .msg.orb::before ,[data-theme="t4"] .msg.orb::before { background: var(--energy-edge); opacity: .7; }
+  [data-theme="t2"] .typing i ,[data-theme="t4"] .typing i { background: var(--energy-deep); }
+  [data-theme="t2"] .pending ,[data-theme="t4"] .pending { color: var(--energy-deep); }
+  [data-theme="t2"] .more-btn ,[data-theme="t4"] .more-btn { border-color: var(--energy-edge); color: var(--energy-deep); }
+  [data-theme="t2"] .more-btn:hover,,[data-theme="t4"] .more-btn:hover,
+  [data-theme="t2"] .more-btn.on ,[data-theme="t4"] .more-btn.on { border-color: var(--energy); color: var(--energy-deep); background: var(--energy-soft); }
+  [data-theme="t2"] .more-sec::before ,[data-theme="t4"] .more-sec::before { background: var(--energy); opacity: .7; }
+  [data-theme="t2"] .pinned:hover,,[data-theme="t4"] .pinned:hover,
+  [data-theme="t2"] .mcell:hover ,[data-theme="t4"] .mcell:hover { background: var(--energy-soft); border-color: var(--energy); color: var(--energy-deep); }
+  [data-theme="t2"] .compose ,[data-theme="t4"] .compose {
     background: radial-gradient(260px 80px at 50% 100%, var(--energy-soft), transparent 74%), var(--bg-soft);
     border-top-color: var(--energy-edge);
   }
-  [data-theme="t2"] textarea:focus { border-color: var(--energy); box-shadow: 0 0 0 3px rgba(143,201,58,.16); }
-  [data-theme="t2"] .send { background: linear-gradient(180deg, var(--energy-bright), var(--energy)); color: var(--energy-ink); box-shadow: 0 1px 3px rgba(143,201,58,.40); }
-  [data-theme="t2"] .send:hover { box-shadow: 0 4px 14px var(--energy-glow); }
-  [data-theme="t2"] .send:disabled { background: var(--border-strong); color: var(--fg-muted); }
-  [data-theme="t2"] .messages { background: radial-gradient(320px 130px at 50% 100%, var(--energy-wash), transparent 80%); }
-  [data-theme="t2"] .slothead { color: var(--energy-deep); }
-  [data-theme="t2"] .slotnote { background: var(--energy-soft); border-color: var(--energy-edge); }
-  [data-theme="t2"] .slotnote b { color: var(--energy-deep); }
-  [data-theme="t2"] .sheet .row2 button.pri,
-  [data-theme="t2"] .sheet .row2 button.pri:hover { background: linear-gradient(180deg, var(--energy-bright), var(--energy)); border-color: var(--energy); color: var(--energy-ink); }
-  [data-theme="t2"] .themecard.on { border-color: var(--energy); background: var(--energy-soft); }
-  [data-theme="t2"] .field input:focus,
-  [data-theme="t2"] .field select:focus { border-color: var(--energy); box-shadow: 0 0 0 3px rgba(143,201,58,.16); }
+  [data-theme="t2"] textarea:focus ,[data-theme="t4"] textarea:focus { border-color: var(--energy); box-shadow: 0 0 0 3px var(--energy-ring); }
+  [data-theme="t2"] .send ,[data-theme="t4"] .send { background: linear-gradient(180deg, var(--energy-bright), var(--energy)); color: var(--energy-ink); box-shadow: 0 1px 3px var(--energy-key); }
+  [data-theme="t2"] .send:hover ,[data-theme="t4"] .send:hover { box-shadow: 0 4px 14px var(--energy-glow); }
+  [data-theme="t2"] .send:disabled ,[data-theme="t4"] .send:disabled { background: var(--border-strong); color: var(--fg-muted); }
+  [data-theme="t2"] .messages ,[data-theme="t4"] .messages { background: radial-gradient(320px 130px at 50% 100%, var(--energy-wash), transparent 80%); }
+  [data-theme="t2"] .slothead ,[data-theme="t4"] .slothead { color: var(--energy-deep); }
+  [data-theme="t2"] .slotnote ,[data-theme="t4"] .slotnote { background: var(--energy-soft); border-color: var(--energy-edge); }
+  [data-theme="t2"] .slotnote b ,[data-theme="t4"] .slotnote b { color: var(--energy-deep); }
+  [data-theme="t2"] .sheet .row2 button.pri,,[data-theme="t4"] .sheet .row2 button.pri,
+  [data-theme="t2"] .sheet .row2 button.pri:hover ,[data-theme="t4"] .sheet .row2 button.pri:hover { background: linear-gradient(180deg, var(--energy-bright), var(--energy)); border-color: var(--energy); color: var(--energy-ink); }
+  [data-theme="t2"] .themecard.on ,[data-theme="t4"] .themecard.on { border-color: var(--energy); background: var(--energy-soft); }
+  [data-theme="t2"] .field input:focus,,[data-theme="t4"] .field input:focus,
+  [data-theme="t2"] .field select:focus ,[data-theme="t4"] .field select:focus { border-color: var(--energy); box-shadow: 0 0 0 3px var(--energy-ring); }
+  [data-theme="t2"] .pfield-in:focus ,[data-theme="t4"] .pfield-in:focus { border-color: var(--energy); box-shadow: 0 0 0 3px var(--energy-ring); }
 
   /* ---------- 方案三 t3：极光·氤氲（浅色玻璃拟态） · 流光溢彩背景板 + 毛玻璃 ----------
      设计意图（用户指定）：玻璃继续做真实模糊，玻璃**下面**是一块流光溢彩的
@@ -377,6 +395,19 @@
     /* 取代品红 --energy-soft / --energy-edge 的极光等价物 */
     --iris-soft:rgba(139,92,246,.07);
     --iris-edge-soft:rgba(122,42,142,.40);
+    /* ---- 派生令牌：高光 / 分隔线 / 光晕 ----
+       这些原来是写死的 rgba(...)（默认极光那套色），换任何一款渐变后就会
+       "颜色没跟着走"（用户截图报过：薄荷主题下顶栏/头像/灯还是紫粉色）。
+       现在全部走令牌，tcIrisFamily() 按所选渐变实时重算；
+       这里的值是「未选渐变（默认极光）」时的静态兜底。 */
+    --iris-line:rgba(122,42,142,.55);        /* 顶栏分隔线 */
+    --iris-line-soft:rgba(122,42,142,.45);   /* 状态条分隔线 */
+    --iris-top:rgba(79,125,247,.20);         /* 顶栏左上辉光 */
+    --iris-top-hi:rgba(79,125,247,.32);      /* 标题文字光 / 头像外发光 */
+    --iris-halo:rgba(240,85,155,.14);        /* 头像呼吸：静止外环 */
+    --iris-halo-hi:rgba(240,85,155,.20);     /* 头像呼吸：50% 外环 */
+    --iris-halo-faint:rgba(240,85,155,.05);  /* 活跃灯：50% 外环 */
+    --iris-glow-soft:rgba(122,42,142,.16);   /* 主行动键柔投影 */
 
     /* 背景板与表面彩斑的色定义在 :root（见文件开头）——那两层是常驻元素靠 opacity
        淡入淡出，全局规则里必须能取到色，不能只在这里定义。 */
@@ -425,24 +456,24 @@
     /* 顶栏辉光从品红(--energy-glow) 换成极光的**蓝端**：
        面板从顶到底只用一套色系，不再"上半品红、下半蓝粉"。
        底色与状态条/工具栏/对话框共用同一条极光渐变（--iris-wash）。 */
-    background: radial-gradient(130px 40px at 4% 0%, rgba(79,125,247,.20), transparent 72%),
+    background: radial-gradient(130px 40px at 4% 0%, var(--iris-top), transparent 72%),
                 var(--band-veil);
-    border-bottom-color: rgba(122,42,142,.55);
+    border-bottom-color: var(--iris-line);
   }
-  [data-theme="t3"] header .title { color: var(--fg); text-shadow: 0 0 16px rgba(79,125,247,.34); }
-  [data-theme="t3"] header img { box-shadow: 0 0 0 1.5px rgba(122,42,142,.55), 0 0 14px rgba(79,125,247,.30); }
+  [data-theme="t3"] header .title { color: var(--fg); text-shadow: 0 0 16px var(--iris-top-hi); }
+  [data-theme="t3"] header img { box-shadow: 0 0 0 1.5px var(--iris-line), 0 0 14px var(--iris-top-hi); }
   [data-theme="t3"] #avatar.busy { animation-name: avBreatheT3; }
   /* 头像呼吸环：光晕从青碧时代的 rgba(18,165,184) 换成极光玫粉 —— 青色早就从方案三移除了，
      这里漏改会让头像在"思考中"时闪出一圈不属于本主题的青色。 */
   @keyframes avBreatheT3 {
-    0%,100% { box-shadow: 0 0 0 1.5px var(--iris-edge), 0 0 0 3px rgba(240,85,155,.14); }
-    50%     { box-shadow: 0 0 0 2px   var(--iris-3),   0 0 0 8px rgba(240,85,155,.20); }
+    0%,100% { box-shadow: 0 0 0 1.5px var(--iris-edge), 0 0 0 3px var(--iris-halo); }
+    50%     { box-shadow: 0 0 0 2px   var(--iris-3),   0 0 0 8px var(--iris-halo-hi); }
   }
   [data-theme="t3"] .strip {
     /* 颜色由 .card 上那条纵向极光统一提供，这里只叠统一白纱（原来这里有一条
        后置的白板底 + 品红辉光，会把状态条又变回一条白纸） */
     background: var(--band-veil);
-    border-bottom-color: rgba(122,42,142,.45);
+    border-bottom-color: var(--iris-line-soft);
   }
   [data-theme="t3"] .credit {
     border-color: var(--iris-edge); background: rgba(255,255,255,.80); color: var(--iris-edge);
@@ -454,8 +485,8 @@
   /* 通道活跃灯：状态指示器须 ≥3:1 → 用不透明 --energy(3.77)，不用淡青(2.96) */
   [data-theme="t3"] .led.on { background: linear-gradient(135deg, var(--iris-3), var(--iris-4)); animation-name: ledpulseT3; }
   @keyframes ledpulseT3 {
-    0%,100% { box-shadow: 0 0 0 3px rgba(240,85,155,.20); }
-    50%     { box-shadow: 0 0 0 7px rgba(240,85,155,.05); }
+    0%,100% { box-shadow: 0 0 0 3px var(--iris-halo-hi); }
+    50%     { box-shadow: 0 0 0 7px var(--iris-halo-faint); }
   }
   [data-theme="t3"] #liveBar { background: var(--iris-fill-soft); color: var(--fg); border-bottom-color: var(--iris-edge); }
   /* Orb 强调轨：走极光渐变（能量发声，与按键同源） */
@@ -486,7 +517,7 @@
        投影也收轻，避免边缘太"硬"。 */
     border-color: var(--iris-edge);
     color: var(--fg);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.75), 0 1px 5px rgba(122,42,142,.15);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.75), 0 1px 5px var(--iris-glow-soft);
   }
   [data-theme="t3"] .more-sec::before { background: linear-gradient(180deg, var(--iris-1), var(--iris-4)); opacity: .75; }
   [data-theme="t3"] .compose {
@@ -506,11 +537,11 @@
     background: var(--iris-fill);
     color: var(--fg);
     box-shadow: inset 0 1px 0 rgba(255,255,255,.92), inset 0 0 0 1.5px var(--iris-edge),
-                0 2px 8px var(--iris-glow), 0 10px 24px rgba(122,42,142,.16);
+                0 2px 8px var(--iris-glow), 0 10px 24px var(--iris-glow-soft);
   }
   [data-theme="t3"] .send:hover {
     box-shadow: inset 0 1px 0 rgba(255,255,255,.95), inset 0 0 0 1.5px var(--iris-edge-hover),
-                0 5px 16px var(--iris-glow), 0 16px 34px rgba(122,42,142,.22);
+                0 5px 16px var(--iris-glow), 0 16px 34px var(--iris-glow-soft);
   }
   [data-theme="t3"] .send:active {
     transform: translateY(0) scale(.97);
@@ -518,6 +549,20 @@
                 0 1px 4px var(--iris-glow);
   }
   [data-theme="t3"] .send:disabled { background: var(--bg-sunken); color: var(--fg-quiet); box-shadow: none; }
+  /* 自己的消息气泡：基类那条紫渐变是「品牌气泡」（t1/t2/t4 刻意保留），
+     极光下必须换成虹彩玻璃泡 —— 否则薄荷/黄金主题里会冒出一颗紫气泡。
+     做法与 .send 完全同款：浅档渐变 + 深字 + 实心边界。 */
+  [data-theme="t3"] .msg.me .body {
+    background: var(--iris-fill);
+    color: var(--fg);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.92), inset 0 0 0 1.5px var(--iris-edge),
+                0 2px 8px var(--iris-glow);
+    transition: transform .18s var(--ease), box-shadow .18s var(--ease);
+  }
+  [data-theme="t3"] .msg.me .body:hover {
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.95), inset 0 0 0 1.5px var(--iris-edge-hover),
+                0 5px 16px var(--iris-glow);
+  }
   /* 消息区不再有自己的底色：颜色由 .card 上那条纵向极光统一提供（顶蓝→底粉），
      这里只叠统一的白纱 —— 有自己的渐变就会和上下接不上（割裂）。 */
   [data-theme="t3"] .slothead { color: var(--iris-edge); }
@@ -534,21 +579,22 @@
   [data-theme="t3"] .themecard.on { border-color: var(--iris-edge); background: var(--iris-soft); }
   [data-theme="t3"] .field input:focus,
   [data-theme="t3"] .field select:focus { border-color: var(--iris-edge); box-shadow: 0 0 0 3px var(--iris-soft); }
+  [data-theme="t3"] .pfield-in:focus { border-color: var(--iris-edge); box-shadow: 0 0 0 3px var(--iris-soft); }
 
   /* ---------- t2 / t3 危险红与警告色加深（浅底既存违规：4.36 / 3.76 均 <4.5）---------- */
-  [data-theme="t2"] { --danger:#b3261e; --warn:#8a5a00; --energy-wash:rgba(143,201,58,.12); }
+  [data-theme="t2"], [data-theme="t4"] { --danger:#b3261e; --warn:#8a5a00; --energy-wash:rgba(143,201,58,.12); }
   [data-theme="t3"] { --danger:#b3261e; --warn:#8a5a00; }
-  [data-theme="t2"] #mic.on { background: var(--danger-soft); color: var(--danger); }
+  [data-theme="t2"] #mic.on ,[data-theme="t4"] #mic.on { background: var(--danger-soft); color: var(--danger); }
   [data-theme="t3"] #mic.on { background: var(--danger-soft); color: var(--danger); }
-  [data-theme="t2"] .led.on { background: radial-gradient(circle at 36% 30%, #c6ea86 0%, #8fc93a 60%, var(--energy-edge) 100%); }
+  [data-theme="t2"] .led.on ,[data-theme="t4"] .led.on { background: radial-gradient(circle at 36% 30%, var(--energy-bright) 0%, var(--energy) 60%, var(--energy-edge) 100%); }
   [data-theme="t3"] .led.on { background: linear-gradient(135deg, var(--iris-3), var(--iris-4)); }
-  [data-theme="t2"] .msg.orb::before { background: var(--energy-deep); opacity: 1; }
-  [data-theme="t2"] .slotnote { color: var(--fg-quiet); }
-  [data-theme="t2"] .slothead .hint { color: var(--fg-quiet); }
+  [data-theme="t2"] .msg.orb::before ,[data-theme="t4"] .msg.orb::before { background: var(--energy-deep); opacity: 1; }
+  [data-theme="t2"] .slotnote ,[data-theme="t4"] .slotnote { color: var(--fg-quiet); }
+  [data-theme="t2"] .slothead .hint ,[data-theme="t4"] .slothead .hint { color: var(--fg-quiet); }
   /* 硬编码 #888780（on 白 3.61:1 ❌）不在 token 体系内，必须直接覆盖这两条规则 */
-  [data-theme="t2"] .slotnote .muted,
+  [data-theme="t2"] .slotnote .muted,,[data-theme="t4"] .slotnote .muted,
   [data-theme="t3"] .slotnote .muted,
-  [data-theme="t2"] .sheet .note,
+  [data-theme="t2"] .sheet .note,,[data-theme="t4"] .sheet .note,
   [data-theme="t3"] .sheet .note { color: var(--fg-quiet); }
 
   /* ==================================================================
@@ -588,6 +634,212 @@
   [data-theme="t3"] .hist-box   { background: rgba(252,251,255,.82); }
   [data-theme="t3"] .sheet      { background: rgba(255,255,255,.86); }
   /* 注：.hist-mask 的 backdrop-filter（一次性静态模糊、非每帧）保留勿删。 */
+
+  /* ==================================================================
+     毛玻璃开关：极光以外的三套主题可选开启
+     ------------------------------------------------------------------
+     极光（t3）自己那套（流光溢彩背景板 + 玻璃）一条不动 —— 它挂在
+     `[data-theme="t3"]` 上照常生效；这里只给另外三套挂一个新开关：
+     <html> 上加 `.glass` 就玻璃化，不加就是今天的不透明样子。
+     α .78 是实测出来的稳妥档：正文在最坏壁纸下仍有 8.28:1，
+     而 .62（极光同款通透度）会把深色主题冲成一张渐变、丢掉主题气质。
+     深空用深色玻璃、白昼/自定义用白色玻璃 —— 主题配色一个字不改。
+     消息区依旧不加模糊（滚动会持续触发模糊区域重绘，软件渲染下最贵）。
+     ================================================================== */
+  :root,
+  [data-theme="t2"] {                       /* 浅色底：白玻璃 */
+    --glass-card: rgba(255,255,255,.78);
+    --glass-float: rgba(255,255,255,.86);
+    --glass-rim: rgba(255,255,255,.85);
+  }
+  [data-theme="t1"] {                       /* 深空：深玻璃（拿 --bg/--bg-soft 的色做底） */
+    --glass-card: rgba(18,22,43,.78);
+    --glass-float: rgba(23,28,54,.86);
+    --glass-rim: rgba(255,255,255,.16);
+  }
+  [data-theme="t4"] {                       /* 自定义图片：纱保持原值，只加霜 */
+    --glass-card: rgba(255,255,255,.72);
+    --glass-float: rgba(255,255,255,.86);
+    --glass-rim: rgba(255,255,255,.72);
+  }
+  html.glass .card {
+    background: var(--glass-card);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border-color: var(--glass-rim);
+  }
+  /* t4 的卡片还压着一层紫调渐变，玻璃化时把那一层留着 —— 只换底色不换配方 */
+  html.glass[data-theme="t4"] .card {
+    background: linear-gradient(180deg, rgba(139,92,246,.06), transparent 42%), var(--glass-card);
+  }
+  html.glass .hist-box,
+  html.glass .sheet,
+  html.glass .more-panel {
+    background: var(--glass-float);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+  }
+  /* 开关切换与主题切换共用同一条交叉淡入：底色/描边/模糊都走 .22s，
+     按钮状态切换不会"啪"一下（.card 的过渡在基础规则里，浮层这里补上） */
+  .sheet, .hist-box, .more-panel { transition: background var(--dur-2) var(--ease); }
+
+  /* ==================================================================
+     桌面模糊底图（磨砂玻璃的实拍来源）
+     ------------------------------------------------------------------
+     透明窗里 backdrop-filter 采不到桌面 —— 桌面是 DWM 在页面渲染面之后才合成
+     上去的，页面里窗后那片只有透明（探针 docs/_glass_rt_probe.js 实测：
+     A 区 0.063 / B 区 0.084 / 页内对照 C 区 3.466）。所以玻璃态（t1/t2）时
+     由主进程藏窗抓一张桌面实拍（glassbg.js）垫在这张 fixed 底图上，
+     卡片既有的 backdrop-filter（页内模糊可用）负责把它糊成磨砂。
+     层次顺序：模糊底图 → 卡片 α 纱底 → 内容，正是磨砂玻璃该有的样子。
+     卡片满窗（height:100%），fixed inset:0 与窗口 1:1，不错位。
+     t3 糊的是页内流光背景板、t4 糊的是页内用户图片，本来就对，不抓。 */
+  #glassbg {
+    position: fixed; inset: 0; z-index: -1;
+    background-repeat: no-repeat; background-size: 100% 100%;
+    opacity: 0; transition: opacity var(--dur-2) var(--ease);
+    pointer-events: none;
+  }
+  #glassbg.on { opacity: 1; }
+
+  /* ==================================================================
+     方案四 t4：自定义（用户图片整窗背景 + 半透明蒙版）
+     ------------------------------------------------------------------
+     不复制 t2 那套写死绿色 rgba 的细则（那些是青柠主题的皮肤），而是回到
+     :root 的浅色 + 紫罗兰品牌，只把能量家族换成可自选的紫；图片走
+     body::after —— 与 t3 的流光板（body::before）同套路：常驻元素靠
+     opacity 淡入淡出，切主题时是"交叉淡入"而不是"啪地弹出"。
+     蒙版分两层：--t4-scrim 直接压在图上，--t4-veil 是卡片的纱。
+     两层叠完 ≈ 87% 白，深字压上去对比度不靠 α 硬撑（与 t3 同一理由）。 */
+  [data-theme="t4"] {
+    --energy:#8B5CF6; --energy-bright:#a78bfa; --energy-deep:#4c1d95;
+    --energy-soft:#f2ecfe; --energy-edge:#6d28d9; --energy-ink:#ffffff;
+    --energy-glow:rgba(139,92,246,.30); --energy-wash:rgba(139,92,246,.10);
+    /* α 变体跟着换成紫罗兰，否则 t4 默认态会漏出共享块里的青柠光晕 */
+    --energy-halo:rgba(139,92,246,.14);
+    --energy-halo-hi:rgba(139,92,246,.20);
+    --energy-pulse:rgba(139,92,246,.22);
+    --energy-pulse-faint:rgba(139,92,246,.06);
+    --energy-ring:rgba(139,92,246,.16);
+    --energy-key:rgba(139,92,246,.40);
+    --energy-bar-deep:#e3d8fd;
+    --run:var(--energy);
+    --fg-quiet:#6a675e; --fg-muted:var(--fg-quiet);
+    --danger:#b3261e; --warn:#8a5a00;              /* 与 t2 同口径的浅底色状态修正 */
+    --t4-scrim: rgba(255,255,255,.46);             /* 图上的蒙版 */
+    --t4-veil: rgba(255,255,255,.72);              /* 卡片的纱 */
+  }
+  body::after {
+    content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    border-radius: 16px;
+    opacity: 0;
+    transition: opacity .22s var(--ease);
+    /* 第一层是蒙版、第二层才是图；没选图时 --theme-image 为 none，
+       JS 会把 --t4-scrim 置成不透明白，等效于纯浅色主题。 */
+    background-image: linear-gradient(var(--t4-scrim), var(--t4-scrim)), var(--theme-image, none);
+    background-size: cover, cover;
+    background-position: center, center;
+    background-repeat: no-repeat, no-repeat;
+  }
+  [data-theme="t4"] body::after { opacity: 1; }
+  /* t4 的卡片必须是"纱"：整窗背景图得透上来，否则被不透明白卡片全挡住 */
+  [data-theme="t4"] .card {
+    background: linear-gradient(180deg, rgba(139,92,246,.06), transparent 42%), var(--t4-veil);
+  }
+  [data-theme="t4"] .hist-box,
+  [data-theme="t4"] .sheet,
+  [data-theme="t4"] .more-panel { background: rgba(255,255,255,.86); }
+
+  /* ===== 外观页：主题色自选 / 渐变预设 =====
+     复用录屏页那套 .colorsw（hover 浮出 3px + 投影），渐变预设用 .gradsw
+     （70×30 小卡，渐变即所见）。命中区 ≥28px，选中态 accent 双环 + 勾。 */
+  .themecard .tcimg {
+    grid-row: 1 / span 2; width: 46px; height: 26px; border-radius: 6px; flex: none;
+    border: 1px dashed var(--border-strong); background: var(--bg-sunken);
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+    color: var(--fg-muted); font-size: 10px; cursor: pointer; padding: 0;
+    font-family: inherit; transition: transform var(--dur-1) var(--ease), border-color var(--dur-2) var(--ease);
+  }
+  .sheet .themecard .tcimg:hover { transform: translateY(-1px); border-color: var(--accent); color: var(--accent-fg); }
+  .themecard .tcimg.has { border-style: solid; background-size: cover; background-position: center; }
+
+  .accentrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .accentrow .swlabel { flex: 0 0 100%; font-size: calc(10.5px * var(--fs-scale)); color: var(--fg-muted); margin-bottom: -2px; }
+  /* 渐变预设卡：渐变就是预览，名字压在底部半透明条上 */
+  .gradsw {
+    position: relative; width: 70px; height: 30px; padding: 0; flex: none;
+    border-radius: 8px; border: 1px solid rgba(0,0,0,.14); cursor: pointer; overflow: hidden;
+    font-family: inherit;
+    transition: transform var(--dur-1) var(--ease), box-shadow var(--dur-2) var(--ease), filter var(--dur-1) var(--ease);
+  }
+  .sheet .gradsw:hover { transform: translateY(-2px); box-shadow: var(--sh-sm); filter: brightness(1.06); }
+  .sheet .gradsw:active { transform: translateY(-1px) scale(.97); }
+  .gradsw.on { box-shadow: 0 0 0 2px var(--accent), 0 2px 6px rgba(38,33,92,.18); }
+  .gradsw i { position: absolute; inset: 0; display: block; }
+  .gradsw em {
+    position: absolute; left: 0; right: 0; bottom: 0; font-style: normal; font-size: 9px;
+    line-height: 13px; color: #fff; background: rgba(0,0,0,.34); text-align: center;
+  }
+  .gradsw .ck {
+    position: absolute; right: 2px; top: 2px; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--bg); border: 1px solid var(--accent); color: var(--accent-fg);
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; transform: scale(.4);
+    transition: opacity var(--dur-2) var(--ease), transform var(--dur-2) var(--ease);
+  }
+  .gradsw .ck svg { width: 9px; height: 9px; display: block; }
+  .gradsw.on .ck { opacity: 1; transform: none; }
+  /* ===== 自定义渐变色带（t3「自定义」卡展开）=====
+     长方形色带：横轴 = 色相（左 0° → 右 360°），纵轴 = 明度（上亮下暗），
+     饱和度固定 —— 饱和度不定的话，互补色之间的插值中点会发灰，渐变中段显脏。
+     双把手选起点/终点，四色与描边现算，整面板实时预览（WYSIWYG）。 */
+  .gradedit {
+    margin: 2px 0 6px; padding: 8px; border: 0.5px solid var(--border);
+    border-radius: 10px; background: var(--bg-soft);
+  }
+  .gradedit[hidden] { display: none; }
+  .gradedit.ge-in { animation: gein var(--dur-3) var(--ease) backwards; }
+  @keyframes gein { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .ge-band {
+    position: relative; width: 100%; aspect-ratio: 2 / 1; border-radius: 8px;
+    border: 1px solid var(--border-strong);
+    touch-action: none; cursor: crosshair;
+  }
+  /* 圆角裁在画布上，不裁在容器上 —— 容器若 overflow:hidden，贴边的把手会被切掉半边 */
+  .ge-band canvas { display: block; width: 100%; height: 100%; border-radius: 7px; }
+  .ge-handle {
+    position: absolute; width: 15px; height: 15px; padding: 0; border-radius: 50%;
+    border: 2px solid #fff; transform: translate(-50%, -50%); cursor: grab;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.35), 0 1px 3px rgba(0,0,0,.28);
+    transition: box-shadow var(--dur-1) var(--ease);
+  }
+  .ge-handle:active { cursor: grabbing; }
+  .ge-handle.on { box-shadow: 0 0 0 1px rgba(0,0,0,.35), 0 0 0 4px rgba(255,255,255,.5), 0 1px 4px rgba(0,0,0,.3); }
+  .ge-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .ge-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .ge-field { display: flex; align-items: center; gap: 5px; flex: 1 1 0; min-width: 0;
+    font-size: calc(11px * var(--fs-scale)); color: var(--fg-muted); white-space: nowrap; }
+  .ge-field input { flex: 1 1 auto; min-width: 0; font-family: inherit; font-size: calc(11.5px * var(--fs-scale));
+    padding: 4px 7px; border: 0.5px solid var(--border-strong); border-radius: 7px;
+    background: var(--bg); color: var(--fg); }
+  .ge-preview { flex: 1 1 auto; height: 24px; border-radius: 7px; border: 1px solid var(--border-strong); }
+  /* 样例键用的是真发送键同一套变量（--iris-fill/edge/glow），预览即实物 */
+  .ge-sample { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+    min-width: 62px; height: 28px; padding: 0 12px; border: 0; border-radius: 9px;
+    font-size: calc(12px * var(--fs-scale)); color: var(--fg); font-family: inherit;
+    background: var(--iris-fill);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.92), inset 0 0 0 1.5px var(--iris-edge), 0 2px 8px var(--iris-glow); }
+  .ge-ops { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+  /* 原生取色器：套在色块外框里，CSP 允许内联样式 */
+  .colorsw.swpicker { padding: 0; overflow: hidden; }
+  .colorsw.swpicker input {
+    width: 200%; height: 200%; margin: -25% 0 0 -50%; border: 0; padding: 0;
+    background: none; cursor: pointer; opacity: 0;
+  }
+  .colorsw.swpicker::after {
+    content: ''; position: absolute; inset: 0; border-radius: inherit;
+    background: conic-gradient(#f44, #fb0, #4c4, #0ff, #44f, #f4f, #f44);
+  }
 
   /* ==================================================================
      动效令牌：统一节奏，止住硬编码时长蔓延
@@ -648,6 +900,7 @@
   html.no-motion .slotnote,
   html.no-motion .iconbtn.mark,
   html.no-motion .step-kids,
+  html.no-motion .gradedit,
   html.no-motion .hist-box,
   html.no-motion .hist-hd,
   html.no-motion .pedit,
@@ -733,6 +986,9 @@
   }
   .storage-count { white-space: nowrap; color: var(--accent-fg); font-size:calc(10.5px * var(--fs-scale)); }
   .storage-space { color: var(--fg-muted); font-size:calc(11px * var(--fs-scale)); margin: 7px 1px 0; }
+  /* 截屏（Snipaste）状态块：和上面的存储目录同页但不同事，用一道细线隔开 */
+  .snip-box { border-top: 0.5px solid var(--border); padding-top: 8px; margin-top: 9px; }
+  .snip-box .slothead { margin-bottom: 1px; }
   .storage-move {
     margin-top: 8px; padding: 8px 9px; border: 1px solid var(--accent);
     border-radius: var(--r-sm); background: var(--accent-soft); color: var(--fg-soft);
@@ -742,6 +998,75 @@
   .storage-move b { color: var(--accent-fg); }
   .storage-move .row2 { margin-top: 7px; }
   .storage-actions { justify-content: flex-start !important; flex-wrap: wrap; }
+
+  /* ===== 设置 › 录屏：悬浮条皮肤二选一 =====
+     形态语言与 .themecard 同源（选中态靠 2px 描边 + 勾，不靠位移避免推挤），
+     只多一样：46×20 的微预览块 —— 把该皮肤的底色 / 描边 / 高光按真实配方
+     画进去，选之前就能看见长什么样（静态画，不引外部资源）。 */
+  .recskin-row { display: flex; flex-direction: column; gap: 8px; }
+  /* 前缀 .sheet 是必须的：.sheet button 的通用 transition / hover 位移
+     specificity 比裸类名高，不加前缀会被盖掉。 */
+  .sheet .recskin {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center;
+    border: 1px solid var(--border-strong); background: var(--bg);
+    border-radius: 10px; padding: 9px 11px; cursor: pointer; text-align: left;
+    font-family: inherit;
+    transition: transform var(--dur-1) var(--ease), border-color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+  }
+  /* 前缀 .sheet 是必须的：.sheet button:hover 的通用位移 specificity 更高，
+     不加前缀会让这里的 translateY(-1px) 把色块的 -3px 浮出盖掉。 */
+  .sheet .recskin:hover { transform: translateY(-1px); border-color: var(--accent); background: var(--bg-soft); }
+  .sheet .recskin:active { transform: scale(.985); }
+  .recskin.on { border: 2px solid var(--accent); padding: 8px 10px; background: var(--accent-soft); }
+  .recskin.on:hover { transform: none; }              /* 选中态不浮，和 themecard 一致 */
+  .recskin b { display: block; font-size: calc(12px * var(--fs-scale)); font-weight: 600; color: var(--fg); }
+  .recskin .hint { display: block; font-size: calc(10.5px * var(--fs-scale)); color: var(--fg-muted); line-height: 1.5; }
+  .recskin-pv { position: relative; width: 46px; height: 20px; border-radius: 6px; flex: none; overflow: hidden; }
+  .pv-light { background: rgba(243,244,248,.92); border: 1px solid rgba(120,128,145,.45); box-shadow: inset 0 1px 0 rgba(255,255,255,.95); }
+  .pv-dark  { background: rgba(10,12,18,.86);   border: 1px solid rgba(158,203,255,.32); box-shadow: inset 0 1px 0 rgba(255,255,255,.10); }
+  .recskin-pv i { position: absolute; border-radius: 2px; }
+  .recskin-pv .pv-dot { left: 5px; top: 7px; width: 5px; height: 5px; border-radius: 50%; }
+  .pv-light .pv-dot { background: #c73e3a; }
+  .pv-dark  .pv-dot { background: #D8443F; }
+  .recskin-pv .pv-line { height: 3px; }
+  .pv-light .pv-line { background: rgba(38,42,51,.55); }
+  .pv-dark  .pv-line { background: rgba(255,255,255,.62); }
+  .recskin-pv .l1 { left: 14px; top: 5px; width: 17px; }
+  .recskin-pv .l2 { right: 5px; top: 12px; width: 12px; }
+  /* 选中勾：accent 描边 + accent-fg 打勾，三套主题都成立 */
+  .recskin-ck {
+    width: 18px; height: 18px; flex: none; display: flex; align-items: center; justify-content: center;
+    color: var(--accent-fg); opacity: 0; transform: scale(.5);
+    transition: opacity var(--dur-2) var(--ease), transform var(--dur-2) var(--ease);
+  }
+  .recskin-ck svg { width: 15px; height: 15px; display: block; }
+  .recskin.on .recskin-ck { opacity: 1; transform: none; }
+
+  /* ===== 设置 › 录屏：描边颜色色块 =====
+     常见颜色一排铺开，hover 时色块"浮出"（-3px + 投影），选中态用
+     accent 双环 + 角落小勾，和皮肤卡片的"描边不位移"是同一套语汇。 */
+  .colorgrid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+  .sheet .colorsw {
+    position: relative; width: 28px; height: 28px; padding: 0; flex: none;
+    border-radius: 8px; border: 1px solid rgba(0,0,0,.14); cursor: pointer;
+    transition: transform var(--dur-1) var(--ease), box-shadow var(--dur-2) var(--ease), filter var(--dur-1) var(--ease);
+  }
+  .sheet .colorsw:hover { transform: translateY(-3px); box-shadow: var(--sh-sm); filter: brightness(1.08); }
+  .sheet .colorsw:active { transform: translateY(-1px) scale(.94); }
+  .colorsw.on { box-shadow: 0 0 0 2px var(--accent), 0 2px 6px rgba(38,33,92,.18); }
+  .colorsw:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* 选中勾：主题底 + accent 描边的小圆点，避免白勾落在浅色 accent（t2 青柠）上看不清 */
+  .colorsw .ck {
+    position: absolute; right: -4px; bottom: -4px; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--bg); border: 1px solid var(--accent); color: var(--accent-fg);
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; transform: scale(.4);
+    transition: opacity var(--dur-2) var(--ease), transform var(--dur-2) var(--ease);
+  }
+  .colorsw .ck svg { width: 9px; height: 9px; display: block; }
+  .colorsw.on .ck { opacity: 1; transform: none; }
+  /* "跟随皮肤"那一格：左半深纱右半灰白，一眼看出是两种皮肤的默认描边 */
+  .colorsw.swdefault { background: linear-gradient(135deg, rgba(10,12,18,.88) 0 50%, rgba(243,244,248,.94) 50% 100%); }
 
   /* ===== 路由四枚的 hover 动效 =====
      和顶栏同一套语言：只动图形内部，按钮尺寸位置不变。 */
@@ -788,8 +1113,6 @@
   .mcell:hover { transform: translateY(-1px) scale(1.06); border-color: var(--accent); color: var(--accent-fg); }
   .mcell:active { transform: scale(.94); }
   .more-btn:hover { border-color: var(--accent); color: var(--accent-fg); }
-  .more-btn .chev { transition: transform .2s var(--ease); }
-  .more-btn.on .chev { transform: rotate(180deg); }
 
   /* ===== 通用按钮：设置面板里的 .mbtn / .minibtn 等 ===== */
   .mbtn:hover { transform: translateY(-1px); border-color: var(--accent); color: var(--accent-fg); }
@@ -850,15 +1173,21 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .pinned:hover, .mcell:hover, .mbtn:hover, .more-btn:hover { transform: none; }
+    .sheet .recskin, .sheet .colorsw, .sheet .gradsw, .themecard .tcimg { transition: none; }
+    .recskin-ck, .colorsw .ck, .gradsw .ck { transition: none; }
   }
   html.no-motion .pinned:hover, html.no-motion .mcell:hover,
   html.no-motion .mbtn:hover, html.no-motion .more-btn:hover,
+  html.no-motion .recskin:hover, html.no-motion .colorsw:hover,
+  html.no-motion .gradsw:hover,
   html.no-motion .send:hover { transform: none; }
   html.no-motion .send:active, html.no-motion .pinned:active,
   html.no-motion .mcell:active, html.no-motion .mbtn:active,
   html.no-motion .more-btn:active, html.no-motion .minibtn:active,
   html.no-motion .mlist button:active, html.no-motion .themecard:active,
   html.no-motion .setnav-i:active, html.no-motion .pedit-tab:active,
+  html.no-motion .recskin:active, html.no-motion .colorsw:active,
+  html.no-motion .gradsw:active,
   html.no-motion .sheet .row2 button:active, html.no-motion .credit:active { transform: none; }
   html.no-motion .send:hover svg .plane,
   html.no-motion .sitem.rauto:hover svg .spin,
@@ -1149,9 +1478,13 @@
   }
   .chip:hover { border-color: var(--fg-muted); transform: translateY(-1px); }
   .chip:active { transform: scale(.96); }
+  /* 选中 chip：底/字/描边/光晕四件套全部走主题令牌。
+     以前描边写死 #b9b2ee、光晕写死 rgba(83,74,183,.08)（品牌紫），
+     极光主题下换任何一款渐变，选中态都还是"淡紫"——与主题色不符（用户截图报过）。
+     --accent-ring 是各主题自定的低α品牌光晕（t3 由 tcIrisFamily 按渐变重算）。 */
   .chip.sel {
-    background: var(--accent-soft); border-color: #b9b2ee; color: var(--accent-fg); font-weight: 500;
-    box-shadow: 0 0 0 2.5px rgba(83,74,183,.08);
+    background: var(--accent-soft); border-color: var(--accent); color: var(--accent-fg); font-weight: 500;
+    box-shadow: 0 0 0 2.5px var(--accent-ring);
   }
   /* 带图标的路由 chip（自动/前台/视觉/后台）：图标 + 文字排一行。
      图标 14px 是算过的——四枚带图标后 chip 从 45px 涨到 58px，
@@ -1242,16 +1575,16 @@
   .msg.err .body { color: var(--danger); background: var(--danger-soft); padding: 7px 11px; border-radius: 10px; display: inline-block; }
   .pending { color: var(--warn); }
 
-  /* 工具区：常驻一行（5 个高频键）+ 一个「更多」入口。
+  /* 工具区：常驻一行（5 个高频键 + 截屏）+ 一个「更多」入口。
      分级依据见下方 TIER_A 注释 —— 只有「删了就真没别的入口」的才常驻。 */
   .tools {
     padding: 8px 13px 4px;
     display: flex; flex-direction: column; gap: 6px;
   }
   .tools-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-  /* 常驻行：第 4 个键（录屏）进来后必须仍是一行。
-     实测：baseline 需 399.5px > 可用 373px 会换行；收紧 + nowrap 后
-     字号 1.0/1.1/1.2 三档均 scroll === client（不换行、不溢出）。 */
+  /* 常驻行：录屏 + 截屏进来后必须仍是一行。
+     实测（400px 面板、可用 373px）：6 键 sum=341px，标签完整不截断，
+     tight 不触发；字号 1.1/1.2 档由下方 .tight 收紧兜底。 */
   .tools-row.pinnedrow { flex-wrap: nowrap; gap: 4px; }
   .tools-row.pinnedrow .pinned {
     flex: 0 1 auto; min-width: 0;
@@ -1261,8 +1594,14 @@
   .tools-row.pinnedrow .pinned span {
     min-width: 0; overflow: hidden; text-overflow: ellipsis;
   }
-  .tools-row.pinnedrow .more-btn { flex: 0 0 auto; padding: 0 8px; }
-  .tools-row.pinnedrow .more-btn b { display: none; }
+  /* 截屏键：纯图标，左右内边距收到 5px（图标 15 + 边 2 + 内边距 10 = 27px），
+     给整行再留一点余量；完整名走 title 悬停提示。 */
+  .tools-row.pinnedrow .pinned.snip { padding: 0 5px; }
+  /* 截屏键悬停：快门缩放脉冲（图标 1 → 1.22 → 1，像按了一下快门）。
+     只动 transform，遵守「动效只动 transform/opacity」的总规矩。 */
+  .pinned.snip:hover svg { animation: snipshutter .34s var(--ease); }
+  @keyframes snipshutter { 0% { transform: scale(1) } 35% { transform: scale(1.22) } 100% { transform: scale(1) } }
+  .tools-row.pinnedrow .more-btn { flex: 0 0 auto; padding: 0 5px; }
   .tools-row.pinnedrow.tight { gap: 3px; }
   .tools-row.pinnedrow.tight .pinned { padding: 0 5px; }
   /* 常驻键：图标 + 悬停才出现的文字。比纯图标好认，比常显文字省地方。
@@ -1300,7 +1639,9 @@
   .pinned.cap-on.cap-paused .capdot { animation: none; opacity: .45; }
   @media (prefers-reduced-motion: reduce) { .pinned.cap-on .capdot, .pinned.cap, .pinned.cap-on.cap-paused .capdot { animation: none } }
 
-  /* 「更多」入口：与常驻键同高，视觉上轻一档，暗示"还有东西在后面" */
+  /* 「更多」入口：与常驻键同高，视觉上轻一档（虚线边），暗示"还有东西在后面"。
+     2026-10-22 起由「更多+箭头」改为竖排三点：6 键行里省出 ~29px，
+     截屏键的安身之处。 */
   .more-btn {
     display: inline-flex; align-items: center; gap: 4px;
     height: 30px; padding: 0 10px;
@@ -1308,11 +1649,22 @@
     cursor: pointer; color: var(--fg-soft); font-family: inherit; font-size:calc(11.5px * var(--fs-scale));
     flex: 0 0 auto; transition: all .14s var(--ease); white-space: nowrap;
   }
-  .more-btn .chev { transition: transform .18s var(--ease); display: block; }
+  /* 三点：悬停时呈波浪形左右抖动 —— 1/3 与 2 反相、0/120/240ms 错峰，
+     循环播放。和消息区「思考中」的三点跳字同一动效语言，只是方向换成左右。 */
+  .more-btn .kebab { display: block; transition: transform .22s var(--ease); }
+  .more-btn:hover .kebab circle { animation: kebabwave .5s var(--ease) infinite; }
+  .more-btn:hover .kebab circle:nth-child(2) { animation-delay: .12s; animation-direction: reverse; }
+  .more-btn:hover .kebab circle:nth-child(3) { animation-delay: .24s; }
+  @keyframes kebabwave { 0%, 100% { transform: translateX(-1.5px) } 50% { transform: translateX(1.5px) } }
+  /* 展开态：整组三点旋转 90°（⋮ → ⋯），和从前箭头转 180° 一样是「状态信号」 */
+  .more-btn.on .kebab { transform: rotate(90deg); }
   .more-btn.on { border-style: solid; border-color: var(--accent); color: var(--accent-fg); background: var(--accent-soft); }
-  .more-btn.on .chev { transform: rotate(180deg); }
   .more-btn:hover { border-color: var(--accent); color: var(--accent-fg); }
-  .more-btn b { font-weight: 500; opacity: .7; font-size:calc(10.5px * var(--fs-scale)); }
+  /* 减少动效：抖动与快门都退化为静态（系统设置 + html.no-motion 双保险） */
+  @media (prefers-reduced-motion: reduce) {
+    .more-btn:hover .kebab circle, .pinned.snip:hover svg { animation: none; }
+  }
+  html.no-motion .more-btn:hover .kebab circle, html.no-motion .pinned.snip:hover svg { animation: none; }
   /* 展开的浮层：网格铺开，一次看全，不再点一层进一层 */
   /* 纯图标网格：去掉文字后格子可以更小更密，一屏看到更多。
      列宽从 64 收到 40（图标 18 + 两侧留白），间距也收紧。 */
@@ -1367,7 +1719,6 @@
   @keyframes toolin { from { opacity: 0; transform: translateY(-3px) scale(.96) } to { opacity: 1; transform: none } }
   @media (prefers-reduced-motion: reduce) {
     .more-panel, .mcell { animation: none; }
-    .more-btn .chev { transition: none; }
     .pinned:hover, .mcell:hover, .pinned:active, .mcell:active { transform: none; }
   }
 
@@ -1420,7 +1771,7 @@
 
   /* 本地离线识别安装进度条（一键安装约 700MB，进度由 bridge 的 prepare 进度接口驱动） */
   .asr-bar { height: 6px; border-radius: 3px; background: var(--line, #e3e1d8); overflow: hidden; margin: 6px 0 4px; }
-  .asr-bar > div { height: 100%; width: 0; border-radius: 3px; background: #534ab6; transition: width .4s var(--ease); }
+  .asr-bar > div { height: 100%; width: 0; border-radius: 3px; background: var(--accent); transition: width .4s var(--ease); }
 
   /* ---------- 首跑向导 overlay（T05）----------
      首次启动弹一次，把四条通道「要不要配 / 配没配对」一次摆清楚。
@@ -1554,16 +1905,46 @@
     margin-top: 10px; padding-top: 8px; border-top: 0.5px solid var(--border);
   }
   .wiz-ft .tip { flex: 1; min-width: 120px; font-size:calc(10.5px * var(--fs-scale)); color: var(--fg-muted); line-height: 1.5; }
+  /* ---------- 可选组件（首跑附属文件下载） ---------- */
+  .wiz-extras { margin-top: 10px; padding-top: 8px; border-top: 0.5px solid var(--border); }
+  .wiz-mask.show .wiz-extras { animation: wizcardin var(--dur-3) var(--ease) backwards; animation-delay: .21s; }
+  .wiz-x-hd { font-size:calc(11.5px * var(--fs-scale)); font-weight: 600; margin-bottom: 6px; }
+  .wiz-x-hd .muted { font-weight: 400; }
+  .wiz-x-item {
+    display: flex; gap: 7px; align-items: flex-start; margin-bottom: 6px;
+    border: 0.5px solid var(--border); border-radius: 9px; padding: 7px 8px;
+    background: var(--bg-soft);
+    transition: border-color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+  }
+  .wiz-x-item:hover { border-color: var(--border-strong); background: var(--bg); }
+  /* 无勾选框的信息卡（CLI：不能代下载，只给官方命令与按钮）*/
+  .wiz-x-info { background: var(--bg-sunken); }
+  .wiz-x-item input { margin-top: 2px; flex: 0 0 auto; accent-color: var(--accent); }
+  .wiz-x-b { flex: 1; min-width: 0; }
+  .wiz-x-b b { display: block; font-size:calc(11.5px * var(--fs-scale)); font-weight: 600; }
+  .wiz-x-b i { display: block; font-style: normal; font-size:calc(10.5px * var(--fs-scale)); color: var(--fg-muted); line-height: 1.55; margin-top: 1px; }
+  .wiz-x-s { display: block; font-size:calc(10px * var(--fs-scale)); color: var(--fg-muted); line-height: 1.55; margin-top: 3px; word-break: break-all; }
+  .wiz-x-s code {
+    font-family: ui-monospace, Consolas, monospace; background: var(--bg-sunken);
+    border: 0.5px solid var(--border); border-radius: 4px; padding: 0 3px; word-break: break-all;
+  }
+  .wiz-x-acts { display: flex; gap: 6px; flex: 0 0 auto; align-items: center; flex-wrap: wrap; }
+  .wiz-x-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .wiz-x-foot .tip { flex: 1; min-width: 130px; font-size:calc(10.5px * var(--fs-scale)); color: var(--fg-muted); line-height: 1.5; }
+  .wiz-x-prog { margin: 7px 0 2px; }
+  .wiz-x-bar { height: 5px; border-radius: 999px; background: var(--bg-sunken); border: 0.5px solid var(--border); overflow: hidden; }
+  .wiz-x-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width var(--dur-2) var(--ease); }
+  .wiz-x-prog .muted { display: block; margin-top: 3px; font-size:calc(10.5px * var(--fs-scale)); }
   /* 兜底一：面板自带的动效开关。只掐 animation 与位移，transform 恢复 none 而不是无脑 !important
      全覆盖 —— hover 的微位移本身很短，交给下面 prefers-reduced-motion 那条统一处理。 */
   html.no-motion .wiz-mask.show, html.no-motion .wiz-mask.closing,
   html.no-motion .wiz-mask.show .wiz-box, html.no-motion .wiz-mask.closing .wiz-box,
-  html.no-motion .wiz-mask.show .wiz-card { animation: none !important; }
+  html.no-motion .wiz-mask.show .wiz-card, html.no-motion .wiz-mask.show .wiz-extras { animation: none !important; }
   /* 兜底二：系统级「减少动效」。降级为「几乎瞬时的一次淡入」，不做任何位移/y 轴偏移。 */
   @media (prefers-reduced-motion: reduce) {
     .wiz-mask.show, .wiz-mask.closing,
     .wiz-mask.show .wiz-box, .wiz-mask.closing .wiz-box,
-    .wiz-mask.show .wiz-card { animation: none; }
+    .wiz-mask.show .wiz-card, .wiz-mask.show .wiz-extras { animation: none; }
     .wiz-x:hover, .wiz-x:active, .wiz-btn:hover, .wiz-btn:active { transform: none; }
   }
 
@@ -1790,7 +2171,7 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .hist-item:hover { background: var(--bg-sunken); }
-.hist-item.cur { color: var(--accent); background: var(--accent-soft); }
+.hist-item.cur { color: var(--accent-fg); background: var(--accent-soft); }
 .hist-item.new { color: var(--accent); font-weight: 500; }
 
 /* ===== 命令面板（Ctrl+K）===== */
@@ -2101,6 +2482,9 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
     <button class="mbtn pri" id="creditClose">关闭</button>
   </div>
 </div></div>
+<!-- 桌面模糊底图：磨砂玻璃的实拍来源，垫在卡片背后（z-index:-1 → 卡片 α 纱压在
+     它上面，卡片 backdrop-filter 负责糊）。只在 t1/t2 玻璃态由主进程填图。 -->
+<div id="glassbg" aria-hidden="true"></div>
 <div class="card">
   <header>
     <img id="avatar" src="icon.png" alt="">
@@ -2196,20 +2580,134 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
         <div class="slotbox">
           <div class="slothead">界面主题</div>
           <div class="themes" id="themePick">
-            <button class="themecard" data-theme="t1">
+            <!-- ⚠️ 四张主题卡的自带属性叫 data-tc，**不能**改回 data-theme：
+                 [data-theme="tX"] 是主题选择器，卡片带上同名属性会让卡片自身
+                 吃进那一套静态令牌、盖掉从 <html> 继承来的动态值
+                 （表现为：选了薄荷渐变，选中的极光卡描边/底色还是默认极光的紫）。
+                 读取处：applyTheme() 的 c.dataset.tc 与点击绑定。 -->
+            <button class="themecard" data-tc="t1">
               <span class="swatch s1"><i style="background:#12162b"></i><i style="background:#5b6ee8"></i><i style="background:#f0a92e"></i></span>
-              <b>星空·琥珀金</b>
+              <b>深空</b>
             </button>
-            <button class="themecard" data-theme="t2">
+            <button class="themecard" data-tc="t2">
               <span class="swatch s2"><i style="background:#ffffff"></i><i style="background:#534ab7"></i><i style="background:#8fc93a"></i></span>
-              <b>自然·青柠</b>
+              <b>白昼</b>
             </button>
-            <button class="themecard" data-theme="t3">
+            <button class="themecard" data-tc="t3">
               <span class="swatch s3"><i style="background:#daf4f8"></i><i style="background:#8B5CF6"></i><i style="background:#F0559B"></i></span>
               <b>极光·氤氲</b>
             </button>
+            <!-- 第四套：自定义。左侧小方块是图片预览位（选了图就把图铺进去），
+                 点方块 = 选图，与点卡片（套用主题）分开，免得想看图却切了主题 -->
+            <button class="themecard" data-tc="t4" id="themeCardCustom">
+              <span class="tcimg" id="themeCustomImg" role="button" tabindex="0" title="选择一张图片作为主题背景（整窗背景 + 半透明蒙版）" aria-label="选择主题背景图片">选择图片</span>
+              <b>自定义</b>
+            </button>
           </div>
         </div>
+        <div class="slotbox" id="accentBox">
+          <div class="slothead">主题色</div>
+          <div class="accentrow" id="accentRow"></div>
+          <div class="row2 slot-actions" style="margin-top:2px">
+            <button class="chip" id="accentReset" title="恢复默认">恢复默认</button>
+            <button class="chip" id="themeImgClear" title="清除背景图" hidden>清除背景图</button>
+          </div>
+          <div class="slotmsg" id="accentMsg"></div>
+        </div>
+        <div class="slotbox" id="gradBox">
+          <div class="slothead">渐变色搭配</div>
+          <div class="accentrow" id="gradRow"></div>
+          <!-- 自定义渐变色带：点渐变排末尾的「自定义」卡展开。横=色相，纵=明度，
+               拖两个把手选起点/终点，四色与描边智能生成，整面板实时预览。 -->
+          <div class="gradedit" id="gradEditor" hidden>
+            <div class="ge-band" id="geBandWrap">
+              <canvas id="geBand" width="520" height="260" role="img" aria-label="渐变色带：横向为色相，纵向为明度，拖动两个圆点选取起点与终点"></canvas>
+              <button class="ge-handle" id="geH1" type="button" title="渐变起点（可拖拽；方向键微调，Shift 加速）" aria-label="渐变起点"></button>
+              <button class="ge-handle" id="geH2" type="button" title="渐变终点（可拖拽；方向键微调，Shift 加速）" aria-label="渐变终点"></button>
+            </div>
+            <div class="ge-row">
+              <label class="ge-field">起点<input type="text" id="geHex1" maxlength="7" spellcheck="false" autocomplete="off" title="六位色值，如 #5B4BE8" aria-label="起点色值"></label>
+              <label class="ge-field">终点<input type="text" id="geHex2" maxlength="7" spellcheck="false" autocomplete="off" title="六位色值，如 #F0559B" aria-label="终点色值"></label>
+            </div>
+            <div class="ge-row">
+              <div class="ge-preview" id="gePreview" aria-hidden="true"></div>
+              <span class="ge-sample" id="geSampleBtn" aria-hidden="true">发送</span>
+            </div>
+            <div class="ge-ops">
+              <button class="chip" id="geCancel" type="button">取消</button>
+              <button class="chip" id="geApply" type="button">应用</button>
+            </div>
+          </div>
+          <div class="row2 slot-actions" style="margin-top:2px">
+            <button class="chip" id="gradReset" title="恢复默认渐变">恢复默认</button>
+          </div>
+          <div class="slotmsg" id="gradMsg"></div>
+        </div>
+        <!-- 毛玻璃：极光自带，这里只在另外三套主题下出现（外观页里本来就有按主题显隐的盒子） -->
+        <div class="slotbox" id="glassBox">
+          <div class="slothead">毛玻璃</div>
+          <div class="field"><label>面板毛玻璃</label>
+            <button class="chip" id="glassToggle" title="开启毛玻璃">毛玻璃 关</button>
+          </div>
+          <!-- 玻璃开着的主题才出现：桌面实拍会在移动面板 / 换显示器时自动重抓，
+               这一颗是"现在就觉得背景旧了"时的手动重抓 -->
+          <div class="field" id="glassBgRefreshRow" style="display:none"><label>背景模糊</label>
+            <button class="chip" id="glassBgRefresh" title="重新抓一张桌面背景（移动面板、切换显示器会自动重抓）">刷新背景</button>
+          </div>
+          <div class="slotmsg" id="glassMsg"></div>
+        </div>
+
+        <!-- 录屏相关的这几项本质上都是"外观"：悬浮控制条与实时字幕窗的皮肤、行为、描边。
+             已从独立的「录屏」页合并进来，不再单独开一屏；JS 绑定与 IPC 契约原样不动。 -->
+        <div class="slotbox">
+          <div class="slothead">悬浮控制条皮肤</div>
+          <div class="recskin-row" id="recSkinPick">
+            <button class="recskin on" type="button" data-skin="light" title="灰白纱（默认）" aria-label="灰白纱">
+              <span class="recskin-pv pv-light" aria-hidden="true"><i class="pv-dot"></i><i class="pv-line l1"></i><i class="pv-line l2"></i></span>
+              <span class="recskin-tx"><b>灰白纱</b></span>
+              <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+            </button>
+            <button class="recskin" type="button" data-skin="dark" title="深纱" aria-label="深纱">
+              <span class="recskin-pv pv-dark" aria-hidden="true"><i class="pv-dot"></i><i class="pv-line l1"></i><i class="pv-line l2"></i></span>
+              <span class="recskin-tx"><b>深纱</b></span>
+              <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+            </button>
+          </div>
+          <div class="slotmsg" id="recSkinMsg"></div>
+        </div>
+
+        <div class="slotbox">
+          <div class="slothead">悬浮控制条</div>
+          <div class="field"><label>自动收起成能量条 <span class="muted" id="recEnergyState"></span></label>
+            <button class="chip" id="recEnergyToggle">自动收起 开</button>
+          </div>
+          <div class="slotmsg" id="recEnergyMsg"></div>
+        </div>
+
+        <div class="slotbox">
+          <div class="slothead">悬浮控制条描边</div>
+          <div class="colorgrid" id="recColorGrid"></div>
+          <div class="slotmsg" id="recColorMsg"></div>
+        </div>
+
+        <div class="slotbox">
+          <div class="slothead">实时字幕窗</div>
+          <div class="recskin-row" id="subSkinPick">
+            <button class="recskin on" type="button" data-skin="dark" title="深纱" aria-label="深纱">
+              <span class="recskin-pv pv-dark" aria-hidden="true"><i class="pv-dot"></i><i class="pv-line l1"></i><i class="pv-line l2"></i></span>
+              <span class="recskin-tx"><b>深纱</b></span>
+              <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+            </button>
+            <button class="recskin" type="button" data-skin="light" title="灰白纱" aria-label="灰白纱">
+              <span class="recskin-pv pv-light" aria-hidden="true"><i class="pv-dot"></i><i class="pv-line l1"></i><i class="pv-line l2"></i></span>
+              <span class="recskin-tx"><b>灰白纱</b></span>
+              <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+            </button>
+          </div>
+          <div class="colorgrid" id="subColorGrid"></div>
+          <div class="slotmsg" id="subMsg"></div>
+        </div>
+
         <div class="slotbox">
           <div class="slothead">动效 </div>
           <div class="field"><label>界面动效 <span class="muted" id="motionState"></span></label>
@@ -2223,6 +2721,9 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
           </div>
           <div class="field"><label class="labff"><svg class="ffico" viewBox="0 0 24 24" aria-hidden="true"><text class="ff-a" x="8" y="17" font-size="15" text-anchor="middle">A</text><text class="ff-b" x="17" y="17" font-size="11" text-anchor="middle">a</text></svg>字体</label>
             <select id="fontFamily"></select>
+          </div>
+          <div class="field"><label>文字颜色 <span class="muted" id="fontColorState"></span></label>
+            <div class="accentrow" id="fontColorRow"></div>
           </div>
           <div class="field"><label>预览</label>
             <div class="fontprev" id="fontPrev">
@@ -2307,8 +2808,15 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
             <option value="int8_float16">int8_float16（GPU 省显存）</option>
           </select>
         </div>
+        <div class="field"><label>模型 <span class="hint">切换会重启识别服务</span></label>
+          <select id="asr-model" title="本地识别模型">
+            <option value="small">small（约 480 MB，快）</option>
+            <option value="medium">medium（约 1.5 GB，准）</option>
+          </select>
+        </div>
         <div class="row2 slot-actions">
           <button id="asr-install" class="pri" style="display:none" title="建虚拟环境 → 装依赖 → 下载权重，共约 700 MB，只装到本机">安装本地离线识别（约 700 MB）</button>
+          <button id="asr-dl-medium" style="display:none" title="从 Hugging Face 下载，支持断点续传">下载 medium 权重（约 1.5 GB）</button>
           <button id="asr-apply">启动识别服务</button>
         </div>
         <div id="asr-progress" style="display:none">
@@ -2331,7 +2839,6 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
       <div class="setpane" data-pane="chan">
       <div class="slotbox" id="front-repair-box">
         <div class="slothead">前台通道 <span class="hint">截图 / 点击 / 键盘，由 windows-mcp 提供</span></div>
-<div class="slotnote">WorkBuddy 更新会清理 <b>windows-mcp</b> 的运行环境，导致前台通道失效。这里可一键重建。</div>
         <div class="front-state" id="front-state">检测中…</div>
         <div class="row2 slot-actions">
           <button id="front-repair" title="重建运行环境并重新安装 windows-mcp，装完自动重连前台通道">修复前台通道</button>
@@ -2377,6 +2884,15 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
             <div class="storage-item" data-storage-kind="screenshots" role="button" tabindex="0" title="打开截屏目录">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.6" y="6" width="18.8" height="13.4" rx="2.6"/><circle cx="12" cy="12.6" r="3.4"/><path d="M8.4 6 9.6 3.6h4.8L15.6 6"/></svg>
               <span class="storage-name"><b>截屏</b><span class="storage-path" id="storagePathScreenshots">screenshots</span></span><span class="storage-count" id="storageCountScreenshots">—</span>
+            </div>
+          </div>
+          <div class="snip-box">
+            <div class="slothead">截屏 <span class="hint">Snipaste（免费个人版）</span></div>
+            <div class="slotnote">工具栏<b>「截屏」键</b>调用本机 <b>Snipaste</b>：框选后可用它的标注栏<b>改选区 / 划线 / 二次裁剪</b>，点保存后截图<b>存入上方「截屏」目录</b>（snip_日期_时分秒.png，同秒多张自动加序号）。没装 Snipaste 时该键不可用。</div>
+            <div class="row2 slot-actions">
+              <span class="hint" id="snipState">检测中…</span>
+              <button id="snipRedetect" title="装好 Snipaste 后点它刷新状态（不用重启控制台）">重新检测</button>
+              <button id="snipSite" title="打开 Snipaste 官网（免费个人版；推荐 Microsoft Store 版，无 SmartScreen 拦截）">去官网</button>
             </div>
           </div>
           <div class="storage-space" id="storageSpace">可用空间：读取中…</div>
@@ -2469,11 +2985,76 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
         <b>下面每个状态标签都是打开时真查出来的，不是猜的。</b>
       </div>
       <div class="wiz-cards" id="wizCards"></div>
+      <!-- 可选组件：安装包放不下（Whisper 权重）/ 不能随包分发（CodeBuddy CLI）
+           的附属文件。**默认全不勾** —— 大文件必须用户自己勾了才下。
+           下载全部走桥（面板 CSP 只连 127.0.0.1:19387），关掉向导也不中断。 -->
+      <div class="wiz-extras" id="wizExtras">
+        <div class="wiz-x-hd">📦 可选组件 <span class="muted">需联网下载</span></div>
+        <label class="wiz-x-item">
+          <input type="checkbox" id="wx-asr">
+          <span class="wiz-x-b">
+            <b>本地离线识别 Whisper · small</b>
+            <i>约 680 MB · 装完可离线识别</i>
+            <span class="wiz-x-s">来源：Hugging Face</span>
+          </span>
+        </label>
+        <label class="wiz-x-item">
+          <input type="checkbox" id="wx-medium">
+          <span class="wiz-x-b">
+            <b>Whisper · medium 权重</b>
+            <i>约 1.5 GB · 识别更准 · 需先装好上面那项</i>
+            <span class="wiz-x-s">来源：Hugging Face</span>
+          </span>
+        </label>
+        <div class="wiz-x-item wiz-x-info">
+          <span class="wiz-x-b">
+            <b>CodeBuddy CLI（后台 Agent）</b>
+            <i>专有软件，无法代下载 · 装完需登录</i>
+            <span class="wiz-x-s">官方安装：<code>npm i -g @tencent-ai/codebuddy-code</code>（需 Node.js 18.20+）或 PowerShell <code>irm https://www.codebuddy.cn/cli/install.ps1 | iex</code></span>
+          </span>
+          <span class="wiz-x-acts">
+            <button type="button" class="wiz-btn" data-wx="doc" title="打开官方文档">官方文档</button>
+            <button type="button" class="wiz-btn" data-wx="login" title="打开登录脚本">登录脚本</button>
+          </span>
+        </div>
+        <div class="wiz-x-prog" id="wxProg" style="display:none">
+          <div class="wiz-x-bar"><i id="wxBarFill"></i></div>
+          <span class="muted" id="wxProgText"></span>
+        </div>
+        <div class="wiz-x-foot">
+          <span class="tip" id="wxTip">默认不勾，勾上才下载；下载在后台跑，完成后消息区通知。</span>
+          <button class="wiz-btn pri" id="wxStart" title="下载勾选上的组件">开始下载</button>
+        </div>
+      </div>
       <div class="wiz-ft">
         <span class="tip" id="wizFootTip">四个状态每次打开都重新查一遍；改完配置可在「设置 → 关于」再打开一次。</span>
         <button class="wiz-btn" id="wizRefresh" title="四条通道重新查一遍真实状态">重新检测</button>
         <button class="wiz-btn pri" id="wizDone" title="记住「看过」，以后不再自动弹出">我知道了</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- 截屏引导卡（第一档）：没装 Snipaste 时，首启/点「截屏」各会见到它一次。
+     复用向导的 .wiz-mask/.wiz-box 外壳（同一套压暗、弹入、主题令牌），不新增一套样式。
+     外链不走 <a href>（CSP 禁面板外链），一律 window.orb.openExternal。 -->
+<div class="wiz-mask" id="snipMask" role="dialog" aria-modal="true" aria-labelledby="snipGuideTitle" aria-hidden="true">
+  <div class="wiz-box">
+    <div class="wiz-hd">
+      <b id="snipGuideTitle">📸 截屏功能需要 Snipaste</b>
+      <button class="wiz-x" id="snipGuideX" title="知道了（之后可在「设置 → 存储」里随时重看）" aria-label="关闭">✕</button>
+    </div>
+    <div class="wiz-sub" id="snipGuideBody">
+      工具栏的<b>「截屏」键</b>调用本机安装的 <b>Snipaste</b>（免费个人版）完成框选，
+      截图<b>存入「截屏」目录</b>（设置 › 存储 里能看到用量）：框选后可用 Snipaste 的
+      标注栏改选区 / 划线 / 二次裁剪，点保存即落盘。
+      当前这台电脑上还没检测到它 —— 去官网装一个，装完回到这里点「重新检测」即可。
+    </div>
+    <div class="wiz-ft">
+      <span class="tip">推荐 Microsoft Store 版：无 SmartScreen 拦截。官网也提供安装包。</span>
+      <button class="wiz-btn" id="snipGuideSite" title="打开 Snipaste 官网（免费个人版）">去官网</button>
+      <button class="wiz-btn" id="snipGuideRecheck" title="装好了？重新检测一次">重新检测</button>
+      <button class="wiz-btn pri" id="snipGuideOk" title="记住选择，不再自动弹出">我知道了</button>
     </div>
   </div>
 </div>
@@ -2627,6 +3208,74 @@ function applyFont() {
   const root = document.documentElement.style;
   root.setProperty('--fs-scale', p.scale || 1);
   root.setProperty('--app-font', p.family || '"Microsoft YaHei","微软雅黑",sans-serif');
+  /* 文字颜色：选中即内联覆盖 --fg。样式表里凡是 var(--fg) 的地方一并跟随，
+     不用逐条改规则；--fg-soft / --fg-muted 是各族主题既定的浅化阶，刻意不跟着变，
+     否则三级层次会一起塌成同一个颜色。 */
+  if (p.color && /^#[0-9a-fA-F]{6}$/.test(p.color)) root.setProperty('--fg', p.color);
+  else root.removeProperty('--fg');
+  reportFontColor(p.color || '');
+}
+/* 自选墨色对当前主题的底到底够不够 4.5:1 —— 不够就说出来，但不拦着：
+  颜色是用户自己的选择，应用只负责把风险讲清楚。 */
+function reportFontColor(hex) {
+  const st = document.getElementById('fontColorState');
+  const row = document.getElementById('fontColorRow');
+  if (row) row.querySelectorAll('.colorsw').forEach((b) => b.classList.toggle('on', (b.dataset.color || '') === hex));
+  if (!st) return;
+  if (!hex) { st.textContent = ''; return; }
+  const cs = getComputedStyle(document.documentElement);
+  const bgs = ['--bg', '--bg-soft', '--bg-sunken']
+    .map((v) => cs.getPropertyValue(v).trim())
+    .filter((v) => /^#[0-9a-fA-F]{6}$/.test(v));
+  let worst = 99;
+  for (const b of bgs) {
+    const c = (() => {
+      const x = tcRelLum(hex), y = tcRelLum(b), hi = Math.max(x, y), lo = Math.min(x, y);
+      return (hi + .05) / (lo + .05);
+    })();
+    if (c < worst) worst = c;
+  }
+  st.textContent = worst < 4.5 ? ('对比度 ' + worst.toFixed(1) + ':1，低于 4.5:1') : '';
+}
+/* 墨色候选：都是低明度色，浅底主题上直接可用；深色主题（深空）请用取色器挑亮色。 */
+const INK_COLORS = [
+  ['', '跟随主题'],
+  ['#2c2c2a', '墨'], ['#262a33', '石墨'], ['#3c3489', '靛'],
+  ['#1F5E8E', '靛蓝'], ['#1a2405', '橄榄'], ['#5b3a1e', '褐'], ['#4a1f2a', '酒红'],
+];
+function buildFontColorPick() {
+  const row = document.getElementById('fontColorRow');
+  if (!row || row.childElementCount) return;
+  const p = fontPref();
+  for (const [hex, name] of INK_COLORS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'colorsw' + (hex === '' ? ' swdefault' : '');
+    b.dataset.color = hex;
+    b.title = hex === '' ? '跟随主题' : ('文字颜色 ' + name);
+    b.setAttribute('aria-label', hex === '' ? '跟随主题' : ('文字颜色 ' + name));
+    if (hex) b.style.background = hex;
+    b.innerHTML = '<span class="ck">' + TCK_SVG + '</span>';
+    b.addEventListener('click', () => {
+      const c = fontPref();
+      c.color = hex;
+      store.setItem('orb.font', JSON.stringify(c));
+      applyFont();
+    });
+    row.appendChild(b);
+  }
+  const wrap = document.createElement('label');
+  wrap.className = 'colorsw swpicker';
+  wrap.title = '自定义文字颜色';
+  wrap.innerHTML = '<input type="color" id="fontColorCustom" value="' + (p.color || '#2c2c2a') + '" aria-label="自定义文字颜色">';
+  row.appendChild(wrap);
+  wrap.querySelector('input').addEventListener('input', (e) => {
+    const c = fontPref();
+    c.color = e.target.value;
+    store.setItem('orb.font', JSON.stringify(c));
+    applyFont();
+  });
+  reportFontColor(p.color || '');
 }
 function buildFontPick() {
   const p = fontPref();
@@ -2806,6 +3455,7 @@ async function refreshStatus() {
 function applyAsrUI(d) {
   const dev = document.getElementById('asr-device');
   const cmp = document.getElementById('asr-compute');
+  const mdl = document.getElementById('asr-model');
   const st = document.getElementById('asr-state');
   const inst = document.getElementById('asr-install');
   if (!dev) return;
@@ -2813,6 +3463,16 @@ function applyAsrUI(d) {
     // 下拉显示**期望值**（用户选的），实际生效值写在状态行里（回落时两者不同）
     if (d.requested && d.requested.device) dev.value = d.requested.device;
     if (d.requested && d.requested.compute) cmp.value = d.requested.compute;
+  }
+  /* 模型下拉：只让选已下载的权重（没下的选项置灰并说明），
+     当前生效值以 /health 为准（asr_server 目标模型没就绪会回落 small）。 */
+  if (mdl) {
+    const avail = Array.isArray(d && d.modelsAvailable) ? d.modelsAvailable : [];
+    for (const o of mdl.options) {
+      o.disabled = avail.length > 0 && avail.indexOf(o.value) < 0;
+    }
+    const cur = (d && d.model) || (avail[0]) || 'small';
+    if ([...mdl.options].some((o) => o.value === cur)) mdl.value = cur;
   }
   // 「安装」按钮：venv 或权重没就绪才需要出现
   if (inst) inst.style.display = (d && d.needDownload) ? '' : 'none';
@@ -2835,6 +3495,12 @@ function applyAsrUI(d) {
   const btn = document.getElementById('asr-apply');
   if (btn && !btn.disabled) btn.textContent = (d && d.running) ? '重启识别服务' : '启动识别服务';
   if (btn) btn.disabled = !!(d && d.needDownload);
+  /* 「下载 medium」只在本地识别装好、而 medium 还没下时出现 */
+  const dl = document.getElementById('asr-dl-medium');
+  if (dl) {
+    dl.style.display = (d && d.installed && Array.isArray(d.modelsAvailable)
+      && d.modelsAvailable.indexOf('medium') < 0) ? '' : 'none';
+  }
 }
 async function loadAsr() {
   try { applyAsrUI(await api('/api/asr')); } catch { /* ignore */ }
@@ -2842,14 +3508,19 @@ async function loadAsr() {
 async function applyAsr() {
   const dev = document.getElementById('asr-device');
   const cmp = document.getElementById('asr-compute');
+  const mdl = document.getElementById('asr-model');
   const st = document.getElementById('asr-state');
   if (!dev) return;
   const prev = st ? st.textContent : '';
   if (st) st.textContent = '正在切换并重启识别服务…（加载模型约 10–40 秒，请稍候）';
   try {
-    const r = await post('/api/asr', { device: dev.value, compute: cmp.value, restart: true });
+    const r = await post('/api/asr', {
+      device: dev.value, compute: cmp.value,
+      model: mdl ? mdl.value : undefined, restart: true,
+    });
     if (r && r.ok) {
-      addMsg('Orb', '识别服务已切换为 <b>' + esc(r.device || dev.value) + ' / ' + esc(r.compute || cmp.value) + '</b>。', 'sys');
+      addMsg('Orb', '识别服务已切换为 <b>' + esc(r.device || dev.value) + ' / ' + esc(r.compute || cmp.value)
+        + (r.model ? ' / ' + esc(r.model) : '') + '</b>。', 'sys');
     } else if (r && r.needDownload) {
       addMsg('Orb', '还没安装本地识别：先点「安装本地离线识别」（约 700 MB），装完就能离线转写；不装也能用浏览器引擎语音。', 'sys');
     } else {
@@ -2917,6 +3588,49 @@ async function installAsr() {
       addMsg('Orb', '安装失败：' + esc(p.error || '未知错误')
         + (last ? '<br><span class="muted">' + esc(last) + '</span>' : '')
         + '<br><span class="muted">下载支持断点续传，修复网络后直接重试即可。</span>', 'err');
+    }
+  }, 1500);
+}
+
+/* 追加下载模型权重（medium 等，约 1.5 GB）：POST /api/asr/model，
+   进度复用安装那一套 UI（桥里单槽，安装 / 下载互斥）。断点续传、可重试。 */
+async function downloadAsrModel(name) {
+  const btn = document.getElementById('asr-dl-' + name);
+  const box = document.getElementById('asr-progress');
+  const fill = document.getElementById('asr-bar-fill');
+  const txt = document.getElementById('asr-progress-text');
+  const msg = document.getElementById('asr-msg');
+  if (btn) btn.disabled = true;
+  if (box) box.style.display = '';
+  if (fill) fill.style.width = '0%';
+  if (txt) txt.textContent = '正在下载 ' + name + ' 权重（支持断点续传）…';
+  if (msg) msg.textContent = '';
+  let r = null;
+  try { r = await post('/api/asr/model', { name }); }
+  catch (e) { r = { ok: false, error: e.message }; }
+  if (!r || !r.ok) {
+    if (box) box.style.display = 'none';
+    if (btn) btn.disabled = false;
+    addMsg('Orb', '下载 ' + name + ' 权重失败：' + esc((r && r.error) || '未知错误'), 'err');
+    return;
+  }
+  addMsg('Orb', '开始下载 ' + name + ' 权重（支持断点续传）。', 'sys');
+  if (asrPrepTimer) clearInterval(asrPrepTimer);
+  asrPrepTimer = setInterval(async () => {
+    let p = null;
+    try { p = await api('/api/asr/prepare-progress'); } catch { /* 网络抖动，下一轮再看 */ }
+    if (!p) return;
+    if (fill) fill.style.width = Math.max(0, Math.min(100, p.percent || 0)) + '%';
+    if (txt) txt.textContent = '下载 ' + name + ' 权重… ' + (p.percent || 0) + '%';
+    if (p.running) return;
+    clearInterval(asrPrepTimer); asrPrepTimer = null;
+    if (box) box.style.display = 'none';
+    if (btn) btn.disabled = false;
+    if (p.success) {
+      addMsg('Orb', name + ' 权重下载完成，可在「模型」下拉切换。', 'sys');
+      loadAsr();
+    } else {
+      addMsg('Orb', '下载失败：' + esc(p.error || '未知错误') + '<br><span class="muted">断点续传，重试即可。</span>', 'err');
     }
   }, 1500);
 }
@@ -3031,7 +3745,14 @@ async function loadDanger() {
 
 /* ---------------- 前台通道自检 / 一键修复 ----------------
  * windows-mcp 的运行环境会被 WorkBuddy 更新清掉，导致前台全挂。
- * 这里把 bridge 的 /api/repair 接到界面上，点一下就能重建。 */
+ * 这里把 bridge 的 /api/repair 接到界面上，点一下就能重建。
+ *
+ * 按钮三档自适应（syncFrontRepairBtn）——对普通用户（发布包 + 随包运行时）来说，
+ * 老逻辑里这个按钮在任何状态下都必然失败，纯噪音：
+ *   ok            → 置灰「无需修复」：没什么可修；
+ *   not-connected → 「重新连接」：组件都在、只是会话断了，桥走轻量重连（毫秒级）；
+ *   missing-*     → 能修（系统 Python + repairable）才亮着，否则置灰并说明
+ *                   「请重新下载完整安装包」——不发注定失败的请求。 */
 function renderFrontHealth(h) {
   const box = document.getElementById('front-state');
   if (!box) return;
@@ -3042,15 +3763,43 @@ function renderFrontHealth(h) {
     box.innerHTML = '<b>✅ 正常</b> —— 前台通道已连接。';
   } else if (h.state === 'not-connected') {
     box.className = 'front-state warn';
-    box.innerHTML = '<b>⚠️ 未连接</b> —— windows-mcp 存在但尚未连上，可重启控制台或点「修复前台通道」。';
+    box.innerHTML = '<b>⚠️ 未连接</b> —— 点「重新连接」或重启控制台。';
   } else if (h.state === 'missing-exe' || h.state === 'missing-venv') {
     box.className = 'front-state bad';
     const reason = h.state === 'missing-venv'
-      ? '运行环境（venv）不存在'
+      ? '运行环境不存在'
       : 'windows-mcp 未安装';
     box.innerHTML = '<b>❌ 前台不可用</b> —— ' + esc(reason)
       + '，截图 / 点击 / 键盘全部无法使用。'
-      + (h.repairable ? '<br>点下面的按钮可直接重建，首次约 10-15 分钟（要下载 90+ 个依赖包）。' : '<br>基础 Python 也缺失，需先在 WorkBuddy 里跑一次任务恢复环境。');
+      + (h.repairable ? '<br>点下面的按钮可直接重建，首次约 10-15 分钟（要下载 90+ 个依赖包）。'
+        : '<br>发布包不完整，无法在线修复：请重新下载完整安装包。');
+  }
+  syncFrontRepairBtn(h);
+}
+
+/** 按钮三档：见 renderFrontHealth 上方的说明。health 为 null（还没查）时先禁着。 */
+function syncFrontRepairBtn(h) {
+  const btn = document.getElementById('front-repair');
+  if (!btn) return;
+  if (!h) { btn.disabled = true; btn.textContent = '修复前台通道'; return; }
+  if (h.state === 'ok') {
+    btn.disabled = true;
+    btn.textContent = '无需修复';
+    btn.title = '前台通道正常。';
+  } else if (h.state === 'not-connected') {
+    btn.disabled = false;
+    btn.textContent = '重新连接';
+    btn.title = '重新连接前台会话';
+  } else if (h.repairable) {
+    btn.disabled = false;
+    btn.textContent = '修复前台通道';
+    btn.title = '重建运行环境并重新安装 windows-mcp，装完自动重连前台通道';
+  } else {
+    btn.disabled = true;
+    btn.textContent = '修复前台通道';
+    btn.title = h.source === 'bundled'
+      ? '发布包不完整，请重新下载完整安装包'
+      : '基础 Python 缺失，无法自动修复：请在 WorkBuddy 里跑一次任务恢复环境，或用 ORB_PY_EXE 指向一个 python.exe。';
   }
 }
 
@@ -3181,12 +3930,13 @@ async function wzProbeFront() {
   if (!h) return wzResult('unverified', '桥还没连上，暂时<b>查不到</b>前台状态。等一会点下面「重新检测」再看。');
   if (h.state === 'ok') return wzResult('ready', 'windows-mcp 已连上会话，截图 / 点击 / 键盘<b>现在就能用</b>。');
   if (h.state === 'not-connected') {
-    return wzResult('unverified', '运行环境已就位但还没连上：真正用一次会自动重连。想现在就修，去「设置 → 通道」点「修复前台通道」。');
+    return wzResult('unverified', '还没连上：真正用一次会自动重连。想现在就修，去「设置 → 通道」点「重新连接」。');
   }
   if (h.state === 'missing-exe' || h.state === 'missing-venv') {
     return wzResult('unconfigured',
-      '缺运行环境（' + (h.state === 'missing-venv' ? 'venv 不存在' : 'windows-mcp 未安装')
-      + '），这条通道<b>现在用不了</b>：去「设置 → 通道」点「修复前台通道」。');
+      '缺运行环境，这条通道<b>现在用不了</b>：'
+      + (h.repairable ? '去「设置 → 通道」点「修复前台通道」。'
+        : '发布包不完整，无法在线修复，请重新下载完整安装包。'));
   }
   return wzResult('unverified', '桥返回了未知状态 <code>' + esc(h.state) + '</code>，不敢当成可用。');
 }
@@ -3492,17 +4242,144 @@ function bindWizard() {
   }
 }
 
+/* ---------- 首跑「可选组件」：附属文件下载 ----------
+ * 安装包放不下（Whisper 权重）/ 不能随包分发（CodeBuddy CLI）的东西，
+ * 在首跑向导里摆出来让用户自选：**大件默认不勾**，勾了才下。
+ * 下载全部走桥（面板 CSP 只连 127.0.0.1:19387，不能自己 fetch 外网），
+ * 桥里是单槽 asrPrepare：一键安装与模型下载互斥，轮询同一个进度端点即可。
+ * 关掉向导不中断下载 —— 定时器挂在面板脚本上，桥里的进程照跑。 */
+const WX_STEP = {
+  pick: '选择解释器', venv: '创建虚拟环境', deps: '安装 Python 依赖（约 200 MB）',
+  model: '下载权重（支持断点续传）', done: '收尾', error: '出错',
+};
+let wxTimer = null;
+function wxBusy(on) {
+  const b = document.getElementById('wxStart');
+  if (b) { b.disabled = on; b.textContent = on ? '下载中…' : '开始下载'; }
+}
+function wxProgShow(on) {
+  const p = document.getElementById('wxProg');
+  if (p) p.style.display = on ? '' : 'none';
+}
+function wxStopPoll() { if (wxTimer) { clearInterval(wxTimer); wxTimer = null; } }
+function wxPoll(onDone) {
+  wxStopPoll();
+  wxProgShow(true);
+  wxTimer = setInterval(async () => {
+    let p = null;
+    try { p = await api('/api/asr/prepare-progress'); } catch { return; }   // 网络抖动，下一轮再看
+    if (!p) return;
+    const fill = document.getElementById('wxBarFill');
+    const txt = document.getElementById('wxProgText');
+    if (fill) fill.style.width = Math.max(0, Math.min(100, p.percent || 0)) + '%';
+    if (txt) txt.textContent = (WX_STEP[p.step] || p.step || '下载中') + '… ' + (p.percent || 0) + '%';
+    if (p.running) return;
+    wxStopPoll();
+    if (onDone) onDone(p);
+  }, 1500);
+}
+async function wxStart() {
+  const asr = document.getElementById('wx-asr');
+  const med = document.getElementById('wx-medium');
+  const tip = document.getElementById('wxTip');
+  const wantAsr = !!(asr && asr.checked);
+  const wantMed = !!(med && med.checked);
+  if (!wantAsr && !wantMed) {
+    if (tip) tip.textContent = '还没勾任何组件：勾上「本地离线识别」或「medium 权重」再点开始下载。';
+    return;
+  }
+  /* medium 依赖 venv + 依赖：没装过就连 small 那一套一起装（prepare.ps1 幂等，装过会跳过） */
+  let needInstall = wantAsr;
+  if (wantMed && !needInstall) {
+    try {
+      const a = await api('/api/asr');
+      needInstall = !!(a && a.needDownload);
+    } catch { needInstall = true; }
+    if (needInstall && tip) tip.textContent = '会先自动装好本地识别，再下 medium。';
+  }
+  wxBusy(true);
+  if (!needInstall) {
+    if (wantMed) { wxDownloadMedium(); return; }
+    wxAllDone();
+    return;
+  }
+  let r = null;
+  try { r = await post('/api/asr/prepare', {}); } catch (e) { r = { ok: false, error: e.message }; }
+  if (r && !r.ok && !r.running) {
+    wxBusy(false);
+    if (tip) tip.textContent = '启动安装失败：' + ((r && r.error) || '未知错误') + '（可稍后重试，或去「设置 → 语音」手动装）。';
+    return;
+  }
+  /* r.running = 设置页那边已经在装：直接挂上同一个轮询，不重复起进程 */
+  wxPoll(async (p) => {
+    if (!p.success) {
+      wxBusy(false);
+      if (tip) tip.textContent = '安装失败：' + (p.error || '未知错误') + '（下载支持断点续传，可直接重试）。';
+      return;
+    }
+    if (wantMed) { wxDownloadMedium(); return; }
+    wxAllDone();
+  });
+}
+function wxDownloadMedium() {
+  const tip = document.getElementById('wxTip');
+  (async () => {
+    let r = null;
+    try { r = await post('/api/asr/model', { name: 'medium' }); } catch (e) { r = { ok: false, error: e.message }; }
+    if (!r || !r.ok) {
+      wxBusy(false);
+      if (tip) tip.textContent = 'medium 下载失败：' + ((r && r.error) || '未知错误') + '（断点续传，重试即可）。';
+      return;
+    }
+    wxPoll((p) => {
+      wxBusy(false);
+      if (p.success) { wxAllDone(); return; }
+      if (tip) tip.textContent = 'medium 下载失败：' + (p.error || '未知错误') + '（断点续传，重试即可）。';
+    });
+  })();
+}
+function wxAllDone() {
+  wxBusy(false);
+  wxProgShow(false);
+  const tip = document.getElementById('wxTip');
+  if (tip) tip.textContent = '✅ 下载完成，可在「设置 → 语音」启动识别服务。';
+  try { loadAsr(); } catch { /* 设置页不在 DOM 也不算错 */ }
+  addMsg('Orb', '可选组件下载完成：本地离线识别已就绪。', 'sys');
+}
+function bindExtras() {
+  const start = document.getElementById('wxStart');
+  if (start) start.addEventListener('click', wxStart);
+  const box = document.getElementById('wizExtras');
+  if (box) {
+    box.addEventListener('click', (e) => {
+      const btn = e.target.closest ? e.target.closest('[data-wx]') : null;
+      if (!btn) return;
+      if (btn.dataset.wx === 'doc') {
+        try { window.orb.openExternal('https://www.codebuddy.cn/docs/cli/quickstart'); }
+        catch { /* 老 preload 没这个方法就算了，命令行在上方原文里能抄 */ }
+      } else if (btn.dataset.wx === 'login') {
+        (async () => { try { await window.orb.openCliLogin(); } catch { /* ignore */ } })();
+      }
+    });
+  }
+}
+
 async function repairFrontChannel() {
   const btn = document.getElementById('front-repair');
   const msg = document.getElementById('front-repairmsg');
   if (btn.disabled) return;
   btn.disabled = true;
-  btn.textContent = '修复中…';
-  msg.textContent = '正在重建运行环境并安装 windows-mcp，请稍候（首次约 10-15 分钟，不要关闭面板）…';
+  const reconnecting = btn.textContent === '重新连接';
+  btn.textContent = reconnecting ? '重新连接中…' : '修复中…';
+  msg.textContent = reconnecting
+    ? '正在重新连接…'
+    : '正在重建运行环境并安装 windows-mcp，请稍候（首次约 10-15 分钟，不要关闭面板）…';
   try {
     const r = await post('/api/repair', {});
     if (r && r.ok) {
-      msg.textContent = '✅ 修复完成。\n' + (r.steps || []).join('\n') + '\n若前台仍显示未连接，请重启一次控制台。';
+      msg.textContent = r.mode === 'reconnect'
+        ? '✅ 已重新连接。'
+        : '✅ 修复完成。\n' + (r.steps || []).join('\n') + '\n若前台仍显示未连接，请重启一次控制台。';
       renderFrontHealth(r.health);
     } else {
       msg.textContent = '❌ 修复失败：' + ((r && r.error) || '未知错误')
@@ -3511,8 +4388,9 @@ async function repairFrontChannel() {
   } catch (e) {
     msg.textContent = '❌ 修复请求异常：' + String((e && e.message) || e);
   } finally {
-    btn.disabled = false;
-    btn.textContent = '修复前台通道';
+    /* 别在这里写死按钮文案：健康度可能已经变了（重连成功 → 应该变回「无需修复」）。
+       重新拉一次自检，让 syncFrontRepairBtn 按真实状态收尾。 */
+    loadFrontHealth();
   }
 }
 
@@ -3828,6 +4706,7 @@ const TOOLS = [
   { id: 'RecordCap', label: '录屏' },
   { id: 'Screenshot', label: '截图' },
   { id: 'Snapshot', label: '看屏幕' },
+  { id: 'Snipaste', label: '截屏' },
   { id: 'OCR', label: '取词' },
   { id: 'RTSUB', label: '实时字幕' },
   { id: 'DisplayInventory', label: '窗口' },
@@ -3880,7 +4759,7 @@ const TOOLS = [
  * 其余工具收进「更多」浮层（不是删除，只是不进常驻行）；
  * 按「你想做什么」分四段铺开，悬浮即知功能，不用再点第二层。
  * --------------------------------------------------------------- */
-const TIER_PINNED = ['Snapshot', 'RTSUB', 'CursorPos'];
+const TIER_PINNED = ['Snapshot', 'RTSUB', 'CursorPos', 'Snipaste'];
 
 /* 「更多」浮层：分四段，段内按使用频率排。每段都是有语义的一类。
    纯图标展示（名称走原生 tooltip）。
@@ -3902,6 +4781,10 @@ const ICO = (inner, extra) => '<svg viewBox="0 0 24 24" fill="none" stroke="curr
 const TOOL_ICONS = {
   Screenshot:        ICO('<rect x="2.6" y="6" width="18.8" height="13.4" rx="2.6"/><circle cx="12" cy="12.6" r="3.4"/><path d="M8.4 6 9.6 3.6h4.8L15.6 6"/>'),
   Snapshot:          ICO('<rect x="2.4" y="4.4" width="19.2" height="15.2" rx="2.4"/><path d="M6.4 12s2.2-3 5.6-3 5.6 3 5.6 3-2.2 3-5.6 3-5.6-3-5.6-3Z"/><circle cx="12" cy="12" r="1.6"/>'),
+  /* 截屏（Snipaste）：相机。与「看屏幕」的显示器+眼睛刻意区分 ——
+     一个是"给模型看"，一个是"存成文件"。常驻行里它是纯图标（文字放不下，
+     完整名在 title 悬停提示里），所以图形本身必须一眼可辨。 */
+  Snipaste:          ICO('<rect x="2.6" y="6" width="18.8" height="13.4" rx="2.6"/><circle cx="12" cy="12.6" r="3.4"/><path d="M8.4 6 9.6 3.6h4.8L15.6 6"/>'),
   OCR:               ICO('<path d="M3.4 9.4h6.2v3.6H3.4ZM14.4 9.4h6.2v3.6h-6.2ZM3.4 17.4h6.2V21H3.4"/><path d="M17 4.4v7.6M13.8 8.2h6.4"/>'),
   RTSUB:             ICO('<rect x="2.6" y="5.4" width="18.8" height="13.2" rx="2.4"/><path d="M6.4 15.4h5.2M13.4 15.4h4.2M6.4 11h11.2"/>'),
   DisplayInventory:  ICO('<rect x="2.6" y="3.6" width="18.8" height="12.6" rx="2.2"/><path d="M8.4 20.4h7.2M12 16.2v4.2"/>'),
@@ -3958,37 +4841,42 @@ function buildTools() {
   const row = document.createElement('div');
   row.className = 'tools-row pinnedrow';
 
-  /* 工作流「录操作」键仍只在顶栏；工具栏新增的是视频录屏 RecordCap。
-     两者必须分开：setRecUi 仍可安全查询历史遗留的 #toolRec 空节点，
-     视频录屏键固定使用 #toolCap，避免被工作流状态改文案。 */
-
   /* 急停常驻键已按用户要求从工具区移除 —— 理由：工具行是被高频点击的地方，
      把「停止一切自动化」这种破坏性动作放在那里，误触代价过高。
      急停功能没丢：顶栏 #stopBtn 图标 + 热键 Ctrl+Alt+Backspace + 命令面板首条仍在。
      renderStop 里对 #toolStop 的查询带 null 保护，所以这里不建它也不会报错 ——
-     保留那段代码是为了将来若要把急停放回工具行，改一行 pinnedOrder 即可。 */
+     保留这段代码是为了将来若要把急停放回工具行，改一行 pinnedOrder 即可。 */
+
+  /* 工作流「录操作」键仍只在顶栏；工具栏新增的是视频录屏 RecordCap。
+     两者必须分开：setRecUi 仍可安全查询历史遗留的 #toolRec 空节点，
+     视频录屏键固定使用 #toolCap，避免被工作流状态改文案。 */
   const pinnedOrder = [...TIER_PINNED, 'RecordCap'];
   for (const id of pinnedOrder) {
     const t = TOOLS.find((x) => x.id === id);
     if (!t) continue;
     const b = document.createElement('button');
-    b.className = 'pinned' + (id === 'RecordCap' ? ' cap' : '');
+    b.className = 'pinned' + (id === 'RecordCap' ? ' cap' : '') + (id === 'Snipaste' ? ' snip' : '');
     if (id === 'RecordCap') b.id = 'toolCap';
     b.title = t.label;
-    b.innerHTML = (TOOL_ICONS[id] || ICO_FALLBACK) + '<span>' + esc(t.label) + '</span>';
+    /* 截屏键纯图标：6 键时行宽只剩 ~12px 余量，加"截屏"两个字会把
+       整行顶进 tight 并截断别的标签。完整名在 title 里，图形（相机）
+       与「看屏幕」的显示器可区分。 */
+    b.innerHTML = (id === 'Snipaste')
+      ? (TOOL_ICONS[id] || ICO_FALLBACK)
+      : ((TOOL_ICONS[id] || ICO_FALLBACK) + '<span>' + esc(t.label) + '</span>');
     b.addEventListener('click', () => runTool(id));
     row.appendChild(b);
   }
 
-  // 「更多」入口：显示剩余数量，让人知道藏了多少（不玩"看得见却不知道有啥"）
+  // 「更多」入口：竖排三点（kebab）。原「更多+箭头」在 6 键行里要占 57px，
+  // 改三点只占 28px —— 省出的宽度正是截屏键的安身之处。
+  // 动效见 .more-btn .kebab 三条规则：悬停波浪左右抖动，展开旋转 90°。
+  const KEBAB = '<svg class="kebab" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" stroke="none">'
+    + '<circle cx="12" cy="5.5" r="2.5"/><circle cx="12" cy="12" r="2.5"/><circle cx="12" cy="18.5" r="2.5"/></svg>';
   const more = document.createElement('button');
   more.className = 'more-btn' + (moreOpen ? ' on' : '');
-  more.title = moreOpen ? '收起更多工具' : '展开更多工具';
-  const restCount = MORE_SECTIONS.reduce(
-    (n, s) => n + s.ids.filter((id) => TOOLS.some((t) => t.id === id)).length, 0);
-  more.innerHTML = '更多<b>' + restCount + '</b>'
-    + '<svg class="chev" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"'
-    + ' stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
+  more.title = moreOpen ? '收起更多工具' : '更多工具';
+  more.innerHTML = KEBAB;
   more.addEventListener('click', () => {
     moreOpen = !moreOpen;
     saveToolGroups();
@@ -4124,6 +5012,144 @@ async function toggleRt() {
   } finally {
     setTimeout(() => { rtToggling = false; }, 1500);
   }
+}
+
+/* ---------- 截屏（Snipaste 调用） ----------
+ * 第一档方案：不自研截图，调本机 Snipaste（免费个人版）完成框选，
+ * 截图由它直写 <存储根>/screenshots（ORB 截屏分区），字节不经过 IPC。
+ * 主进程侧的两步式唤起与 -o 落盘逻辑见 snipaste.js 顶部注释。
+ * 没装时弹一次性引导卡；装完聚焦面板 / 点「重新检测」会自动重查。 */
+let snipState = { installed: false, running: false, path: '', source: '' };
+let snipGuideDone = false;    // 引导卡已读过（主进程 state + localStorage 双保险）
+let snipGuideOpen = false;
+let snipLastCheck = 0;
+
+/** 查一次安装/运行状态并刷新设置页那一行。聚焦时也会走到这儿。 */
+async function snipRefresh(force) {
+  const now = Date.now();
+  if (!force && now - snipLastCheck < 2000) return snipState;   // 聚焦事件来得频，节流
+  snipLastCheck = now;
+  try {
+    const r = await window.orb.snipDetect();
+    if (r) snipState = {
+      installed: !!r.installed, running: !!r.running,
+      path: r.path || '', source: r.source || '',
+    };
+  } catch { /* 检测失败沿用旧状态：不刷没必要的红字 */ }
+  snipRenderStatus();
+  return snipState;
+}
+
+function snipRenderStatus() {
+  const el = document.getElementById('snipState');
+  if (!el) return;
+  if (snipState.installed) {
+    el.textContent = snipState.running ? '已安装 · 正在运行' : '已安装 · 未运行（点「截屏」会自动拉起）';
+    if (snipState.path) el.textContent += '　' + snipState.path;
+  } else {
+    el.textContent = '未检测到 Snipaste —— 「截屏」键暂不可用，装完点「重新检测」';
+  }
+}
+
+/** 工具栏「截屏」键的入口。只读性质（和看屏幕/取词同级），不受操作权限门限。 */
+async function runSnipaste() {
+  const st = await snipRefresh(true);
+  if (!st.installed) { snipOpenGuide(); return; }
+  let r = null;
+  try { r = await window.orb.snipRun(); } catch { /* 走下面的统一报错 */ }
+  if (!r || !r.ok) {
+    addMsg('Orb', '截屏唤起失败：' + esc(snipReasonText(r && r.reason)), 'err');
+    return;
+  }
+  /* 话术要写清"能标注"：调用时加了 --hold，选区确定后 Snipaste 的标注栏会留着，
+     用户可以改选区 / 划线 / 二次裁剪，最后点保存才落盘 —— 不是"选完就没了"。 */
+  addMsg('Orb', '已唤起 <b>Snipaste</b>：框选后可以用它的标注栏<b>改选区、划线、二次裁剪</b>，'
+    + '完成后点工具栏的<b>保存</b>，截图存入「截屏」目录（设置 › 存储 里能看到用量）。按 Esc 取消。', 'sys');
+}
+
+/** 主进程返回的 reason 码翻译成人话。码的产地见 snipaste.js。 */
+function snipReasonText(reason) {
+  const map = {
+    'not-installed': '还没装 Snipaste（去官网装免费个人版，装完不用重启）',
+    'start-timeout': 'Snipaste 启动超时，请手动打开一次 Snipaste 再试',
+    'no-screenshots-dir': '找不到截屏目录（存储根可能被卸载了，去设置 › 存储看看）',
+    'launch-failed': '启动失败（Store 版的应用别名可能被 Windows 设置关掉了）',
+  };
+  const k = String(reason || '').split(':')[0];
+  return map[k] || (reason || '未知错误');
+}
+
+function snipOpenGuide() {
+  const mask = document.getElementById('snipMask');
+  if (!mask || snipGuideOpen) return;
+  snipGuideOpen = true;
+  mask.setAttribute('aria-hidden', 'false');
+  mask.classList.add('show');
+}
+
+async function snipCloseGuide(remember) {
+  const mask = document.getElementById('snipMask');
+  if (!mask || !snipGuideOpen) return;
+  snipGuideOpen = false;
+  mask.setAttribute('aria-hidden', 'true');
+  mask.classList.add('closing');
+  setTimeout(() => { mask.classList.remove('show'); mask.classList.remove('closing'); }, 180);
+  if (remember) {
+    snipGuideDone = true;
+    try { localStorage.setItem('orb.snipGuideDone', '1'); } catch { /* 保底失败不影响主流程 */ }
+    try { await window.orb.snipGuideDone(true); } catch { /* 落盘失败：localStorage 已经保底 */ }
+  }
+}
+
+function bindSnipGuide() {
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
+  on('snipGuideX', () => snipCloseGuide(true));
+  on('snipGuideOk', () => snipCloseGuide(true));
+  on('snipGuideSite', () => window.orb.openExternal('https://www.snipaste.com'));
+  on('snipGuideRecheck', async () => {
+    const st = await snipRefresh(true);
+    if (st.installed) {
+      await snipCloseGuide(true);
+      addMsg('Orb', '检测到 Snipaste 了 —— 点工具栏「截屏」即可使用，截图会自动存入「截屏」目录。', 'sys');
+    } else {
+      const body = document.getElementById('snipGuideBody');
+      if (body) body.innerHTML = '还是没检测到。请确认：① 官网下载页选 <b>Windows</b> 版（推荐 Microsoft Store 版，无拦截）'
+        + ' ② 安装过程不用动本控制台，装完直接点下面的「重新检测」。';
+    }
+  });
+  const mask = document.getElementById('snipMask');
+  if (mask) mask.addEventListener('mousedown', (e) => { if (e.target === mask) snipCloseGuide(true); });
+  // Esc 关卡：捕获阶段拦下，避免同一次按键落到输入框那条 ClosePanel 上
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !snipGuideOpen) return;
+    e.preventDefault();
+    e.stopPropagation();
+    snipCloseGuide(true);
+  }, true);
+  // 设置页 › 存储 的两个入口
+  on('snipRedetect', async () => {
+    const st = await snipRefresh(true);
+    if (!st.installed) {
+      const el = document.getElementById('snipState');
+      if (el) el.textContent = '仍未检测到 —— 请先到官网安装（推荐 Microsoft Store 版）';
+    }
+  });
+  on('snipSite', () => window.orb.openExternal('https://www.snipaste.com'));
+}
+
+/**
+ * 首启自动引导：没装 Snipaste 且没读过引导卡时，面板第一次真被看见时弹一次。
+ * 向导开着就等它关了再弹 —— 两个遮罩叠一起用户根本不知道该点哪个。
+ * @param {object} s get-state 的返回值
+ */
+async function snipMaybeAutoGuide(s) {
+  if (snipGuideDone || snipGuideOpen) return;
+  try {
+    if ((s && s.snipGuideDone) || localStorage.getItem('orb.snipGuideDone') === '1') return;
+  } catch { /* localStorage 不可用时只认主进程标记 */ }
+  if (typeof wzIsOpen === 'function' && wzIsOpen()) return;
+  const st = await snipRefresh(true);
+  if (!st.installed) snipOpenGuide();
 }
 
 /* ---------------------------------------------------------------
@@ -4802,6 +5828,9 @@ async function runToolInner(id) {
   if (id === 'OPEN_DIR') { await execute({ tool: 'OPEN_DIR', value: '', note: '打开文件夹' }); return; }
   if (id === 'OCR') { await runOcr(); return; }   // 截屏取词：只读，不受操作权限门限
   if (id === 'RTSUB') { await toggleRt(); return; }   // 实时字幕：一键启停并打开字幕页面
+  /* 截屏（Snipaste）：只把屏幕内容存成文件，和看屏幕/取词同级 —— 只读，不进门限。
+     没装 Snipaste 时弹首跑引导卡（第一档方案的入口）。 */
+  if (id === 'Snipaste') { await runSnipaste(); return; }
   if (!canRun('write')) { addMsg('Orb', '当前是只读权限，不能操作电脑。', 'err'); return; }
 
   const act = { note: (TOOLS.find((t) => t.id === id) || {}).label };
@@ -5552,14 +6581,112 @@ function openSheet() {
    所以切换主题在物理上不可能引起错位。 */
 const THEME_KEY = 'orb.theme';
 const MOTION_KEY = 'orb.motion';
+/* 四套主题：t1 深空 / t2 白昼 / t3 极光 / t4 自定义（图片整窗背景） */
+const THEME_IDS = ['t1', 't2', 't3', 't4'];
 
+/* 主题令牌：各主题的"交互键 + 运行态高亮"家族（换色只动这一族，
+   状态色 --danger/--ok/--warn 与品牌 --accent 一律不碰）。 */
+const ACCENT_VARS = [
+  '--amber', '--amber-bright', '--amber-dim', '--amber-soft', '--amber-border',
+  '--amber-wash', '--amber-wash-faint', '--amber-glow', '--run', '--warn',
+  '--amber-halo', '--amber-halo-hi', '--amber-pulse', '--amber-pulse-faint',
+  '--amber-inset', '--amber-ring', '--amber-key', '--amber-bar-deep',
+  '--energy', '--energy-bright', '--energy-deep', '--energy-soft', '--energy-edge',
+  '--energy-ink', '--energy-glow', '--energy-wash',
+  '--energy-halo', '--energy-halo-hi', '--energy-pulse', '--energy-pulse-faint',
+  '--energy-ring', '--energy-key', '--energy-bar-deep',
+  '--iris-1', '--iris-2', '--iris-3', '--iris-4',
+  '--iris-fill', '--iris-fill-soft', '--iris-fill-tool', '--iris-wash',
+  '--iris-edge', '--iris-edge-hover', '--iris-glow', '--iris-soft', '--iris-edge-soft',
+  '--iris-line', '--iris-line-soft', '--iris-top', '--iris-top-hi',
+  '--iris-halo', '--iris-halo-hi', '--iris-halo-faint', '--iris-glow-soft',
+  /* t3 的 --accent 一族由 tcIrisFamily 按所选渐变派生（其余主题的品牌紫/靛蓝
+     写在各主题块里，不在这里清 —— 清了会让非 t3 主题丢掉 CSS 兜底值）。 */
+  '--accent', '--accent-soft', '--accent-fg', '--accent-ring',
+];
+/* 外观页的快捷色（与录屏页描边色同一批：常见、两端主题上都看得见） */
+const ACCENT_SWATCHES = [
+  '', // 恢复默认
+  '#f0a92e', '#8fc93a', '#5b6ee8', '#534ab7', '#8B5CF6',
+  '#38bdf8', '#2fb49a', '#F0559B', '#D8444F', '#FF8A3D',
+  '#8a8f9c', '#3c3489',
+];
+/* 极光（t3）的渐变搭配：系统推荐常驻 6 款（糖果/薄荷 + 极光/黄金时刻/玫瑰石英/翡翠之城），
+   每组 4 色 → 生成填充/描边全套令牌。旧款 日落/海洋/樱花 及未入选候选一并下线；
+   老配置里残留的 id 会被主进程白名单归一成默认渐变。描边色全部过白底 3:1（最低 4.25:1）。 */
+const T3_GRADS = [
+  { id: 'candy',   name: '糖果', c: ['#FF5E7A', '#FFB03D', '#8B5CF6', '#38BDF8'], edge: '#6B2A8E' },
+  { id: 'mint',    name: '薄荷', c: ['#3FBF8F', '#8FC93A', '#22B8C8', '#6FD08A'], edge: '#1F6B45' },
+  { id: 'aurora',  name: '极光', c: ['#00C9FF', '#3ADFC4', '#63E9A9', '#92FE9D'], edge: '#0E8A7B' },
+  { id: 'golden',  name: '黄金时刻', c: ['#E43D00', '#F26400', '#FFA303', '#FFE900'], edge: '#8A3C00' },
+  { id: 'rose',    name: '玫瑰石英', c: ['#F7CAC9', '#F2AECB', '#C9A8DC', '#92A8D1'], edge: '#7A6B9E' },
+  { id: 'emerald', name: '翡翠之城', c: ['#0E9F6E', '#31B85C', '#93C93E', '#F2C94C'], edge: '#0A6B4A' },
+];
+let themePrefs = {
+  accent: { t1: '', t2: '', t3: '', t4: '' },
+  grad: '',
+  gradCustom: { c1: '', c2: '' },
+  /* 毛玻璃：每套主题各记一份。极光（t3）恒为 true 且不可改 —— 它的玻璃+彩板
+     是主题本体，走 [data-theme="t3"] 自己的规则，不参与这个开关。 */
+  glass: { t1: false, t2: false, t3: true, t4: false },
+  themeImage: '',
+};
+
+/** 毛玻璃：按当前主题的开关给 <html> 挂/摘 .glass。
+    极光永远自带玻璃（走 t3 自己的规则），所以既不加类、也不出这个盒子。 */
+function applyGlass() {
+  const theme = document.documentElement.getAttribute('data-theme') || 't2';
+  const isT3 = theme === 't3';
+  const on = isT3 ? true : !!themePrefs.glass[theme];
+  document.documentElement.classList.toggle('glass', on && !isT3);
+  const gb = document.getElementById('glassBox');
+  if (gb) gb.style.display = isT3 ? 'none' : '';
+  const btn = document.getElementById('glassToggle');
+  if (btn) {
+    btn.textContent = '毛玻璃 ' + (on ? '开' : '关');
+    /* 用 .chip.sel 作"开"态 —— 这是本应用里 chip 的既有选中样式（accent-soft +
+       描边 + 字重），和路由 chip 保持一致，不再新造一套状态皮肤 */
+    btn.classList.toggle('sel', on);
+    btn.title = on ? '关闭毛玻璃' : '开启毛玻璃';
+  }
+  /* 桌面模糊底图跟着玻璃态走：只有 t1/t2 玻璃开着时才需要主进程抓桌面实拍 ——
+     t3 糊页内流光板、t4 糊页内用户图片，本来就对；非玻璃态卡片不透明，抓了也看不见。
+     不申报 = 主进程零抓取零闪烁。 */
+  const needShot = !isT3 && on && (theme === 't1' || theme === 't2');
+  glassbgWant(needShot);
+  const rr = document.getElementById('glassBgRefreshRow');
+  if (rr) rr.style.display = needShot ? '' : 'none';
+}
+/** 桌面模糊底图：给 <html> 外的 fixed 层挂/摘 .on，并向主进程申报要不要抓。 */
+function glassbgWant(on) {
+  const el = document.getElementById('glassbg');
+  if (el) el.classList.toggle('on', !!on);
+  try { window.orb.glassBgWant(!!on); } catch { /* 老 preload 没这个方法也不致命 */ }
+}
+/** 收主进程抓回来的桌面实拍（玻璃开着时：每 20s / 移动后 / 手动刷新各来一张）。 */
+function bindGlassBg() {
+  if (!window.orb.onGlassBg) return;
+  window.orb.onGlassBg((shot) => {
+    const el = document.getElementById('glassbg');
+    if (!el || !shot || !shot.png) return;
+    el.style.backgroundImage = 'url(data:image/png;base64,' + shot.png + ')';
+  });
+  const btn = document.getElementById('glassBgRefresh');
+  if (btn) btn.addEventListener('click', () => {
+    try { window.orb.glassBgRefresh(); } catch { /* 同上 */ }
+  });
+}
 function applyTheme(name) {
-  const valid = ['t1', 't2', 't3'];
-  const t = valid.includes(name) ? name : 't2';
+  const t = THEME_IDS.includes(name) ? name : 't2';
   document.documentElement.setAttribute('data-theme', t);
   document.querySelectorAll('.themecard').forEach((c) => {
-    c.classList.toggle('on', c.dataset.theme === t);
+    c.classList.toggle('on', c.dataset.tc === t);
   });
+  applyThemeAccent();        // 换主题 = 换一族令牌，自选色只对当前主题生效
+  syncAccentBoxes();         // 色块排 / 渐变排随主题切换显隐
+  applyGlass();              // 毛玻璃跟着主题走（每套主题各记一份）
+  /* 底色随主题变了，自选墨色的对比度要重新报一次（否则换到深空还显示"没问题"） */
+  if (typeof reportFontColor === 'function') reportFontColor(fontPref().color || '');
   try { localStorage.setItem(THEME_KEY, t); } catch {}
 }
 function loadTheme() {
@@ -5772,7 +6899,7 @@ function bindThemeUI() {
     });
   }
   document.querySelectorAll('.themecard').forEach((c) => {
-    c.addEventListener('click', () => applyTheme(c.dataset.theme));
+    c.addEventListener('click', () => applyTheme(c.dataset.tc));
   });
   const mt = document.getElementById('motionToggle');
   if (mt) mt.addEventListener('click', () => {
@@ -5786,6 +6913,788 @@ function bindThemeUI() {
   if (rp) rp.addEventListener('click', () => openOrbUrl(ORB_REPO_URL, '仓库主页'));
   const rl = document.getElementById('openReleases');
   if (rl) rl.addEventListener('click', () => openOrbUrl(ORB_RELEASE_URL, 'Release 页'));
+}
+
+/* ---------- 设置 › 录屏：悬浮条皮肤 / 行为 / 描边颜色 ----------
+   三项偏好统一由主进程 set-rectheme 落盘并推给悬浮条，渲染层不存第二份：
+   "面板显示的和控制条画的"永远同源。色块网格按 REC_COLORS 构建，
+   值 '' = 跟随皮肤默认描边。 */
+const REC_COLORS = [
+  { v: '',           label: '跟随皮肤（默认描边）' },
+  { v: '#5b6ee8',    label: '兰紫' },
+  { v: '#534ab7',    label: '靛蓝' },
+  { v: '#f0a92e',    label: '琥珀金' },
+  { v: '#8fc93a',    label: '青柠' },
+  { v: '#8B5CF6',    label: '紫罗兰' },
+  { v: '#38bdf8',    label: '天蓝' },
+  { v: '#2fb49a',    label: '薄荷绿' },
+  { v: '#F0559B',    label: '玫红' },
+  { v: '#D8444F',    label: '朱红' },
+  { v: '#8a8f9c',    label: '石灰' },
+  { v: '#3c3489',    label: '黛蓝' },
+];
+const REC_CK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg>';
+let recPrefs = { skin: 'light', energy: true, borderColor: '' };
+let recSettingsBound = false;
+
+function renderRecSettings(rec) {
+  recPrefs = Object.assign({ skin: 'light', energy: true, borderColor: '' }, rec || {});
+  document.querySelectorAll('#recSkinPick .recskin').forEach((b) => b.classList.toggle('on', b.dataset.skin === recPrefs.skin));
+  const eg = document.getElementById('recEnergyToggle');
+  if (eg) {
+    eg.textContent = '自动收起 ' + (recPrefs.energy ? '开' : '关');
+    eg.classList.toggle('sel', recPrefs.energy);
+  }
+  const st = document.getElementById('recEnergyState');
+  if (st) st.textContent = recPrefs.energy ? '' : '（已关闭）';
+  document.querySelectorAll('#recColorGrid .colorsw').forEach((b) => {
+    b.classList.toggle('on', (b.dataset.color || '') === (recPrefs.borderColor || ''));
+  });
+}
+
+/** 发一项改动；主进程回传归一化后的完整偏好，渲染侧据此刷新（不自己判断默认值） */
+async function patchRec(patch, msgId, okText) {
+  const msg = document.getElementById(msgId);
+  try {
+    const r = await window.orb.setRecTheme(Object.assign({}, recPrefs, patch));
+    if (r && r.ok === false) throw new Error(r.error || '保存失败');
+    renderRecSettings((r && r.rec) || patch);
+    if (msg) msg.textContent = okText;
+  } catch (error) {
+    if (msg) msg.textContent = '保存失败：' + String((error && error.message) || error);
+  }
+}
+
+function buildColorGrid() {
+  const grid = document.getElementById('recColorGrid');
+  if (!grid || grid.childElementCount) return;   // 只建一次
+  for (const c of REC_COLORS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'colorsw' + (c.v === '' ? ' swdefault' : '');
+    b.dataset.color = c.v;
+    b.title = c.v === '' ? '描边跟随皮肤默认' : ('描边 ' + c.label + ' ' + c.v);
+    b.setAttribute('aria-label', c.label);
+    if (c.v) b.style.background = c.v;
+    b.innerHTML = '<span class="ck">' + REC_CK_SVG + '</span>';
+    b.addEventListener('click', () => {
+      patchRec({ borderColor: c.v }, 'recColorMsg',
+        c.v === '' ? '描边已跟随皮肤默认。' : ('描边已换成' + c.label + ' ' + c.v + '。'));
+    });
+    grid.appendChild(b);
+  }
+  buildSubColorGrid();
+}
+
+/* 字幕窗与悬浮条共用同一批色块定义，只是落在另一个容器里 */
+function buildSubColorGrid() {
+  const grid = document.getElementById('subColorGrid');
+  if (!grid || grid.childElementCount) return;
+  for (const c of REC_COLORS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'colorsw' + (c.v === '' ? ' swdefault' : '');
+    b.dataset.color = c.v;
+    b.title = c.v === '' ? '字幕窗描边跟随皮肤默认' : ('字幕窗描边 ' + c.label + ' ' + c.v);
+    b.setAttribute('aria-label', c.label);
+    if (c.v) b.style.background = c.v;
+    b.innerHTML = '<span class="ck">' + REC_CK_SVG + '</span>';
+    b.addEventListener('click', () => {
+      patchSub({ borderColor: c.v }, 'subMsg',
+        c.v === '' ? '字幕窗描边已跟随皮肤默认。' : ('字幕窗描边已换成' + c.label + ' ' + c.v + '。'));
+    });
+    grid.appendChild(b);
+  }
+}
+
+/* ---------- 设置 › 实时字幕窗：皮肤 + 描边（与悬浮条同一套逻辑） ---------- */
+let subPrefs = { skin: 'dark', borderColor: '' };
+
+function renderSubSettings(sub) {
+  subPrefs = Object.assign({ skin: 'dark', borderColor: '' }, sub || {});
+  document.querySelectorAll('#subSkinPick .recskin').forEach((b) => b.classList.toggle('on', b.dataset.skin === subPrefs.skin));
+  document.querySelectorAll('#subColorGrid .colorsw').forEach((b) => {
+    b.classList.toggle('on', (b.dataset.color || '') === (subPrefs.borderColor || ''));
+  });
+}
+
+async function patchSub(patch, msgId, okText) {
+  const msg = document.getElementById(msgId);
+  try {
+    const r = await window.orb.setSubTheme(Object.assign({}, subPrefs, patch));
+    if (r && r.ok === false) throw new Error(r.error || '保存失败');
+    renderSubSettings((r && r.sub) || patch);
+    if (msg) msg.textContent = okText;
+  } catch (error) {
+    if (msg) msg.textContent = '保存失败：' + String((error && error.message) || error);
+  }
+}
+
+function bindRecSettings() {
+  if (recSettingsBound) return;
+  buildColorGrid();
+  document.querySelectorAll('#recSkinPick .recskin').forEach((b) => {
+    b.addEventListener('click', () => {
+      patchRec({ skin: b.dataset.skin }, 'recSkinMsg',
+        b.dataset.skin === 'dark' ? '已切换深纱，下次开始录制即生效（悬浮条开着就已是新配方）。'
+                                  : '已切换灰白纱，下次开始录制即生效（悬浮条开着就已是新配方）。');
+    });
+  });
+  const eg = document.getElementById('recEnergyToggle');
+  if (eg) eg.addEventListener('click', () => {
+    const next = !recPrefs.energy;
+    patchRec({ energy: next }, 'recEnergyMsg',
+      next ? '已开启：开始录制 2.6 秒无操作会收成细条。' : '已关闭：悬浮条始终保持完整大小。');
+  });
+  /* 字幕窗：皮肤 + 描边 */
+  document.querySelectorAll('#subSkinPick .recskin').forEach((b) => {
+    b.addEventListener('click', () => {
+      patchSub({ skin: b.dataset.skin }, 'subMsg',
+        b.dataset.skin === 'dark' ? '字幕窗已切换深纱（打开字幕时生效）。' : '字幕窗已切换灰白纱（打开字幕时生效）。');
+    });
+  });
+  /* t4 自定义主题：点小方块选图（与点卡片分开） */
+  const img = document.getElementById('themeCustomImg');
+  if (img) {
+    const pick = async () => {
+      const msg = document.getElementById('accentMsg');
+      try {
+        const r = await window.orb.pickThemeImage();
+        if (r && r.ok === false) throw new Error(r.error || '选择失败');
+        if (r && r.url) {
+          applyThemeImage(r.url);
+          themePrefs.themeImage = r.url;
+          if (msg) msg.textContent = '主题背景已更换（整窗背景 + 半透明蒙版）。';
+        }
+      } catch (error) {
+        if (msg) msg.textContent = '更换主题背景失败：' + String((error && error.message) || error);
+      }
+    };
+    img.addEventListener('click', pick);
+    img.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
+  }
+  const gr = document.getElementById('gradReset');
+  if (gr) gr.addEventListener('click', () => { geClose(); patchTheme({ grad: '' }, 'gradMsg', '已恢复极光默认渐变。'); });
+  /* 毛玻璃开关：只改当前主题那一份，切主题时按钮随之后面的取值走 */
+  const gt = document.getElementById('glassToggle');
+  if (gt) gt.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') || 't2';
+    const next = !themePrefs.glass[t];
+    patchTheme({ theme: t, glass: next }, 'glassMsg', next ? '已开启毛玻璃。' : '已关闭毛玻璃。');
+  });
+  const ar = document.getElementById('accentReset');
+  if (ar) ar.addEventListener('click', () => {
+    const theme = document.documentElement.getAttribute('data-theme') || 't2';
+    patchTheme({ theme, accentColor: '' }, 'accentMsg', '已恢复这套主题的默认交互色。');
+  });
+  /* 自定义背景图的出口：选完得有办法撤，否则只能换图不能回到纯浅色 */
+  const tic = document.getElementById('themeImgClear');
+  if (tic) tic.addEventListener('click', async () => {
+    const msg = document.getElementById('accentMsg');
+    try {
+      const r = await window.orb.clearThemeImage();
+      if (r && r.ok === false) throw new Error(r.error || '清除失败');
+      themePrefs.themeImage = '';
+      applyThemeImage('');
+      if (msg) msg.textContent = '已撤掉自定义图片，回到纯浅色底。';
+    } catch (error) {
+      if (msg) msg.textContent = '清除失败：' + String((error && error.message) || error);
+    }
+  });
+  recSettingsBound = true;
+}
+
+/* ---------- 主题色数学：hex ↔ HSL ↔ 派生令牌 ----------
+   一套主题的"交互族"由十几个令牌组成（基色 / 亮档 / 深档 / 软底 / 描边 /
+    wash / 光晕 / 反色字）。手写映射既容易错也没法随用户颜色缩放，
+   所以这里从一个 hex 现算。深浅两种底色的派生规则不同：
+     · 深底（t1）：soft 是"掺进底色的暗调"，像 #3a2c14 ← #f0a92e
+     · 浅底（t2/t4）：soft 是"掺进白的淡调"，像 #eef7dc ← #8fc93a
+   反色字（ink）按亮度自动选深/白，否则用户选个深蓝会把深字摁死在屏幕上。 */
+function tcHex2rgb(h) {
+  const n = parseInt(String(h).replace('#', ''), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function tcRgb2hex(r, g, b) {
+  return '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+}
+function tcRgb2hsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (!d) return [0, 0, l];
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return [(h * 60 + 360) % 360, s, l];
+}
+function tcHsl2hex(h, s, l) {
+  h = ((h % 360) + 360) % 360; s = Math.max(0, Math.min(1, s)); l = Math.max(0, Math.min(1, l));
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  const seg = Math.floor(h / 60) % 6;
+  const tbl = [[c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x]][seg];
+  return tcRgb2hex((tbl[0] + m) * 255, (tbl[1] + m) * 255, (tbl[2] + m) * 255);
+}
+/* 与 tcHsl2hex 同一套换算，但直接出 0-255 数字三元组 —— 色带位图逐像素渲染，
+   绕 hex 字符串每帧要多分配十几万个临时串；这里一次纯数学就够。 */
+function geHsl2rgb(h, s, l) {
+  h = ((h % 360) + 360) % 360; s = Math.max(0, Math.min(1, s)); l = Math.max(0, Math.min(1, l));
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  const seg = Math.floor(h / 60) % 6;
+  const t = [[c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x]][seg];
+  return [(t[0] + m) * 255, (t[1] + m) * 255, (t[2] + m) * 255];
+}
+function tcLum(hex) {
+  const [r, g, b] = tcHex2rgb(hex);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+/* WCAG 相对亮度（带 gamma 线性化）—— 凡是对比度计算一律用它，
+   别用上面的 tcLum（简单平均），两者标度差一倍，阈值会整体跑偏。 */
+function tcRelLum(hex) {
+  const c = tcHex2rgb(hex).map((v) => {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+function tcMix(a, b, t) {           // t = a 的占比
+  const A = tcHex2rgb(a), B = tcHex2rgb(b);
+  return tcRgb2hex(A[0] * t + B[0] * (1 - t), A[1] * t + B[1] * (1 - t), A[2] * t + B[2] * (1 - t));
+}
+function tcShade(hex, dl, ds) {     // 只动亮度/饱和度，色相不变
+  const [h, s, l] = tcRgb2hsl(...tcHex2rgb(hex));
+  return tcHsl2hex(h, s + (ds || 0), l + dl);
+}
+function tcAlpha(hex, a) {
+  const [r, g, b] = tcHex2rgb(hex);
+  return `rgba(${r},${g},${b},${a})`;
+}
+/* 亮度上下限（按 WCAG 相对亮度算）：用户可能选任意颜色，派生令牌里凡是当文字/描边
+   用的，必须把亮度摁进对比度达标区间，否则一个亮橙就能把 AA 打穿。
+   · 浅底文字 --energy-deep：白底 4.5:1 → L ≤ .183；柔光底更严 → 取 .15
+   · 浅底描边 --energy-edge：非文本 3:1 → L ≤ .28
+   · 深底文字 --amber-dim / --amber-bright：暗底 #12162b(L≈.0088) 4.5:1 → L ≥ .22
+   · 深底描边 --amber-border：3:1 → L ≥ .13
+   · 主行动键最亮点：深 ink(#1a2405) 需 ≥ .242，白 ink 需 ≤ .183 */
+function tcFloorLum(hex, cap) {
+  let out = hex;
+  for (let i = 0; i < 30 && tcRelLum(out) > cap; i++) out = tcShade(out, -.025, 0);
+  return out;
+}
+function tcCeilLum(hex, min) {
+  let out = hex;
+  for (let i = 0; i < 30 && tcRelLum(out) < min; i++) out = tcShade(out, .025, 0);
+  return out;
+}
+/** 由用户色生成某一主题的交互族令牌 */
+function tcFamily(theme, hex) {
+  const vars = {};
+  if (theme === 't1') {              // 深底：琥珀家族（--energy/--run 是它的别名，自动跟随）
+    vars['--amber'] = hex;
+    vars['--amber-bright'] = tcCeilLum(tcShade(hex, .14, .04), .22);
+    vars['--amber-dim'] = tcCeilLum(tcShade(hex, -.12, .04), .22);
+    vars['--amber-soft'] = tcMix(hex, '#12162b', .18);
+    vars['--amber-border'] = tcCeilLum(tcMix(hex, '#12162b', .46), .13);
+    vars['--amber-wash'] = tcAlpha(hex, .10);
+    vars['--amber-wash-faint'] = tcAlpha(hex, .04);
+    vars['--amber-glow'] = tcAlpha(hex, .32);
+    vars['--amber-halo'] = tcAlpha(hex, .10);
+    vars['--amber-halo-hi'] = tcAlpha(hex, .16);
+    vars['--amber-pulse'] = tcAlpha(hex, .20);
+    vars['--amber-pulse-faint'] = tcAlpha(hex, .05);
+    vars['--amber-inset'] = tcAlpha(hex, .10);
+    vars['--amber-ring'] = tcAlpha(hex, .14);
+    vars['--amber-key'] = tcAlpha(hex, .35);
+    vars['--amber-bar-deep'] = tcMix(hex, '#12162b', .16);
+    vars['--run'] = hex;
+    vars['--warn'] = hex;
+  } else {                           // 浅底：能量家族（t2 青柠 / t4 自定义）
+    vars['--energy'] = hex;
+    /* 反色字：深 ink 的约束在渐变最暗端（--energy 本身），白 ink 的约束在最亮端。
+       两种 ink 之间有段死区（L .183~.242），落进去就按白 ink 走并把 energy
+       压到 .18 —— 中间调只暗一丝丝，肉眼几乎看不出，但 AA 保住了。 */
+    const b0 = tcShade(hex, .12, .04);
+    const darkInk = tcRelLum(hex) >= .245;
+    vars['--energy-ink'] = darkInk ? '#1a2405' : '#ffffff';
+    vars['--energy-bright'] = darkInk ? tcCeilLum(b0, .25) : tcFloorLum(b0, .18);
+    if (!darkInk) vars['--energy'] = tcFloorLum(hex, .18);
+    vars['--energy-deep'] = tcFloorLum(tcShade(hex, -.20, .02), .15);
+    vars['--energy-edge'] = tcFloorLum(tcShade(hex, -.12, .06), .28);
+    vars['--energy-soft'] = tcMix(hex, '#ffffff', .14);
+    vars['--energy-glow'] = tcAlpha(hex, .30);
+    vars['--energy-wash'] = tcAlpha(hex, .12);
+    vars['--energy-halo'] = tcAlpha(hex, .14);
+    vars['--energy-halo-hi'] = tcAlpha(hex, .20);
+    vars['--energy-pulse'] = tcAlpha(hex, .22);
+    vars['--energy-pulse-faint'] = tcAlpha(hex, .06);
+    vars['--energy-ring'] = tcAlpha(hex, .16);
+    vars['--energy-key'] = tcAlpha(hex, .40);
+    vars['--energy-bar-deep'] = tcMix(hex, '#ffffff', .40);
+    vars['--run'] = hex;
+  }
+  return vars;
+}
+/** 极光渐变预设 → iris 全套令牌（填充 / 描边一族，铺到所有 accent 背景） */
+function tcIrisFamily(p) {
+  const [c1, c2, c3, c4] = p.c;
+  const edge = p.edge || tcShade(tcMix(c1, c3, .5), -.28, .06);
+  /* --accent 一族也按渐变重算：t3 的交互色本来就是"当前渐变"，
+     写死品牌紫的话，设置面板导航 / 选中 chip / 各类按键在任何渐变下都还是紫色
+     （用户截图报过："左方导航条图标颜色始终为紫色"）。
+     亮度钳制沿用能量色的同一套 WCAG 口径：
+       --accent       白字压在上面 ≥4.5（主行动键） → L ≤ .18
+       --accent-fg    当文字/图标色 ≥4.5           → L ≤ .15
+       --accent-soft  α.10 淡底（与 t2 的 #eeedfe 同权重），深字压上去仍 ≥4.5 */
+  const accent = tcFloorLum(edge, .18);
+  return {
+    '--iris-1': c1, '--iris-2': c2, '--iris-3': c3, '--iris-4': c4,
+    '--iris-fill': `linear-gradient(105deg, ${tcAlpha(c1, .20)} 0%, ${tcAlpha(c2, .20)} 34%, ${tcAlpha(c3, .18)} 68%, ${tcAlpha(c4, .20)} 100%)`,
+    '--iris-fill-soft': `linear-gradient(105deg, ${tcAlpha(c1, .12)} 0%, ${tcAlpha(c2, .12)} 34%, ${tcAlpha(c3, .10)} 68%, ${tcAlpha(c4, .12)} 100%)`,
+    '--iris-fill-tool': `linear-gradient(115deg, ${tcAlpha(c1, .20)} 0%, ${tcAlpha(c2, .18)} 32%, ${tcAlpha(c3, .17)} 66%, ${tcAlpha(c4, .20)} 100%)`,
+    '--iris-wash': `linear-gradient(180deg, ${tcAlpha(c1, .15)} 0%, ${tcAlpha(c2, .08)} 36%, ${tcAlpha(c3, .10)} 76%, ${tcAlpha(c4, .08)} 100%)`,
+    '--iris-edge': edge,
+    '--iris-edge-hover': tcShade(edge, -.10),
+    '--iris-glow': tcAlpha(edge, .30),
+    '--iris-soft': tcAlpha(c3, .07),
+    '--iris-edge-soft': tcAlpha(edge, .40),
+    '--iris-line': tcAlpha(edge, .55),
+    '--iris-line-soft': tcAlpha(edge, .45),
+    '--iris-top': tcAlpha(c1, .20),
+    '--iris-top-hi': tcAlpha(c1, .32),
+    '--iris-halo': tcAlpha(c4, .14),
+    '--iris-halo-hi': tcAlpha(c4, .20),
+    '--iris-halo-faint': tcAlpha(c4, .05),
+    '--iris-glow-soft': tcAlpha(edge, .16),
+    '--accent': accent,
+    '--accent-fg': tcFloorLum(edge, .15),
+    '--accent-soft': tcAlpha(edge, .10),
+    '--accent-ring': tcAlpha(edge, .12),
+  };
+}
+/** 把当前主题的自选色/渐变预设套到 <html>（内联优先级最高，盖过主题块默认值） */
+function applyThemeAccent() {
+  const root = document.documentElement;
+  const theme = root.getAttribute('data-theme') || 't2';
+  ACCENT_VARS.forEach((v) => root.style.removeProperty(v));
+  /* 清令牌不能顺手把 t4 的背景图层也清掉 —— 换色/换主题后图还得在 */
+  applyThemeImage(themePrefs.themeImage || '');
+  if (theme === 't3') {
+    /* 自定义档：色带两端 → 智能生成四色 + 描边（与预设走同一条令牌流水线） */
+    let fam = null;
+    if (themePrefs.grad === 'custom' && themePrefs.gradCustom.c1 && themePrefs.gradCustom.c2) {
+      fam = tcIrisFamily(gradFromPicks(themePrefs.gradCustom.c1, themePrefs.gradCustom.c2));
+    } else {
+      const g = T3_GRADS.find((x) => x.id === themePrefs.grad);
+      if (g) fam = tcIrisFamily(g);
+    }
+    if (fam) Object.entries(fam).forEach(([k, v]) => root.style.setProperty(k, v));
+  } else {
+    const c = themePrefs.accent[theme];
+    if (c && /^#[0-9a-fA-F]{6}$/.test(c)) {
+      Object.entries(tcFamily(theme, c)).forEach(([k, v]) => root.style.setProperty(k, v));
+    }
+  }
+  syncAccentBoxes();
+}
+/** 色块排 / 渐变排显隐：只有极光有渐变预设；其余主题出纯色块排 */
+function syncAccentBoxes() {
+  const theme = document.documentElement.getAttribute('data-theme') || 't2';
+  /* 离开极光：色带编辑器没有存在意义，收起来（否则切回来还挂着半成品预览） */
+  if (theme !== 't3' && GE.open) geClose();
+  const gb = document.getElementById('gradBox');
+  const ab = document.getElementById('accentBox');
+  if (gb) gb.style.display = theme === 't3' ? '' : 'none';
+  /* 极光的交互色由渐变决定，纯色块排对它没有意义 —— **整个盒子收起来**。
+     曾经只藏色块排和恢复钮，标题+空内容挂在场上，看着像没渲染完（用户截图报过）；
+     标记里本来也没有 #accentHint 元素，那段 hint 赋值是空转，一并删掉。 */
+  if (ab) ab.style.display = theme === 't3' ? 'none' : '';
+  const row = document.getElementById('accentRow');
+  const rst = document.getElementById('accentReset');
+  if (row) row.style.display = theme === 't3' ? 'none' : '';
+  if (rst) rst.style.display = theme === 't3' ? 'none' : '';
+  const cur = theme === 't3' ? themePrefs.grad : themePrefs.accent[theme];
+  document.querySelectorAll('#accentRow .colorsw').forEach((b) => b.classList.toggle('on', (b.dataset.color || '') === cur));
+  document.querySelectorAll('#gradRow .gradsw').forEach((b) => b.classList.toggle('on', b.dataset.grad === themePrefs.grad));
+  /* 清除背景图只在自定义主题、且真的选了图时才给入口 */
+  const tic = document.getElementById('themeImgClear');
+  if (tic) tic.hidden = !(theme === 't4' && themePrefs.themeImage);
+}
+/** t4：用户图片 → --theme-image；没图时蒙版转不透明白，等效纯浅色主题 */
+function applyThemeImage(url) {
+  const root = document.documentElement;
+  if (url) {
+    root.style.setProperty('--theme-image', `url("${url}")`);
+    root.style.setProperty('--t4-scrim', 'rgba(255,255,255,.46)');
+  } else {
+    root.style.setProperty('--theme-image', 'none');
+    root.style.setProperty('--t4-scrim', 'rgba(255,255,255,1)');
+  }
+  const box = document.getElementById('themeCustomImg');
+  if (box) {
+    box.classList.toggle('has', !!url);
+    box.textContent = url ? '' : '选择图片';
+    box.style.backgroundImage = url ? `url("${url}")` : '';
+  }
+  /* 选完/撤完立刻刷新入口显隐，不用等下一次切主题 */
+  if (typeof syncAccentBoxes === 'function') syncAccentBoxes();
+}
+
+/* ---------- 主题色 / 渐变 / 自定义图片：构建与绑定 ---------- */
+const TCK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg>';
+
+function buildAccentRow() {
+  const row = document.getElementById('accentRow');
+  if (!row || row.childElementCount) return;
+  for (const hex of ACCENT_SWATCHES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'colorsw' + (hex === '' ? ' swdefault' : '');
+    b.dataset.color = hex;
+    b.title = hex === '' ? '跟随主题默认交互色' : ('交互色 ' + hex);
+    b.setAttribute('aria-label', hex === '' ? '默认交互色' : ('交互色 ' + hex));
+    if (hex) b.style.background = hex;
+    b.innerHTML = '<span class="ck">' + TCK_SVG + '</span>';
+    b.addEventListener('click', () => {
+      const theme = document.documentElement.getAttribute('data-theme') || 't2';
+      patchTheme({ theme, accentColor: hex }, 'accentMsg',
+        hex === '' ? '已恢复这套主题的默认交互色。' : ('交互色已换成 ' + hex + '（' + theme + '）。'));
+    });
+    row.appendChild(b);
+  }
+  /* 原生取色器：套 conic 彩虹外框，点开是系统取色盘 */
+  const wrap = document.createElement('label');
+  wrap.className = 'colorsw swpicker';
+  wrap.title = '自定义颜色';
+  wrap.innerHTML = '<input type="color" id="accentCustom" value="#5b6ee8" aria-label="自定义交互色">';
+  row.appendChild(wrap);
+  const input = wrap.querySelector('input');
+  input.addEventListener('input', () => {
+    const theme = document.documentElement.getAttribute('data-theme') || 't2';
+    patchTheme({ theme, accentColor: input.value }, 'accentMsg', '交互色已换成 ' + input.value + '。');
+  });
+}
+function buildGradRow() {
+  const row = document.getElementById('gradRow');
+  if (!row || row.childElementCount) return;
+  for (const g of T3_GRADS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'gradsw';
+    b.dataset.grad = g.id;
+    b.title = '渐变搭配：' + g.name;
+    b.setAttribute('aria-label', '渐变搭配 ' + g.name);
+    b.innerHTML = '<i style="background:linear-gradient(105deg,' + g.c.join(',') + ')"></i><em>' + g.name + '</em><span class="ck">' + TCK_SVG + '</span>';
+    b.addEventListener('click', () => { geClose(); patchTheme({ grad: g.id }, 'gradMsg', '已换成「' + g.name + '」渐变搭配。'); });
+    row.appendChild(b);
+  }
+  /* 自定义档：色带编辑器入口。预览 <i> 由 gradFromPicks 现算，随取色实时刷新；
+     没应用过自定义时给个彩虹 conic 占位（与原生取色器外框同一视觉语言）。 */
+  const cb = document.createElement('button');
+  cb.type = 'button';
+  cb.className = 'gradsw';
+  cb.id = 'gradSwCustom';
+  cb.dataset.grad = 'custom';
+  cb.title = '自定义渐变：在色带上选取起点和终点';
+  cb.setAttribute('aria-label', '自定义渐变');
+  cb.innerHTML = '<i id="gradSwCustomI"></i><em>自定义</em><span class="ck">' + TCK_SVG + '</span>';
+  cb.addEventListener('click', () => { if (GE.open) geClose(); else geOpen(); });
+  row.appendChild(cb);
+}
+
+/* ---------- 自定义渐变色带（t3） ----------
+   长方形色带：横轴 = 色相（0→360°），纵轴 = 明度（上亮下暗），饱和度固定 ——
+   饱和度不定的话，互补色之间的中点会发灰，渐变中间段显脏。用户在带子上选
+   两个点（起点/终点），gradFromPicks 按 HSL 最短色相路径插值出四色，再按
+   预设同规则派生描边；两端挨得太近时自动岔开明暗与色相，避免生成一条
+   看不出渐变的"平带"。编辑过程直接把结果套到 <html>，整面板实时预览。 */
+const GE = { W: 520, H: 260, S: 0.85, LTOP: 0.92, LBOT: 0.16, p1: null, p2: null, active: 0, dragging: false, open: false };
+function geClamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+/** 百分比坐标 → 带内取色（h 0-360、l 按纵轴上下） */
+function geFromXY(xp, yp) {
+  return { h: (geClamp(xp, 0, 100) / 100) * 360, l: GE.LTOP - (geClamp(yp, 0, 100) / 100) * (GE.LTOP - GE.LBOT) };
+}
+/** 带内取色 → 百分比坐标（把手定位用，分辨率无关） */
+function gePos(p) {
+  return { x: (p.h / 360) * 100, y: ((GE.LTOP - p.l) / (GE.LTOP - GE.LBOT)) * 100 };
+}
+/** 智能生成：两端 hex → { c:[四色], edge }。最短色相路径 + 防平 + 描边白底 3:1 钳制 */
+function gradFromPicks(a, b) {
+  const A = tcRgb2hsl(...tcHex2rgb(a)), B = tcRgb2hsl(...tcHex2rgb(b));
+  let h1 = A[0], s1 = A[1], l1 = A[2];
+  let dh = ((B[0] - A[0] + 540) % 360) - 180;   // 最短路径：不绕 300° 远路
+  const ds = B[1] - A[1];
+  let dl = B[2] - A[2];
+  if (Math.abs(dh) < 14 && Math.abs(dl) < 0.10) {
+    /* 防平：两端几乎同色 → 以两者中点为轴岔开。明暗方向随用户原来的选法，
+       完全等高时向上抬一端；色相按原方向补到 22°，够四色拉开可辨差异。 */
+    dh = (dh >= 0 ? 1 : -1) * 22;
+    const dir = dl >= 0 ? 1 : -1;
+    const mid = (A[2] + B[2]) / 2;
+    let lo = geClamp(mid - dir * 0.07, 0.08, 0.94), hi = geClamp(mid + dir * 0.07, 0.08, 0.94);
+    if (hi - lo < 0.10) { if (dir > 0) lo = Math.max(0.08, hi - 0.14); else hi = Math.min(0.94, lo + 0.14); }
+    l1 = lo; dl = hi - lo;
+  }
+  const c = [0, 1 / 3, 2 / 3, 1].map((t) => tcHsl2hex(h1 + dh * t, s1 + ds * t, l1 + dl * t));
+  /* 描边取 1/3 与 2/3 两色的中间调压暗（与预设同规则），再按白底 3:1 钳亮度 */
+  const edge = tcFloorLum(tcShade(tcMix(c[0], c[2], 0.5), -0.28, 0.06), 0.28);
+  return { c, edge };
+}
+/** 渲染色带位图：每像素一次 HSL→RGB（走 geHsl2rgb，不绕 hex 字符串） */
+function geRenderBand() {
+  const cv = document.getElementById('geBand');
+  if (!cv) return;
+  const w = GE.W, h = GE.H;
+  if (cv.width !== w) { cv.width = w; cv.height = h; }
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(w, h), d = img.data;
+  let i = 0;
+  for (let y = 0; y < h; y++) {
+    const l = GE.LTOP - (GE.LTOP - GE.LBOT) * (y / (h - 1));
+    for (let x = 0; x < w; x++) {
+      const rgb = geHsl2rgb((360 * x) / (w - 1), GE.S, l);
+      d[i++] = rgb[0]; d[i++] = rgb[1]; d[i++] = rgb[2]; d[i++] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+function geSyncHandles() {
+  const pairs = [['geH1', GE.p1, 'geHex1'], ['geH2', GE.p2, 'geHex2']];
+  for (const [id, p, hexId] of pairs) {
+    const el = document.getElementById(id);
+    if (!el || !p) continue;
+    const pos = gePos(p);
+    el.style.left = pos.x + '%';
+    el.style.top = pos.y + '%';
+    el.style.background = p.hex;
+    const hi = document.getElementById(hexId);
+    /* 正在输入的框不抢写 —— 否则用户敲到一半被同步值覆盖 */
+    if (hi && document.activeElement !== hi) hi.value = p.hex;
+  }
+}
+/** 取色落地后的统一收尾：把手/读数/预览条/色卡/整页令牌 */
+function geAfterSet() {
+  geSyncHandles();
+  gePreview();
+  geRefreshSwatch();
+}
+/** 实时预览：把生成结果直接套到 <html>，整个面板（含真实发送键）当场变样；
+    顺带把四色渐变写进预览条（它是"所见"的直接证据，不能空着）。 */
+function gePreview() {
+  if (!GE.p1 || !GE.p2) return;
+  const g = gradFromPicks(GE.p1.hex, GE.p2.hex);
+  Object.entries(tcIrisFamily(g)).forEach(([k, v]) => document.documentElement.style.setProperty(k, v));
+  const pv = document.getElementById('gePreview');
+  if (pv) pv.style.background = 'linear-gradient(105deg,' + g.c.join(',') + ')';
+}
+/** 「自定义」色卡的预览：编辑器开着显示半成品，关了显示已应用态 */
+function geRefreshSwatch() {
+  const i = document.getElementById('gradSwCustomI');
+  if (!i) return;
+  let a = '', b = '';
+  if (GE.open && GE.p1 && GE.p2) { a = GE.p1.hex; b = GE.p2.hex; }
+  else { const cc = themePrefs.gradCustom || {}; a = cc.c1; b = cc.c2; }
+  if (a && b) i.style.background = 'linear-gradient(105deg,' + gradFromPicks(a, b).c.join(',') + ')';
+  else i.style.background = 'conic-gradient(#f44,#fb0,#4c4,#0ff,#44f,#f4f,#f44)';
+}
+/** 打开编辑器时的种子：当前就是自定义 → 用已存两端；否则用当前渐变的两端"接着调" */
+function geSeed() {
+  let a = '', b = '';
+  if (themePrefs.grad === 'custom') { const cc = themePrefs.gradCustom || {}; a = cc.c1; b = cc.c2; }
+  if (!(a && b)) {
+    const g = T3_GRADS.find((x) => x.id === themePrefs.grad);
+    if (g) { a = g.c[0]; b = g.c[3]; }
+    else {
+      const cs = getComputedStyle(document.documentElement);
+      a = cs.getPropertyValue('--iris-1').trim() || '#8B5CF6';
+      b = cs.getPropertyValue('--iris-4').trim() || '#F0559B';
+    }
+  }
+  GE.p1 = gePickFromHex(a);
+  GE.p2 = gePickFromHex(b);
+}
+function gePickFromHex(hex) {
+  const [h, , l] = tcRgb2hsl(...tcHex2rgb(hex));
+  /* 种子的 hex 原样保留（预览不丢当前渐变的饱和感），位置按色带纵轴钳 */
+  return { h, l: geClamp(l, GE.LBOT, GE.LTOP), hex: String(hex).toLowerCase() };
+}
+function geOpen() {
+  if (GE.open) return;
+  GE.open = true;
+  geSeed();
+  const ed = document.getElementById('gradEditor');
+  if (ed) {
+    ed.hidden = false;
+    ed.classList.remove('ge-in'); void ed.offsetWidth; ed.classList.add('ge-in');
+  }
+  geRenderBand();
+  geAfterSet();
+}
+function geClose() {
+  if (!GE.open) { geRefreshSwatch(); return; }
+  GE.open = false;
+  GE.active = 0;
+  GE.dragging = false;
+  const ed = document.getElementById('gradEditor');
+  if (ed) { ed.hidden = true; ed.classList.remove('ge-in'); }
+  geRefreshSwatch();
+}
+/** 拖拽/方向键改点：色相/明度由调用方给，hex 按色带固定饱和度现算 */
+function geSet(idx, h, l) {
+  const p = idx === 1 ? GE.p1 : GE.p2;
+  if (!p) return;
+  p.h = ((h % 360) + 360) % 360;
+  p.l = geClamp(l, GE.LBOT, GE.LTOP);
+  p.hex = tcHsl2hex(p.h, GE.S, p.l);
+  geAfterSet();
+}
+/** 手输 hex：原样采纳（连 '#' 都可省），位置按它的色相/明度落；
+     明度超出色带范围时把手贴边，但 hex 不被改写 */
+function geSetHex(idx, raw) {
+  const v = String(raw || '').trim();
+  if (!/^#?[0-9a-fA-F]{6}$/.test(v)) return false;
+  const hex = (v[0] === '#' ? v : '#' + v).toLowerCase();
+  const [h, , l] = tcRgb2hsl(...tcHex2rgb(hex));
+  const p = idx === 1 ? GE.p1 : GE.p2;
+  if (!p) return false;
+  p.h = h; p.l = geClamp(l, GE.LBOT, GE.LTOP); p.hex = hex;
+  geAfterSet();
+  return true;
+}
+function geMarkActive() {
+  const h1 = document.getElementById('geH1'), h2 = document.getElementById('geH2');
+  if (h1) h1.classList.toggle('on', GE.active === 1);
+  if (h2) h2.classList.toggle('on', GE.active === 2);
+}
+function geBindBand() {
+  const wrap = document.getElementById('geBandWrap');
+  if (!wrap) return;
+  wrap.addEventListener('pointerdown', (ev) => {
+    if (!GE.open || !GE.p1 || !GE.p2) return;
+    const r = wrap.getBoundingClientRect();
+    const xp = ((ev.clientX - r.left) / r.width) * 100;
+    const yp = ((ev.clientY - r.top) / r.height) * 100;
+    /* 就近把手：点哪儿抓哪儿，另一个不动 */
+    const p1 = gePos(GE.p1), p2 = gePos(GE.p2);
+    const d1 = (xp - p1.x) ** 2 + (yp - p1.y) ** 2;
+    const d2 = (xp - p2.x) ** 2 + (yp - p2.y) ** 2;
+    GE.active = d1 <= d2 ? 1 : 2;
+    geMarkActive();
+    const pt = geFromXY(xp, yp);
+    geSet(GE.active, pt.h, pt.l);
+    const h = document.getElementById(GE.active === 1 ? 'geH1' : 'geH2');
+    if (h) h.focus();
+    GE.dragging = true;
+    try { wrap.setPointerCapture(ev.pointerId); } catch {}
+    ev.preventDefault();
+  });
+  wrap.addEventListener('pointermove', (ev) => {
+    if (!GE.active) return;
+    /* 正常路径靠指针捕获（抓手不离身）；捕获拿不到时（合成事件 / 异常指针）
+      退一格 dragging 标志，别让拖拽半路死掉。 */
+    let has = false;
+    try { has = wrap.hasPointerCapture(ev.pointerId); } catch {}
+    if (!has && !GE.dragging) return;
+    const r = wrap.getBoundingClientRect();
+    const pt = geFromXY(((ev.clientX - r.left) / r.width) * 100, ((ev.clientY - r.top) / r.height) * 100);
+    geSet(GE.active, pt.h, pt.l);
+  });
+  const end = (ev) => {
+    try { if (wrap.hasPointerCapture(ev.pointerId)) wrap.releasePointerCapture(ev.pointerId); } catch {}
+    GE.dragging = false;
+    GE.active = 0;
+    geMarkActive();
+  };
+  wrap.addEventListener('pointerup', end);
+  wrap.addEventListener('pointercancel', end);
+}
+function geBindKeys() {
+  [['geH1', 1], ['geH2', 2]].forEach(([id, idx]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('keydown', (ev) => {
+      const p = idx === 1 ? GE.p1 : GE.p2;
+      if (!p) return;
+      const hStep = ev.shiftKey ? 15 : 3;      // 色相步进（度）
+      const lStep = ev.shiftKey ? 0.1 : 0.02;  // 明度步进
+      let ok = true;
+      switch (ev.key) {
+        case 'ArrowLeft':  geSet(idx, p.h - hStep, p.l); break;
+        case 'ArrowRight': geSet(idx, p.h + hStep, p.l); break;
+        case 'ArrowUp':    geSet(idx, p.h, p.l + lStep); break;
+        case 'ArrowDown':  geSet(idx, p.h, p.l - lStep); break;
+        default: ok = false;
+      }
+      if (ok) ev.preventDefault();
+    });
+  });
+}
+function geBindHex() {
+  [['geHex1', 1], ['geHex2', 2]].forEach(([id, idx]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const commit = () => {
+      if (el.value.trim() === '') return;
+      const p = idx === 1 ? GE.p1 : GE.p2;
+      if (!geSetHex(idx, el.value) && p) el.value = p.hex;
+      else if (p) el.value = p.hex;
+    };
+    el.addEventListener('change', commit);
+    el.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit(); } });
+  });
+}
+function geDoApply() {
+  if (!GE.p1 || !GE.p2) return;
+  patchTheme({ grad: 'custom', gradCustom: { c1: GE.p1.hex, c2: GE.p2.hex } }, 'gradMsg', '已应用自定义渐变（色带取色）。');
+}
+function geCancelEdit() { applyThemeAccent(); geClose(); }
+function bindGradEditor() {
+  geBindBand(); geBindKeys(); geBindHex();
+  const ap = document.getElementById('geApply');
+  if (ap) ap.addEventListener('click', geDoApply);
+  const ca = document.getElementById('geCancel');
+  if (ca) ca.addEventListener('click', geCancelEdit);
+  geRefreshSwatch();
+}
+async function patchTheme(patch, msgId, okText) {
+  const msg = document.getElementById(msgId);
+  try {
+    const r = await window.orb.setThemeAccent(patch);
+    if (r && r.ok === false) throw new Error(r.error || '保存失败');
+    renderThemePrefs(r && r.prefs);
+    if (msg) msg.textContent = okText;
+  } catch (error) {
+    if (msg) msg.textContent = '保存失败：' + String((error && error.message) || error);
+  }
+}
+function renderThemePrefs(p) {
+  if (!p) return;
+  themePrefs.accent = Object.assign({ t1: '', t2: '', t3: '', t4: '' }, p.accent);
+  themePrefs.grad = p.grad || '';
+  /* 自定义渐变的两端：主进程已校验过形状，这里再按 hex 严一遍，坏值当空 */
+  const gc = p.gradCustom && typeof p.gradCustom === 'object' ? p.gradCustom : {};
+  const hexOk = (v) => { const s = String(v || '').toLowerCase(); return /^#[0-9a-f]{6}$/.test(s) ? s : ''; };
+  themePrefs.gradCustom = { c1: hexOk(gc.c1), c2: hexOk(gc.c2) };
+  /* 毛玻璃：主进程已归一（极光恒开），这里只按形状收一遍 */
+  const gl = p.glass && typeof p.glass === 'object' ? p.glass : {};
+  themePrefs.glass = { t1: !!gl.t1, t2: !!gl.t2, t3: true, t4: !!gl.t4 };
+  /* 必须回写：否则之后任何一次 applyThemeAccent（切主题/换色）都会用旧值
+     把背景图层抹掉，图要等重启才回来。 */
+  themePrefs.themeImage = p.themeImage || '';
+  applyThemeAccent();
+  applyThemeImage(p.themeImage || '');
+  const ci = document.getElementById('accentCustom');
+  const theme = document.documentElement.getAttribute('data-theme') || 't2';
+  if (ci) ci.value = (themePrefs.accent[theme] || '#5b6ee8');
+  /* 自定义色卡跟着已应用态走（编辑器开着时它显示半成品，由 geAfterSet 负责） */
+  if (!GE.open && typeof geRefreshSwatch === 'function') geRefreshSwatch();
+  applyGlass();
 }
 
 /* ---------- 项目与更新：GitHub 直达入口（设置 → 关于） ----------
@@ -5826,6 +7735,10 @@ function bindVisionSheet() {
   bindSlot('backup');
   bindThemeUI();
   bindStorageUI();
+  bindRecSettings();
+  buildAccentRow();
+  buildGradRow();
+  bindGradEditor();
 
   // 前台通道：进面板时自检一次，修复按钮随时可点
   loadFrontHealth();
@@ -7830,6 +9743,22 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
     }
     if (s.visionPresets) visionPresets = s.visionPresets;
     document.getElementById('pin').classList.toggle('on', !!s.pinned);
+    /* 悬浮条偏好（皮肤 / 能量条 / 描边颜色）：主进程落盘的那份是唯一真源，
+       桥没起来时 s 为空 → renderRecSettings 用默认值（灰白纱 + 开 + 跟随皮肤）。 */
+    renderRecSettings(s.rec);
+    renderSubSettings(s.sub);
+    /* 主题自选色 / 渐变 / 自定义图：主进程落盘，随 get-state 一起回来。
+       注意顺序：renderThemePrefs 里会调 applyThemeAccent，必须在 loadTheme()
+       之后跑才盖得住主题块的默认值 —— 启动路径上 loadTheme() 在下面几行。 */
+    themePrefs.accent = Object.assign({ t1: '', t2: '', t3: '', t4: '' }, s.themeAccent);
+    themePrefs.grad = s.themeGrad || '';
+    /* 毛玻璃：主进程那份是唯一真源（极光恒开），这里按形状收一遍即可 */
+    const sgl = s.themeGlass && typeof s.themeGlass === 'object' ? s.themeGlass : {};
+    themePrefs.glass = { t1: !!sgl.t1, t2: !!sgl.t2, t3: true, t4: !!sgl.t4 };
+    const sgc = s.themeGradCustom && typeof s.themeGradCustom === 'object' ? s.themeGradCustom : {};
+    const shex = (v) => { const x = String(v || '').toLowerCase(); return /^#[0-9a-f]{6}$/.test(x) ? x : ''; };
+    themePrefs.gradCustom = { c1: shex(sgc.c1), c2: shex(sgc.c2) };
+    themePrefs.themeImage = s.themeImage || '';
   }
   coordText();
   /* 这里只保证 cur 存在，好让下面的 access / 滑轨有得读。
@@ -7866,10 +9795,48 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
      否则首帧会是默认色再跳一下 —— 那一下看着就像闪屏。 */
   loadTheme();
   loadMotion();
+  /* 主题自选色/渐变必须在 loadTheme 之后套：applyTheme 会先铺主题块默认值，
+     再由 applyThemeAccent 用内联变量盖上去。图片同理。 */
+  applyThemeAccent();
+  applyThemeImage(themePrefs.themeImage);
   syncAllSliders();
   bindVisionSheet();
   bindRecBarCommands();
   bindWizard();
+  bindExtras();
+  /* 截屏（Snipaste）：引导卡绑定 + 设置页状态行首查 + 首启自动引导 + 聚焦重查。
+     聚焦重查的意义：用户去官网装完 Snipaste 回来，设置页那一行不用手动点「重新检测」
+     （节流 2s，tasklist 很便宜，但没必要每次聚焦都跑）。 */
+  bindSnipGuide();
+  snipRefresh(true);
+  /* 桌面模糊底图：收图回调 + 手动刷新钮。申报（want）由 applyGlass 负责，
+     上面 loadTheme() 已经跑过一遍，此刻状态是对的。 */
+  bindGlassBg();
+  if (wzDoneAlready(s)) {
+    // 非首跑（或向导已看过）：等面板第一次真被看见再弹（面板启动时是隐藏的）
+    let snipAutoPopped = false;
+    let snipAutoTries = 0;
+    const snipMaybeAutoPop = () => {
+      if (snipAutoPopped || document.hidden) return;
+      snipAutoPopped = true;
+      snipMaybeAutoGuide(s);
+    };
+    document.addEventListener('visibilitychange', snipMaybeAutoPop);
+    const snipAutoTimer = setInterval(() => {
+      snipAutoTries += 1;
+      if (snipAutoPopped || snipAutoTries > 20) { clearInterval(snipAutoTimer); return; }
+      snipMaybeAutoPop();
+    }, 700);
+  } else {
+    /* 首跑：向导会自动弹。借 wzClose 包一层 —— 向导关掉后补弹截屏引导，
+       两个遮罩不叠加。wzClose 是函数声明（同一脚本作用域），可安全重绑定。 */
+    const origWzClose = wzClose;
+    wzClose = function () {
+      origWzClose();
+      setTimeout(() => snipMaybeAutoGuide(s), 220);
+    };
+  }
+  window.addEventListener('focus', () => snipRefresh(false));
   document.getElementById('vis').addEventListener('click', () => openVisionSheet());
   document.getElementById('vis').classList.toggle('on', visionReady());
   document.getElementById('daemon').addEventListener('click', toggleDaemon);
@@ -7878,6 +9845,8 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
   document.getElementById('asr-apply').addEventListener('click', applyAsr);
   const asrInstallBtn = document.getElementById('asr-install');
   if (asrInstallBtn) asrInstallBtn.addEventListener('click', installAsr);
+  const asrDlMedium = document.getElementById('asr-dl-medium');
+  if (asrDlMedium) asrDlMedium.addEventListener('click', () => downloadAsrModel('medium'));
   loadAsr();
   /* 直达 CLI 登录：省得每次去桌面翻 codebuddy-login.cmd */
   document.getElementById('wb-login').addEventListener('click', async () => {
@@ -7906,7 +9875,7 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
      不在 cur.messages 里，重建时不会再回来）。已开过新会话就别再刷。 */
   if (!freshStarted) render();
   refreshStatus();
-  applyFont(); buildFontPick();
+  applyFont(); buildFontPick(); buildFontColorPick();
   /* 首跑向导：只在「还没看过」时自动弹一次。
      「有没有看过」以主进程落盘的 envWizardDone 为准，localStorage 是 IPC 失败时的保底。
      ⚠️ 必须等面板**真的被唤出来**才弹：面板窗口启动后是隐藏的（Ctrl+Space / 点球才亮），

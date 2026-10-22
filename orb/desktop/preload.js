@@ -83,11 +83,36 @@ contextBridge.exposeInMainWorld("orb", {
   capClose: (sessionId, opts) => ipcRenderer.invoke("cap-close", sessionId, opts),
   capAbort: (sessionId) => ipcRenderer.invoke("cap-abort", sessionId),
 
+  /* 截屏（Snipaste）：装没装 / 唤起框选 / 首跑引导卡已读。
+     唤起后截图由 Snipaste 直写 <存储根>/screenshots，字节不经过 IPC。 */
+  snipDetect: () => ipcRenderer.invoke("snip-detect"),
+  snipRun: () => ipcRenderer.invoke("snip-run"),
+  snipGuideDone: (v) => ipcRenderer.invoke("snip-guide-done", !!v),
+
+  /* 桌面模糊背景（磨砂玻璃的"磨砂"来源）：透明窗里 backdrop-filter 采不到桌面，
+     由主进程藏窗抓一张桌面实拍垫在卡片背后。want = 申报要不要（玻璃态才要），
+     通道名与 recbar-preload 共用，主进程按发送窗口各记各的回传通道。 */
+  glassBgWant: (on) => ipcRenderer.send("glass-bg-want", !!on),
+  glassBgRefresh: () => ipcRenderer.send("glass-bg-refresh"),
+  onGlassBg: (cb) => on("glass:bg", cb),
+
   /* 悬浮控制条联动。面板录制开始后自己会隐藏，控制键落在独立悬浮窗上，
      所以两条通道都是"转发"：面板把状态递给主进程，主进程再转给控制条；
      控制条的用户操作同样经主进程回到这里。 */
   onRecCmd: (cb) => ipcRenderer.on("rec:cmd", (_e, cmd) => cb(cmd)),
   sendRecBarEvent: (payload) => ipcRenderer.send("rec-cmd-to-bar", payload),
+  /* 控制条偏好（皮肤 / 能量条 / 描边颜色）。落盘在主进程 orb-state.json，
+     由 set-rectheme 收口：一处校验、一处落盘、一处推给控制条。 */
+  setRecTheme: (patch) => ipcRenderer.invoke("set-rectheme", patch),
+  /* 实时字幕窗偏好（皮肤 + 描边色）：同一套皮肤逻辑，字幕默认深纱。 */
+  setSubTheme: (patch) => ipcRenderer.invoke("set-sub-theme", patch),
+  /* 主题自选（设置 › 外观）：交互键换色、极光渐变搭配、自定义主题背景图。
+     图片对话框在主进程（渲染层没有 fs 权限），选完回 data URL。 */
+  setThemeAccent: (patch) => ipcRenderer.invoke("set-theme-accent", patch),
+  pickThemeImage: () => ipcRenderer.invoke("pick-theme-image"),
+  clearThemeImage: () => ipcRenderer.invoke("clear-theme-image"),
+  /* 字幕窗皮肤推送（主进程 → 字幕窗；面板只负责发起点，不转发） */
+  onSubCfg: (cb) => ipcRenderer.on("sub:cfg", (_e, payload) => cb(payload)),
 
   /* 剪贴板 */
   readClipboard: () => ipcRenderer.invoke("clipboard-read"),

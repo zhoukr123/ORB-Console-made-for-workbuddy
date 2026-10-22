@@ -164,6 +164,16 @@ orb/.selftest-shot.png
 # 里面写死了开发机路径与一次性任务，不该进公开仓库。
 orb/_*.mjs
 
+# docs/ 下同约定：`_` 前缀是"一次性核验脚本 / 预览长图"的标记
+# （_recbar_verify.js、_tc_smoke.js、_batch_preview.png …），跑了就删的开发副产物。
+docs/_*
+# 真文档（.md / 说明图）不受影响，仍按需人工 add。
+
+# 运行时产物：开发态的存储根就是项目根，录屏/截图直接落在这里 ——
+# 是用户数据不是源码，别混进仓库（打包态落在 %APPDATA%\ORB 控制台）。
+/recordings/
+/screenshots/
+
 # ---------- 9. 编辑器 / 系统 ----------
 .vscode/
 .idea/

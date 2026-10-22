@@ -1,27 +1,60 @@
 <!doctype html>
 <meta charset="utf-8">
+<title>实时字幕</title>
 <style>
+  /* ==================================================================
+     实时字幕浮层（v2：纱质皮肤 + 自选描边）
+     ------------------------------------------------------------------
+     与录屏悬浮控制条同一套皮肤逻辑（设置 › 录屏 › 实时字幕窗）：
+       · 深纱  默认 —— 字幕压在视频上，深底不抢画面
+       · 灰白纱 可选 —— 抛弃深色底，浅色桌面更干净
+       · 描边色可自选：--uc 直接当 1px 边线，过浅/过深由 JS 补一圈
+         反差 Hairline（inset），两种皮肤上都看得见。
+     窗口本来就是 transparent:true（main.js createSubtitleWin），所以
+     皮肤只需换 #wrap 的底衫，不用改窗口创建逻辑。
+     ================================================================== */
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  /* 皮肤令牌：默认深纱（字幕的默认配方，与实时字幕旧版一致） */
+  html[data-skin="dark"] {
+    --pill-bg: rgba(10,12,18,.82);
+    --pill-border: rgba(158,203,255,.28);
+    --sheen: rgba(255,255,255,.10);
+    --fg: #fff;
+    --line-cur: #9ecbff;
+    --line-old: rgba(255,255,255,.5);
+    --line-draft: #cfcfcf;
+  }
+  html[data-skin="light"] {
+    --pill-bg: rgba(243,244,248,.86);
+    --pill-border: rgba(120,128,145,.38);
+    --sheen: rgba(255,255,255,.95);
+    --fg: #262a33;
+    --line-cur: #3c3489;
+    --line-old: rgba(38,42,51,.5);
+    --line-draft: #5f5e5a;
+  }
   /* 整个窗体都是拖拽区（右下角留原生缩放边）；按钮 no-drag */
   #wrap {
     -webkit-app-region: drag;
     box-sizing: border-box; height: 100%;
-    background: rgba(10, 12, 18, .82);
-    border: 1px solid rgba(158, 203, 255, .28);
+    background: var(--pill-bg);
+    /* --uc = 用户自选描边色；没选就用皮肤默认描边 */
+    border: 1px solid var(--uc, var(--pill-border));
     border-radius: 12px;
     padding: 8px 18px 10px;
     display: flex; flex-direction: column; justify-content: center; gap: 2px;
+    box-shadow: inset 0 1px 0 var(--sheen), inset 0 0 0 1px var(--uc-hair, transparent);
   }
-  .line { color: #fff; font: 14px/1.45 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  .line { color: var(--fg); font: 14px/1.45 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
           text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .line.cur { color: #9ecbff; font-size: 16px; }
-  .line.old { opacity: .5; }
-  .line.draft { color: #cfcfcf; opacity: .8; font-style: italic; }
-  .line.draft::after { content: " …"; color: #9ecbff; }
+  .line.cur { color: var(--line-cur); font-size: 16px; }
+  .line.old { color: var(--line-old); }
+  .line.draft { color: var(--line-draft); opacity: .8; font-style: italic; }
+  .line.draft::after { content: " …"; color: var(--line-cur); }
   #bar { -webkit-app-region: no-drag; position: absolute; top: 2px; right: 6px;
          display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
   #wrap:hover #bar { opacity: .85; }
-  #bar button { background: transparent; border: 0; color: #fff; cursor: pointer; font-size: 12px; padding: 2px 5px; }
+  #bar button { background: transparent; border: 0; color: var(--fg); cursor: pointer; font-size: 12px; padding: 2px 5px; }
 </style>
 <div id="wrap">
   <div id="bar">
@@ -31,6 +64,21 @@
 </div>
 <script>
   const wrap = document.getElementById('wrap');
+  /* 皮肤 / 自选描边：主进程就绪时推一次（sub:cfg），之后改设置会再推。
+     描边的反差细线与录屏悬浮条同一套算法：按亮度选对色调 Hairline。 */
+  function applyBorder(hex) {
+    const m = /^#([0-9a-fA-F]{6})$/.exec(String(hex || '').trim());
+    if (!m) { wrap.style.removeProperty('--uc'); wrap.style.removeProperty('--uc-hair'); return; }
+    const n = parseInt(m[1], 16);
+    const lum = (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+    wrap.style.setProperty('--uc', hex);
+    wrap.style.setProperty('--uc-hair', lum > 0.62 ? 'rgba(0,0,0,.42)' : 'rgba(255,255,255,.42)');
+  }
+  function applyCfg(p) {
+    if (!p) return;
+    if (p.skin === 'dark' || p.skin === 'light') document.documentElement.setAttribute('data-skin', p.skin);
+    if (typeof p.borderColor === 'string') applyBorder(p.borderColor);
+  }
   function render(items, draft) {
     // 终稿行（保留最近 2 条历史）
     const done = items || [];
@@ -52,5 +100,6 @@
     }
   }
   window.orb.onSubtitleLines(render);
+  if (window.orb.onSubCfg) window.orb.onSubCfg(applyCfg);
   document.getElementById('hide').onclick = () => window.orb.setSubtitle(false);
 </script>

@@ -23,7 +23,7 @@ const { execSync } = require('child_process');
 const ROOT = process.env.ORB_ROOT ? path.resolve(process.env.ORB_ROOT) : path.resolve(__dirname, '..');
 const APP = path.join(ROOT, 'orb', 'desktop');
 const ELECTRON = path.join(APP, 'node_modules', 'electron', 'dist');
-const VERSION = '1.0.1';
+const VERSION = '1.1.0';
 /* 输出目录带时间戳：不删旧构建。早先这里是 fs.rmSync(OUT) 一把清空，
    但批量删除会触发安全保护（3789 个文件远超阈值）而被拦截。
    版本化目录反而更好——每次构建都是可回溯的产物，旧的由用户自行清理。 */
@@ -39,6 +39,12 @@ const APP_FILES = [
      recbar.html + recbar-preload.js 是悬浮控制条（main.js 用 __dirname 定位）。
      漏一个 = 发布版录屏/存储/悬浮条静默失效，而开发态完全正常、测不出来。 */
   'storage.js', 'mp4finalize.js', 'recbar.html', 'recbar-preload.js',
+  /* 截屏链路（2026-10-22 新增）：snipaste.js 被 main.js require，
+     漏打包 = 发布版「截屏」键一点就报唤起失败（开发态完全正常）。 */
+  'snipaste.js',
+  /* 桌面模糊背景（2026-10-22 新增）：glassbg.js 被 main.js require，
+     漏打包 = 发布版毛玻璃退化成"锐利透出桌面"（开发态完全正常、测不出来）。 */
+  'glassbg.js',
   'icon.png', 'icon.ico', 'icon-64.png', 'selection-watch.ps1', 'package.json',
 ];
 /* 随包附带的配置文件（都放在包根，桥的 DATA_DIR 在开发态就是项目根，行为一致）：

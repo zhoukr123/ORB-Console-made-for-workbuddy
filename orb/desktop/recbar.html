@@ -6,33 +6,72 @@
 <title>ORB 录制控制</title>
 <style>
   /* ==================================================================
-     悬浮录屏控制条
+     悬浮录屏控制条（v2：纱质皮肤 + 能量条自动收起）
      ------------------------------------------------------------------
      为什么单独一个窗口而不是把按钮画在面板里：录制一开始面板就会隐藏
      （否则录出来的画面里全是 ORB 自己），面板一隐藏它的渲染进程定时器
      就会被 Chromium 节流，计时器会越走越慢 —— 所以控制键和计时器
      必须落在自己这个常驻可见的窗口上。
-     配色直接沿用面板 t1（星空·琥珀金）的深色令牌，不引入任何能量渐变类变量。
+
+     v2 相比 v1（320×64 不透明深色 pill）：
+       ① 窗口改 transparent，底衫交给 pill 自己画 —— 玻璃/纱质感
+          必须先有透明窗口，把 #12162b 底涂去掉才成立；
+       ② 两套皮肤：灰白纱（默认）与深纱（实时字幕同款配方），
+          用户在 设置 › 录屏 里选，主进程经 rec:cfg 推进来；
+       ③ 能量条：开始录制 2.6s 无操作自动收成细条（只动 transform /
+          opacity，窗口尺寸不变），悬停展开；收起时经主进程把窗口切
+          点击穿透，细条只被"看见"，不会挡住背后的最大化/标签页。
      ================================================================== */
   :root {
-    --bg: #12162b; --bg-soft: #171c35; --bg-sunken: #0e1224;
-    --fg: #e8eaf6; --fg-soft: #b9bfe0; --fg-muted: #7c85ad;
-    --border: #262c4d; --border-strong: #39406b;
-    --danger: #e8736a; --ok: #4fc98d;
-    --rec: #D8444F;                       /* 录制红点：固定色，不跟主题走 */
-    --r-sm: 8px;
-    --sh-lg: 0 18px 48px rgba(0,0,0,.55);
     --ease: cubic-bezier(.22,.61,.36,1);
     --dur-1: .14s;                        /* 微交互：hover / active */
-    --dur-2: .22s;                        /* 标准：状态切换 */
+    --dur-2: .22s;                        /* 标准：状态切换 / 能量条收展 */
     --dur-3: .32s;                        /* 入场 */
   }
+
+  /* ---------------- 皮肤令牌 ----------------
+     只声明"这一套皮肤长什么样"的变量，选择器挂在 body[data-skin] 上，
+     默认 light（灰白纱）—— 用户没去设置里点过时就用它。 */
+  body[data-skin="light"] {
+    /* 灰白玻璃：抛弃深色底。α 与深纱统一到 .82 —— 两套皮肤同一通透度，
+       换皮肤时不会一档"更实"一档"更透"；.82 也是实测稳档（深字最坏 8.9:1）。 */
+    --pill-bg: rgba(243,244,248,.82);
+    --pill-border: rgba(120,128,145,.38);
+    --sheen: rgba(255,255,255,.95);       /* 顶部高光：读作"玻璃"的那一笔 */
+    --pill-shadow: 0 6px 18px rgba(10,14,30,.20);
+    --fg: #262a33;                        /* 深字：浅底上最差 ≈ 9.9:1（AA） */
+    --fg-soft: rgba(38,42,51,.72);
+    --btn-bg: rgba(20,24,40,.07);
+    --btn-bg-hover: rgba(20,24,40,.13);
+    --btn-fg: #262a33;
+    --rec: #C73E3A;                       /* 浅玻璃上 2.98:1 的 #D8443F 不过非文字 3:1 线，换深一档 */
+    --ok: #1f7a52;
+    --ok-bg: rgba(31,122,82,.12);
+    --danger: #C73E3A;
+    --danger-bg: rgba(199,62,58,.12);
+  }
+  body[data-skin="dark"] {
+    --pill-bg: rgba(10,12,18,.82);        /* 深纱：实时字幕窗同款配方 */
+    --pill-border: rgba(158,203,255,.28);
+    --sheen: rgba(255,255,255,.10);
+    --pill-shadow: 0 8px 22px rgba(0,0,0,.45);
+    --fg: #ffffff;                        /* 白字：深纱上最差 ≈ 11.7:1（AA） */
+    --fg-soft: rgba(255,255,255,.78);
+    --btn-bg: rgba(255,255,255,.10);
+    --btn-bg-hover: rgba(255,255,255,.18);
+    --btn-fg: #ffffff;
+    --rec: #D8443F;
+    --ok: #4fc98d;
+    --ok-bg: rgba(79,201,141,.16);
+    --danger: #e8736a;
+    --danger-bg: rgba(216,68,79,.18);
+  }
+
   * { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0; width: 100%; height: 100%;
-    /* 窗口不是 transparent 的：透明窗口在合成/拖拽上坑多（拖拽边缘失效、
-       缩放时花屏）。所以背景铺与 pill 同色的纯色，圆角交给 pill 自己画。 */
-    background: var(--bg);
+    /* 透明窗：圆角与纱底由 .skin 画，窗外那 4px 留给阴影呼吸 */
+    background: transparent;
     color: var(--fg);
     font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
     overflow: hidden;
@@ -41,61 +80,117 @@
     cursor: default;
   }
 
-  /* ---------------- pill 主体 ---------------- */
+  /* ---------------- 三层结构 ----------------
+     .skin  形状层：纱底 + 描边 + 高光 + 投影（能量条只缩它）
+     .full  完整层：红点 + 计时 + 三钮（收起时淡出）
+     .mini  能量条层：细点 + 小计时（收起时淡入）
+     分层而不是缩放整条：scale 会把秒数文字一起压扁，分层让两层各自
+     只用 transform / opacity 过渡，符合"动效只动 transform/opacity"的铁律。 */
   .bar {
-    width: 100%; height: 100%;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 12px 0 20px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 32px;
-    box-shadow: var(--sh-lg);
-    /* 拖拽区：只有 pill 这一块，按钮区域单独 no-drag */
+    position: relative; width: 100%; height: 100%;
+    /* 拖拽区：整个窗口（含那 4px 透明边），按钮区域单独 no-drag */
     -webkit-app-region: drag;
   }
+  .skin {
+    position: absolute; inset: 4px;
+    background: var(--pill-bg);
+    /* 玻璃化：窗口本来就是 transparent（主进程 transparent:true + #00000000），
+       pill 底衫早就是半透明"纱" —— 只差这一行模糊才读作玻璃。
+       静态 blur(8px)（与面板浮层同一档），不做动画、不缩放，符合既有性能红线。
+       录制时它压在正在录的画面上，背景比静态壁纸还花，模糊的收益比面板更大。 */
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    /* --uc = 用户自选描边色（设置 › 录屏 › 描边颜色）；没选就用皮肤默认描边 */
+    border: 1px solid var(--uc, var(--pill-border));
+    border-radius: 12px;
+    /* 内圈那道细线是"反差保险"：自选色过浅（灰白纱上）或过深（深纱上）时，
+       由 JS 按亮度补一圈对色调 Hairline，描边在任何皮肤上都看得见。
+       没自选时 --uc-hair 未定义 → 落 transparent，不改变默认观感。 */
+    box-shadow: inset 0 1px 0 var(--sheen), inset 0 0 0 1px var(--uc-hair, transparent), var(--pill-shadow);
+    /* 收起时朝**顶边**收（默认 50% 50% 会让细条缩到窗口垂直中间，
+       看着像悬在屏幕中央）。贴着窗口顶边收，细条才一直压在屏幕上沿。 */
+    transform-origin: 50% 0;
+    /* 换皮肤时底色/描边跟着过渡，不"啪"一下（模糊本身不做动画：
+       软件渲染下对 backdrop-filter 做动画必卡，这是既有红线） */
+    transition: transform var(--dur-2) var(--ease),
+                background var(--dur-2) var(--ease),
+                border-color var(--dur-2) var(--ease);
+  }
+  .full {
+    position: absolute; inset: 4px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 10px 0 14px;
+    transition: opacity var(--dur-2) var(--ease), transform var(--dur-2) var(--ease);
+  }
+  .mini {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    color: var(--fg); pointer-events: none;
+    opacity: 0; transform: scale(.9);
+    transition: opacity var(--dur-2) var(--ease), transform var(--dur-2) var(--ease);
+  }
 
-  /* 左侧：红点 + 计时 */
-  .left { display: flex; align-items: center; gap: 10px; }
-  .dot {
-    width: 10px; height: 10px; border-radius: 50%;
-    background: var(--rec);
-    flex: none;
+  /* 能量条态：skin 缩成细条，full 淡出，mini 淡入 */
+  .bar.energy .skin { transform: scale(.78, .34); }
+  /* 桌面模糊底图：.skin 的 backdrop-filter 在透明窗里采不到桌面（身后只有透明，
+     见 docs/_glass_rt_probe.js 实测），所以由主进程藏窗抓一张桌面实拍垫在
+     .skin 背后（inset:0 与窗口 1:1），.skin 的 blur(8px) 负责糊成磨砂。
+     背景尺寸/偏移由 JS 按实拍尺寸设（-4px 是把 .skin 的 4px 呼吸边挪回来，
+     让模糊内容与背后的桌面严格对齐）；energy 收起时跟着 .skin 一起缩。 */
+  #glassbg {
+    position: absolute; inset: 0; z-index: 0;
+    background-repeat: no-repeat;
+    border-radius: 12px;
+    opacity: 0; transition: opacity var(--dur-2) var(--ease);
+    pointer-events: none;
+  }
+  #glassbg.on { opacity: 1; }
+  .bar.energy #glassbg { transform: scale(.78, .34); transform-origin: 50% 0; }
+  .bar.energy .full { opacity: 0; transform: scale(.96); pointer-events: none; }
+  .bar.energy .mini { opacity: 1; transform: none; }
+
+  /* ---------------- 左侧：红点 + 计时 ---------------- */
+  .left { display: flex; align-items: center; gap: 8px; }
+  .dot, .mdot {
+    border-radius: 50%; background: var(--rec); flex: none;
     /* 录制中：呼吸式闪烁。只动 opacity，不碰 transform —— 红点位置固定，
-       任何位移在 10px 直径上都会被看出抖动。 */
+       任何位移在小直径上都会被看出抖动。 */
     animation: dotBlink 1s steps(1, end) infinite;
   }
+  .dot { width: 10px; height: 10px; }
+  .mdot { width: 6px; height: 6px; }
   /* 暂停：停闪并压暗 —— 用户要一眼看出"现在没在录" */
-  .bar.paused .dot { animation-play-state: paused; opacity: .35; }
+  .bar.paused .dot, .bar.paused .mdot { animation-play-state: paused; opacity: .35; }
   @keyframes dotBlink { 0%, 45% { opacity: 1; } 46%, 100% { opacity: .35; } }
 
-  .time {
-    font-size: 15px; font-weight: 600; letter-spacing: .3px;
-    color: var(--fg);
-    /* 等宽数字：秒数跳动时宽度不能变，否则"01"到"08"会让整个 pill 呼吸 */
+  .time, .mtime {
+    font-weight: 600; letter-spacing: .3px; color: var(--fg);
+    /* 等宽数字：秒数跳动时宽度不能变，否则条子会跟着呼吸 */
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum" 1;
-    min-width: 62px;
   }
+  .time { font-size: 14px; min-width: 56px; }
+  .mtime { font-size: 10.5px; min-width: 0; }
 
-  /* 右侧：三个图标钮 */
+  /* ---------------- 右侧：三个图标钮 ---------------- */
   .btns { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
   .btn {
-    width: 32px; height: 32px; flex: none;
+    width: 30px; height: 30px; flex: none;
     display: inline-flex; align-items: center; justify-content: center;
     border: 0; border-radius: 50%;
-    background: transparent; color: var(--fg-soft);
+    background: var(--btn-bg); color: var(--btn-fg);
     cursor: pointer; padding: 0;
     -webkit-app-region: no-drag;
-    transition: transform var(--dur-1) var(--ease), color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+    transition: transform var(--dur-1) var(--ease), background var(--dur-2) var(--ease), color var(--dur-2) var(--ease);
   }
-  .btn:hover { background: rgba(255,255,255,.07); color: var(--fg); transform: translateY(-1px); }
+  .btn:hover { background: var(--btn-bg-hover); color: var(--fg); transform: translateY(-1px); }
   .btn:active { transform: scale(.94); }
-  .btn:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 1px; }
-  .btn svg { width: 22px; height: 22px; display: block; }
+  .btn:focus-visible { outline: 2px solid var(--pill-border); outline-offset: 1px; }
+  .btn svg { width: 19px; height: 19px; display: block; }
 
   /* 完成 / 取消 的语义色：hover 才上色，平时保持中性，不抢红点的注意力 */
-  #btnFinish:hover { color: var(--ok); background: rgba(79,201,141,.14); }
-  #btnAbort:hover  { color: var(--rec); background: rgba(216,68,79,.16); }
+  #btnFinish:hover { color: var(--ok); background: var(--ok-bg); }
+  #btnAbort:hover  { color: var(--danger); background: var(--danger-bg); }
 
   /* 暂停 / 继续是同一个按钮的两种形态。
      暂停图标 hover 时两条竖条向两侧各挪 1px —— 表达"再点一下就分开（继续）"。
@@ -117,66 +212,79 @@
   /* ---------------- 双兜底：关动效 ----------------
      ① 系统设置「减少动态效果」；② 页面被加上 html.no-motion（与面板同一套约定）。
      两者都不能把红点闪烁一起干掉 —— 那是"正在录制"的唯一状态指示，
-     没了它用户会以为没在录。 */
+     没了它用户会以为没在录。能量条的收展也保留：那是状态切换不是装饰，
+     关的只是过渡，收/展仍然瞬间生效。 */
   @media (prefers-reduced-motion: reduce) {
     .btn { animation: none; transition: none; }
     .btn:hover { transform: none; }
+    .skin, .full, .mini { transition: none; }
     .bar:not(.paused) #btnPP:hover .bar-l,
     .bar:not(.paused) #btnPP:hover .bar-r { transform: none; }
   }
   html.no-motion .btn,
   html.no-motion .btn:hover,
+  html.no-motion .skin, html.no-motion .full, html.no-motion .mini,
   html.no-motion .bar:not(.paused) #btnPP:hover .bar-l,
-  html.no-motion .bar:not(.paused) #btnPP:hover .bar-r { animation: none; transform: none; }
+  html.no-motion .bar:not(.paused) #btnPP:hover .bar-r { animation: none; transform: none; transition: none; }
 </style>
 </head>
-<body>
+<body data-skin="light">
   <!-- 语义化 + aria：纯图标按钮必须给辅助设备一条活路 -->
   <div class="bar" id="bar">
-    <div class="left">
-      <span class="dot" id="dot" aria-hidden="true"></span>
-      <span class="time" id="time" aria-label="已录制时长">00:00</span>
+    <!-- 桌面模糊底图：垫在 .skin 背后（DOM 在前 → 绘制在下），.skin 的 blur(8px) 糊它 -->
+    <div id="glassbg" aria-hidden="true"></div>
+    <div class="skin" aria-hidden="true"></div>
+    <div class="full">
+      <div class="left">
+        <span class="dot" id="dot" aria-hidden="true"></span>
+        <span class="time" id="time" aria-label="已录制时长">00:00</span>
+      </div>
+      <div class="btns">
+        <!-- 暂停 / 继续（同一按钮两态） -->
+        <button class="btn" id="btnPP" type="button" title="暂停" aria-label="暂停">
+          <svg class="ico-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect class="bar-l" x="7" y="5" width="3.6" height="14" rx="1.2"/>
+            <rect class="bar-r" x="13.4" y="5" width="3.6" height="14" rx="1.2"/>
+          </svg>
+          <svg class="ico-resume" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display:none">
+            <path d="M9 6.5 18 12 9 17.5Z"/>
+          </svg>
+        </button>
+        <!-- 取消 -->
+        <button class="btn" id="btnAbort" type="button" title="取消录制" aria-label="取消录制">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M7 7l10 10M17 7L7 17"/>
+          </svg>
+        </button>
+        <!-- 完成 -->
+        <button class="btn" id="btnFinish" type="button" title="完成录制" aria-label="完成录制">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5.5 12.5l4.2 4.2 8.8-9.4"/>
+          </svg>
+        </button>
+      </div>
     </div>
-    <div class="btns">
-      <!-- 暂停 / 继续（同一按钮两态） -->
-      <button class="btn" id="btnPP" type="button" title="暂停" aria-label="暂停">
-        <svg class="ico-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <rect class="bar-l" x="7" y="5" width="3.6" height="14" rx="1.2"/>
-          <rect class="bar-r" x="13.4" y="5" width="3.6" height="14" rx="1.2"/>
-        </svg>
-        <svg class="ico-resume" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="display:none">
-          <path d="M9 6.5 18 12 9 17.5Z"/>
-        </svg>
-      </button>
-      <!-- 取消 -->
-      <button class="btn" id="btnAbort" type="button" title="取消录制" aria-label="取消录制">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M7 7l10 10M17 7L7 17"/>
-        </svg>
-      </button>
-      <!-- 完成 -->
-      <button class="btn" id="btnFinish" type="button" title="完成录制" aria-label="完成录制">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M5.5 12.5l4.2 4.2 8.8-9.4"/>
-        </svg>
-      </button>
+    <!-- 能量条层：与 .full 同一份计时，避免两处各算一遍 -->
+    <div class="mini" aria-hidden="true">
+      <span class="mdot"></span><span class="mtime" id="mtime">00:00</span>
     </div>
   </div>
 
 <script>
   /* ------------------------------------------------------------------
      状态机（严格以主进程回传的 rec:event 为准，本地不自作主张）
-       start  → 清零 + 开始走时
-       pause  → 冻结 + 累计已录时长 + 切成「继续」三角
-       resume → 续走 + 切回「暂停」竖条
-       stop   → 停表（窗口会被主进程隐藏）
+       start  → 清零 + 开始走时 + 排一个"自动收起"定时器
+       pause  → 冻结 + 累计已录时长 + 切成「继续」三角（保持展开，别缩）
+       resume → 续走 + 切回「暂停」竖条 + 重新排收起
+       stop   → 停表 + 强制展开（窗口会被主进程隐藏）
      点按钮只负责发命令，UI 等事件回来再变 —— 否则主进程拒绝（比如
      面板已经没了）时，本地状态会和真实录制状态对不上。
      ------------------------------------------------------------------ */
   var bar = document.getElementById("bar");
   var timeEl = document.getElementById("time");
+  var mtimeEl = document.getElementById("mtime");
   var btnPP = document.getElementById("btnPP");
   var icoPause = bar.querySelector(".ico-pause");
   var icoResume = bar.querySelector(".ico-resume");
@@ -187,6 +295,18 @@
   var tickTimer = null;
   var TICK_MS = 250;      // 250ms：秒数显示不需要更细，少一次重排是一次
 
+  /* ---------- 能量条：参数与状态 ---------- */
+  var COLLAPSE_AFTER = 2600;   // 开始/继续录制后多久收成细条
+  var LEAVE_AFTER = 700;       // 鼠标移开后多久收回
+  /* 细条的可悬停判定区（窗口 240×54 内）。收起后细条贴着窗口顶边
+     （transform-origin: 50% 0），所以 y0 从 0 起、往下留到 34 —— 比细条本身
+     宽一圈，手指/鼠标不必正正好好对准。必须与 main.js 的 REC_HIT 一致。 */
+  var HIT = { x0: 16, x1: 224, y0: 0, y1: 34 };
+  var energyOn = true;         // 设置 › 录屏 里可关；关了就永远是完整条
+  var paused = false;
+  var collapseTimer = null;
+  var leaveTimer = null;
+
   function fmt(ms) {
     var total = Math.max(0, Math.floor(ms / 1000));
     var m = Math.floor(total / 60);
@@ -195,7 +315,9 @@
   }
   function paint() {
     var cur = elapsedMs + (running ? (Date.now() - segStartedAt) : 0);
-    timeEl.textContent = fmt(cur);
+    var text = fmt(cur);
+    timeEl.textContent = text;
+    mtimeEl.textContent = text;
   }
   function startTicker() {
     stopTicker();
@@ -205,39 +327,132 @@
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
   }
   /* 走时/暂停的视觉切换：暂停时给 bar 加 paused（停闪 + 切图标）。 */
-  function setPaused(paused) {
-    bar.classList.toggle("paused", !!paused);
-    var showResume = !!paused;
+  function setPaused(p) {
+    bar.classList.toggle("paused", !!p);
+    var showResume = !!p;
     icoPause.style.display = showResume ? "none" : "";
     icoResume.style.display = showResume ? "" : "none";
     btnPP.title = showResume ? "继续" : "暂停";
     btnPP.setAttribute("aria-label", showResume ? "继续" : "暂停");
   }
 
+  /* ---------- 能量条：收 / 展 ----------
+     收起时经主进程把窗口切成"点击穿透"：细条只被看见，不会挡住背后的
+     最大化按钮 / 浏览器标签页。穿透开着的窗口仍能收到 mousemove
+     （forward:true 的语义），所以悬停判定靠 pointermove 的坐标。 */
+  function setThrough(on) {
+    if (window.orb && typeof window.orb.setClickThrough === "function") {
+      try { window.orb.setClickThrough(!!on); } catch { /* 桥没起来就不穿透，功能不瞎 */ }
+    }
+  }
+  function clearEnergyTimers() {
+    if (collapseTimer) { clearTimeout(collapseTimer); collapseTimer = null; }
+    if (leaveTimer) { clearTimeout(leaveTimer); leaveTimer = null; }
+  }
+  function collapse() {
+    if (!energyOn || !running || paused) return;
+    if (bar.classList.contains("energy")) return;
+    bar.classList.add("energy");
+    setThrough(true);
+  }
+  function scheduleCollapse() {
+    if (collapseTimer) clearTimeout(collapseTimer);
+    if (!energyOn || !running || paused) return;
+    collapseTimer = setTimeout(collapse, COLLAPSE_AFTER);
+  }
+  function expand() {
+    clearEnergyTimers();
+    if (bar.classList.contains("energy")) {
+      bar.classList.remove("energy");
+      setThrough(false);          // 先收回了事件，再收起穿透，否则这一下点击会漏下去
+    }
+  }
+
+  /* 主通道：主进程在穿透期间盯着光标，进出各广播一次 —— Windows 下穿透窗口
+     根本收不到鼠标事件，页面自己判是判不出来的（详见 main.js 的 rec-bar-passthru）。 */
+  if (typeof window.orb.onRecHover === "function") {
+    window.orb.onRecHover(function (p) {
+      if (!p) return;
+      if (p.inside) expand();
+      else scheduleLeave();
+    });
+  }
+  /* 快路径：macOS 上 forward:true 的 mousemove 转发是可靠的，能省掉一次 IPC 往返。
+     两条路都调 expand()，谁先到算谁的，expand() 本身幂等。 */
+  window.addEventListener("mousemove", function (e) {
+    if (!bar.classList.contains("energy")) return;
+    if (e.clientX >= HIT.x0 && e.clientX <= HIT.x1 && e.clientY >= HIT.y0 && e.clientY <= HIT.y1) expand();
+  });
+  /* 键盘 Tab 到按钮上也要展开，否则焦点落在看不见的按钮上 */
+  window.addEventListener("focusin", expand);
+  /* 移开 700ms 后收回；只在"真的在录、没暂停"时收 */
+  function scheduleLeave() {
+    if (leaveTimer) clearTimeout(leaveTimer);
+    if (!energyOn || !running || paused) return;
+    leaveTimer = setTimeout(collapse, LEAVE_AFTER);
+  }
+  bar.addEventListener("mouseleave", scheduleLeave);
+  bar.addEventListener("mouseenter", function () {
+    if (leaveTimer) { clearTimeout(leaveTimer); leaveTimer = null; }
+  });
+
+  /* ---------- 主进程配置（皮肤 / 能量条开关 / 自选描边色） ---------- */
+  /* 自选描边色：直接当 1px 边线用。过浅/过深的颜色配一道反差细线
+     （inset hairline），否则白边在灰白纱上、黑边在深纱上会整条看不见。 */
+  function applyBorder(hex) {
+    var m = /^#([0-9a-fA-F]{6})$/.exec(String(hex || "").trim());
+    if (!m) {
+      bar.style.removeProperty("--uc");
+      bar.style.removeProperty("--uc-hair");
+      return;
+    }
+    var n = parseInt(m[1], 16);
+    var lum = (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+    bar.style.setProperty("--uc", hex);
+    bar.style.setProperty("--uc-hair", lum > 0.62 ? "rgba(0,0,0,.42)" : "rgba(255,255,255,.42)");
+  }
+
+  function applyCfg(p) {
+    if (!p) return;
+    if (p.skin === "dark" || p.skin === "light") document.body.setAttribute("data-skin", p.skin);
+    if (typeof p.energy === "boolean") {
+      energyOn = p.energy;
+      if (!energyOn) expand();     // 用户关掉了自动收起：立刻回到完整条
+    }
+    if (typeof p.borderColor === "string") applyBorder(p.borderColor);
+    scheduleCollapse();            // 设置可能在录制中途被改（面板隐藏前改的），重排一次
+  }
+
   function onEvent(payload) {
     var t = payload && payload.type;
     if (t === "start") {
-      elapsedMs = 0; segStartedAt = Date.now(); running = true;
+      elapsedMs = 0; segStartedAt = Date.now(); running = true; paused = false;
       setPaused(false);
       paint();
       startTicker();
+      expand();                    // 新的一段从完整条开始，给用户看清有哪些键
+      scheduleCollapse();
     } else if (t === "pause") {
       // 先把这一段结算进 elapsedMs，再停表：顺序反了会丢掉 pause 前那半秒
       elapsedMs += Date.now() - segStartedAt;
-      running = false;
+      running = false; paused = true;
       stopTicker();
       paint();
       setPaused(true);
+      expand();                    // 暂停态保持展开：用户大概率要点"继续"
+      if (collapseTimer) { clearTimeout(collapseTimer); collapseTimer = null; }
     } else if (t === "resume") {
       if (running) return;                 // 已经在跑了就别重置起点
-      segStartedAt = Date.now(); running = true;
+      segStartedAt = Date.now(); running = true; paused = false;
       setPaused(false);
       startTicker();
+      scheduleCollapse();
     } else if (t === "stop") {
-      running = false;
+      running = false; paused = false;
       stopTicker();
       setPaused(false);
-      // 终值保留一瞬（主进程紧接着会隐藏窗口），下次 start 再清零
+      expand();                    // 终值保留一瞬（主进程紧接着会隐藏窗口），下次 start 再清零
+      clearEnergyTimers();
       paint();
     }
   }
@@ -260,8 +475,22 @@
   /* preload 注入的桥：先订阅再允许主进程发事件。
      订阅放在 DOMContentLoaded 之前也没关系（preload 比页面脚本更早跑），
      但统一在末尾显式做一次，读起来更清楚。 */
-  if (window.orb && typeof window.orb.onRecEvent === "function") {
-    window.orb.onRecEvent(onEvent);
+  if (window.orb) {
+    if (typeof window.orb.onRecEvent === "function") window.orb.onRecEvent(onEvent);
+    if (typeof window.orb.onRecCfg === "function") window.orb.onRecCfg(applyCfg);
+    /* 桌面模糊底图：常申报（控制条常驻可见）。实拍由主进程藏窗抓，
+       .skin 的 blur(8px) 负责糊；-4px 是把 .skin 的呼吸边挪回来对齐桌面。 */
+    if (typeof window.orb.onGlassBg === "function") {
+      window.orb.onGlassBg(function (shot) {
+        var el = document.getElementById("glassbg");
+        if (!el || !shot || !shot.png) return;
+        el.style.backgroundImage = "url(data:image/png;base64," + shot.png + ")";
+        el.style.backgroundSize = shot.w + "px " + shot.h + "px";
+        el.style.backgroundPosition = "-4px -4px";
+        el.classList.add("on");
+      });
+    }
+    if (typeof window.orb.glassBgWant === "function") window.orb.glassBgWant(true);
   }
   paint();
 </script>

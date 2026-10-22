@@ -11,6 +11,10 @@ const { spawn, execFile } = require("node:child_process");
    拆出去既能单测，也让面板相关改动不必再动主流程。 */
 const storage = require("./storage");
 const mp4finalize = require("./mp4finalize");
+/* Snipaste 调用接口（截屏功能走它：检测 / 唤起 / 落盘到截屏分区）。 */
+const snipaste = require("./snipaste");
+/* 桌面模糊背景：藏窗抓桌面实拍，垫给玻璃态面板与录制条（原因见文件头）。 */
+const glassbg = require("./glassbg");
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
@@ -49,6 +53,18 @@ storage.init({
   setState: (patch) => saveState(patch),
   log: (...a) => log(...a),
 });
+
+/* Snipaste 模块只需要「读 state」和「问 storage 要截屏目录」两件事。 */
+snipaste.init({
+  getState: () => state,
+  pathOf: (kind) => storage.pathOf(kind),
+  log: (...a) => log(...a),
+});
+
+/* 桌面模糊背景（磨砂玻璃的实拍来源）：按窗口挂载，渲染层申报要不要。
+   为什么必须自己抓桌面见 glassbg.js 头注（三个探针实测：透明窗里
+   backdrop-filter 采不到桌面、开 GPU 无效、原生 acrylic 三条路全死）。 */
+glassbg.init({ log: (...a) => log(...a) });
 
 /* 打包态：把随包附带的使用说明释放到数据目录（DATA_ROOT 可写，用户也能自己改） */
 function ensureBundledExtras() {
@@ -293,6 +309,9 @@ const state = {
    * firstRun 不另外存：每次启动从 envWizardDone 反算，避免两份标记对不上。 */
   envWizardDone: false,
   firstRun: false,
+  /* 截屏引导卡（Snipaste）是否已经读过。没装 Snipaste 的机器首启会弹一次，
+   * 渲染层点「我知道了 / 去官网」后经 snip-guide-done 置位。 */
+  snipGuideDone: false,
   /* 长期文件的存储根。留空 = 用默认位置（storage.resolveRoot() 回退 DATA_ROOT）。
    * 一旦用户改过，录屏 / 会话历史 / 截图三个子目录就都跟着它走。 */
   storageRoot: "",
@@ -304,7 +323,36 @@ const state = {
   /* 最近一次成功落盘的录屏，形如 { path, bytes, ms, mime }。
    * 面板拿它可以做「上次录的在哪儿」的直达入口，不必自己再翻目录。 */
   lastRecording: null,
+  /* 悬浮录屏控制条（recbar.html）的偏好，设置 › 录屏 里改。
+   *   recSkin        'light' 灰白纱（默认）| 'dark' 深纱（实时字幕同款配方）
+   *   recEnergy      true 开始录制 2.6s 无操作自动收成细能量条，悬停展开
+   *   recBorderColor '' 跟随皮肤默认描边；'#rrggbb' 用户自选描边色
+   * 和主题（orb.theme 存渲染层 localStorage）**不是一回事**：主题跟着面板走，
+   * 这三项只描述悬浮条长什么样，所以落在这里由主进程统一转发。 */
+  recSkin: "light",
+  recEnergy: true,
+  recBorderColor: "",
+  /* 实时字幕窗（subtitle.html）：与悬浮条同一套皮肤逻辑，默认深纱 ——
+     字幕要压在视频上，深底不抢画面。 */
+  subSkin: "dark",
+  subBorderColor: "",
+  /* 主题自选：交互键 + 运行态高亮的换色（不含红绿黄状态色，也不含品牌紫）。
+   *   themeAccent 每套主题一个 '#rrggbb' 或 ''（默认）
+   *   themeGrad   极光（t3）的渐变搭配 id，'' = 默认极光
+   *   themeImage  自定义主题（t4）的整窗背景图路径，落 userData 下 */
+  themeAccent: { t1: "", t2: "", t3: "", t4: "" },
+  themeGrad: "",
+  /* 自定义渐变（themeGrad === "custom" 时生效）：色带上选的起点/终点两个 hex */
+  themeGradCustom: { c1: "", c2: "" },
+  /* 毛玻璃：每套主题各一份。t3（极光）恒 true —— 玻璃+彩板是它的本体，
+     不进开关；另外三套默认关，开了就是"面板与浮层透出并模糊桌面"。 */
+  themeGlass: { t1: false, t2: false, t3: true, t4: false },
+  themeImage: "",
 };
+/* 主题 id 全集（面板 localStorage 与这里必须一致；t4 = 自定义图片主题） */
+const THEME_IDS = ["t1", "t2", "t3", "t4"];
+/* 极光渐变搭配 id（前端 T3_GRADS 的同名清单，主进程只做白名单校验） */
+const T3_GRAD_IDS = ["candy", "mint", "aurora", "golden", "rose", "emerald"];
 
 /** 兼容早期的扁平结构（provider/baseUrl/... 直接在 vision 下） */
 function normalizeVision(v) {
@@ -334,7 +382,51 @@ function loadState() {
     const v = normalizeVision(raw.vision);
     Object.assign(state, raw);
     if (v) state.vision = v;
+    normalizeRecPrefs();
+    normalizeThemePrefs();
   } catch {}
+}
+/* 老配置文件里没有录屏偏好这三项；也防手改orb-state.json 时写进奇怪的值 ——
+   归一化放在加载后统一做一次，比在每个读取点判空可靠。 */
+function normalizeRecPrefs() {
+  state.recSkin = state.recSkin === "dark" ? "dark" : "light";
+  state.recEnergy = state.recEnergy !== false;
+  state.recBorderColor = /^#[0-9a-fA-F]{6}$/.test(String(state.recBorderColor || ""))
+    ? String(state.recBorderColor).toLowerCase()
+    : "";
+}
+/* 主题自选与字幕窗偏好的归一化：同样只做"加载后一次"，形状不对就回默认值。 */
+function normalizeThemePrefs() {
+  state.subSkin = state.subSkin === "light" ? "light" : "dark";
+  state.subBorderColor = /^#[0-9a-fA-F]{6}$/.test(String(state.subBorderColor || ""))
+    ? String(state.subBorderColor).toLowerCase()
+    : "";
+  const acc = state.themeAccent && typeof state.themeAccent === "object" ? state.themeAccent : {};
+  state.themeAccent = {};
+  for (const t of THEME_IDS) {
+    const c = String(acc[t] || "").toLowerCase();
+    state.themeAccent[t] = /^#[0-9a-f]{6}$/.test(c) ? c : "";
+  }
+  state.themeGrad = (state.themeGrad === "custom" || T3_GRAD_IDS.includes(state.themeGrad)) ? state.themeGrad : "";
+  const gc = state.themeGradCustom && typeof state.themeGradCustom === "object" ? state.themeGradCustom : {};
+  const ghex = (v) => { const s = String(v || "").toLowerCase(); return /^#[0-9a-f]{6}$/.test(s) ? s : ""; };
+  state.themeGradCustom = { c1: ghex(gc.c1), c2: ghex(gc.c2) };
+  /* 选了自定义档却拿不出两个合法端点 → 退回默认渐变，别把界面留在空态 */
+  if (state.themeGrad === "custom" && !(state.themeGradCustom.c1 && state.themeGradCustom.c2)) state.themeGrad = "";
+  /* 毛玻璃：形状不对就按默认重建；极光恒开，外部改不动 */
+  const gl = state.themeGlass && typeof state.themeGlass === "object" ? state.themeGlass : {};
+  state.themeGlass = {};
+  for (const t of THEME_IDS) state.themeGlass[t] = t === "t3" ? true : !!gl[t];
+  state.themeImage = typeof state.themeImage === "string" ? state.themeImage : "";
+}
+function themePrefsPayload() {
+  return {
+    accent: { ...state.themeAccent },
+    grad: state.themeGrad,
+    gradCustom: { ...state.themeGradCustom },
+    glass: { ...state.themeGlass },
+    themeImage: themeImageDataUrl(),
+  };
 }
 function saveState(patch) {
   Object.assign(state, patch || {});
@@ -569,6 +661,9 @@ function createPanel() {
   panel.on("show", () => { try { panel.webContents.setBackgroundThrottling(false); } catch {} });
   panel.on("hide", () => { try { panel.webContents.setBackgroundThrottling(true); } catch {} });
   panel.loadFile(path.join(__dirname, "panel.html"));
+  /* 桌面模糊底图：面板玻璃态（t1/t2）时要抓桌面实拍。挂载即可，
+     抓不抓由渲染层的 glass-bg-want 说了算（非玻璃态零开销）。 */
+  glassbg.watch(panel, "glass:bg");
   panel.webContents.on("console-message", (e) => log(`[panel:${e.level}] ${e.message}`));
   panel.webContents.on("render-process-gone", (_e, d) => log("[panel] gone:", d.reason));
   panel.setAlwaysOnTop(true, "screen-saver");
@@ -604,14 +699,28 @@ function sendToBar(channel, payload) {
 }
 
 /* ---------------- 悬浮录屏控制条 ----------------
- * 录制一开始面板就会隐藏，控制键必须有个自己的家：一个 320×64 的
- * 无边框置顶小窗，钉在屏幕顶部水平居中。为什么不用 transparent：
- * 透明窗口的拖拽边缘判定和窗口缩放都有坑，所以背景铺纯色、圆角由内部 pill 画。
+ * 录制一开始面板就会隐藏，控制键必须有个自己的家：一个 240×54 的
+ * 无边框置顶小窗，钉在屏幕顶部水平居中。窗口是 transparent 的 ——
+ * 纱质皮肤（灰白纱 / 深纱）必须先有透明窗才成立，圆角与底衫由
+ * recbar.html 的 .skin 自己画。拖拽走 -webkit-app-region，
+ * 老方案"透明窗拖拽边缘失效"的那类问题在固定尺寸 + 不缩放的窗口上不存在。
  */
 function recbarBounds() {
   const wa = screen.getPrimaryDisplay().workArea;
-  const w = 320, h = 64;
-  return { x: Math.round(wa.x + (wa.width - w) / 2), y: Math.round(wa.y + 20), width: w, height: h };
+  const w = 240, h = 54;
+  /* 紧贴屏幕上端（横向仍居中）：控制条要像浏览器标签条那样压在顶边，
+     不要悬在屏幕中间 —— 离顶越远，越容易挡住被录软件的标题栏/标签页。
+     留 2px 是给页面里那圈投影一点呼吸，别被裁掉。 */
+  return { x: Math.round(wa.x + (wa.width - w) / 2), y: Math.round(wa.y + 2), width: w, height: h };
+}
+
+/* 控制条偏好快照。控制条是懒创建 + 可能反复销毁的小窗，所以偏好不存它本地：
+   统一由主进程持有（state），窗口就绪时补推一次（did-finish-load）。 */
+function recCfg() {
+  return { skin: state.recSkin, energy: state.recEnergy, borderColor: state.recBorderColor || "" };
+}
+function sendRecCfg() {
+  sendToBar("rec:cfg", recCfg());
 }
 
 function createRecBar() {
@@ -628,8 +737,10 @@ function createRecBar() {
       fullscreenable: false,
       show: false,
       hasShadow: false,
-      /* 不用 transparent：见上面注释。颜色由 recbar.html 的 body 背景提供。 */
-      backgroundColor: "#12162b",
+      /* transparent + 全透明底色：底衫由页面的 .skin 画（见文件头注释）。
+         投影也画在页面里（--pill-shadow），不走窗口原生阴影。 */
+      transparent: true,
+      backgroundColor: "#00000000",
       webPreferences: {
         preload: path.join(__dirname, "recbar-preload.js"),
         contextIsolation: true,
@@ -641,15 +752,23 @@ function createRecBar() {
     });
     recbarReady = false;
     recbarWin.loadFile(path.join(__dirname, "recbar.html"));
+    /* 录制条的纱（α.82）在透明窗里同样采不到桌面，一并挂上实拍抓取 */
+    glassbg.watch(recbarWin, "recbar:glass-bg");
     recbarWin.webContents.on("console-message", (e) => log(`[recbar:${e.level}] ${e.message}`));
     recbarWin.webContents.on("render-process-gone", (_e, d) => log("[recbar] gone:", d.reason));
-    recbarWin.on("closed", () => { recbarWin = null; recbarReady = false; pendingRecEvents.length = 0; });
+    recbarWin.on("closed", () => {
+      recbarWin = null; recbarReady = false; pendingRecEvents.length = 0;
+      stopRecbarHoverWatch(); recbarPassthru = false;   // 窗口都没了，光标监视必须跟着停
+    });
     recbarWin.webContents.once("did-finish-load", () => {
       recbarReady = true;
       /* 把窗口就绪前攒下的事件按序补发。顺序不能乱：
          pause 先于 resume 到达时，乱序会让计时器从"暂停态"直接跳到"续走态"。 */
       const queued = pendingRecEvents.splice(0, pendingRecEvents.length);
       for (const p of queued) sendToBar("rec:event", p);
+      /* 偏好也要补推：窗口可能是上一轮录制建的，用户之后改过皮肤/描边，
+         不推的话那条窗还挂着旧配方。 */
+      sendRecCfg();
     });
     return recbarWin;
   } catch (e) {
@@ -1104,6 +1223,18 @@ function createSubtitleWin() {
   subWin.setPosition(Math.round(wa.x + (wa.width - w) / 2), Math.round(wa.y + wa.height - h - 36));
   // 窗口被关掉必须停表：原来只置 null，500ms 的轮询会一直打到字幕服务上。
   subWin.on("closed", () => { subWin = null; stopSubtitleStream(); });
+  /* 皮肤 / 自选描边补推：字幕窗也是懒创建 + 反复开关的小窗，
+     偏好不在它本地存，就绪时由主进程推一次（与控制条同一套路）。 */
+  subWin.webContents.once("did-finish-load", sendSubCfg);
+}
+
+/* 字幕窗偏好（皮肤 + 描边色）。默认深纱：字幕压在视频上，深底不抢画面。 */
+function subCfg() {
+  return { skin: state.subSkin, borderColor: state.subBorderColor || "" };
+}
+function sendSubCfg() {
+  if (!subWin || subWin.isDestroyed()) return;
+  try { subWin.webContents.send("sub:cfg", subCfg()); } catch { /* 窗口正在销毁 */ }
 }
 
 /* ══════════ 实时字幕：SSE 长连接（原为 900ms 轮询 /lines） ══════════
@@ -1571,6 +1702,59 @@ async function pickAvatar() {
 
 /* ---------------- 菜单 ---------------- */
 
+/* ---------------- 自定义主题背景图（t4） ----------------
+ * 与头像同一套路：系统对话框选图 → 拷进 userData → 路径落 state →
+ * data URL 推给面板（面板只用它画背景，不碰文件系统）。
+ * 上限比头像宽（4MB）：头像只有 32px，背景图要铺满整窗。 */
+const THEME_IMG_MAX = 4 * 1024 * 1024;
+
+function themeImageDataUrl() {
+  if (!state.themeImage) return "";
+  try {
+    const buf = fs.readFileSync(state.themeImage);
+    const ext = path.extname(state.themeImage).slice(1).toLowerCase();
+    const mime = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+    return `data:${mime};base64,${buf.toString("base64")}`;
+  } catch {
+    return "";
+  }
+}
+
+async function pickThemeImage() {
+  const r = await dialog.showOpenDialog({
+    title: "选择主题背景图片",
+    filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] }],
+    properties: ["openFile"],
+  });
+  if (r.canceled || !r.filePaths.length) return { ok: true, url: themeImageDataUrl(), canceled: true };
+  const src = r.filePaths[0];
+  let size = 0;
+  try { size = fs.statSync(src).size; } catch { return { ok: false, error: "读取图片失败" }; }
+  if (size > THEME_IMG_MAX) {
+    sendToPanel("notice", `图片 ${(size / 1024 / 1024).toFixed(1)}MB，超过 4MB 上限。`);
+    openPanel();
+    return { ok: false, error: "图片超过 4MB 上限" };
+  }
+  const ext = path.extname(src).toLowerCase();
+  const dest = path.join(app.getPath("userData"), "theme-bg" + ext);
+  try {
+    fs.copyFileSync(src, dest);
+  } catch (e) {
+    return { ok: false, error: "保存失败：" + e.message };
+  }
+  saveState({ themeImage: dest });
+  return { ok: true, url: themeImageDataUrl() };
+}
+
+function clearThemeImage() {
+  const prev = state.themeImage;
+  saveState({ themeImage: "" });
+  if (prev) { try { fs.unlinkSync(prev); } catch { /* 文件不在了也无妨 */ } }
+  return { ok: true };
+}
+
+/* ---------------- 菜单 ---------------- */
+
 /* ---------------- 剪贴板可用性 ----------------
  * 用户反馈"填 API Key 时没法粘贴"。实测 Ctrl+V 本身是通的，问题出在：
  *   1) Electron 默认**没有右键菜单**——右键点输入框选"粘贴"什么都不会发生，
@@ -2009,6 +2193,26 @@ ipcMain.on("busy", (_e, v) => sendToBall("busy", !!v));
 ipcMain.on("observe", (_e, on) => (on ? startObserve() : stopObserve()));
 ipcMain.on("open-external", (_e, url) => shell.openExternal(url));
 
+/* 桌面模糊背景（磨砂玻璃）：渲染层按玻璃态申报要不要；主进程据此决定抓不抓。
+   发送方 → 窗口 → glassbg 条目（每条各自记着回传通道，面板与录制条互不串图）。 */
+ipcMain.on("glass-bg-want", (e, on) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (win) glassbg.want(win, !!on);
+});
+ipcMain.on("glass-bg-refresh", (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (win) glassbg.refreshNow(win);
+});
+/* 显示器热插拔 / 分辨率 / DPI 变更：模糊底图与桌面的对齐关系变了，全部重抓。
+   ⚠️ 必须包在 whenReady 里：`screen` 模块在 app ready 之前**不可访问**，放在模块顶层
+   会同步抛异常，导致它下面的所有 safeHandle 一个都注册不上 —— 面板 get-state 全废、
+   按键全死、三条通道看起来"全部崩溃"（2026-10-22 实际踩过一次）。
+   同理：以后任何在模块顶层碰 screen / BrowserWindow / 其它 ready-gated 模块的代码，
+   一律要挪进 whenReady 回调。 */
+app.whenReady().then(() => {
+  screen.on("display-metrics-changed", () => glassbg.refreshAllWanted());
+});
+
 /* 使用说明：项目根目录下的「使用说明.md」。
    用 shell.openPath 走系统默认程序（一般是记事本/VSCode），
    比 openExternal 直接开浏览器更合适 —— .md 在浏览器里会变成下载。
@@ -2217,6 +2421,27 @@ safeHandle("storage-migrate", () => {
 }, () => ({ ok: false, moved: 0, skipped: 0, bytes: 0, errors: ["搬迁失败（详见 .orbdata/orb.log）"], note: null }));
 
 safeHandle("storage-open", async (_e, kind) => storage.openSubdir(kind), () => ({ ok: false, path: null, error: "打开目录失败" }));
+
+/* ---------------- Snipaste（截屏） ----------------
+ * 三条通道都只做「一件具体的事」，不暴露 fs、不暴露通用 spawn：
+ *   snip-detect     装没装 / 在不在跑（设置页状态行、首跑引导卡、聚焦重查都用它）
+ *   snip-run        唤起框选；截图直落 <存储根>/screenshots，不回传图片字节
+ *   snip-guide-done 首跑引导卡「知道了」落盘，同一台机器不再弹第二次
+ * 唤起逻辑（两步式、-o 落盘）的依据写在 snipaste.js 顶部注释。 */
+safeHandle("snip-detect", async () => {
+  try { return await snipaste.detect(); }
+  catch (e) { return { ok: false, installed: false, running: false, path: "", source: "" }; }
+}, () => ({ ok: false, installed: false, running: false, path: "", source: "" }));
+
+safeHandle("snip-run", async () => {
+  try { return await snipaste.runSnip(); }
+  catch (e) { return { ok: false, launched: false, file: "", reason: "exception: " + String((e && e.message) || e) }; }
+}, () => ({ ok: false, launched: false, file: "", reason: "唤起失败（详见 .orbdata/orb.log）" }));
+
+safeHandle("snip-guide-done", (_e, done) => {
+  if (done === true) saveState({ snipGuideDone: true });
+  return !!state.snipGuideDone;
+}, false);
 
 /* ---------------- 屏幕录制 ----------------
  * 分工是有硬约束的：getUserMedia / MediaRecorder 只能在渲染进程跑
@@ -2494,7 +2719,16 @@ ipcMain.on("rec-cmd-to-bar", (_e, payload) => {
       const win = createRecBar();
       if (!win) return;
       emitRecEvent(payload);
+      /* 偏好补推一次：窗口可能是上一轮录制建的（隐藏但没销毁），
+         用户中途改过皮肤 / 描边 / 能量条开关，这里确保拿的是最新值。 */
+      sendRecCfg();
       try {
+        /* 每轮开始都把位置拉回屏幕顶端：控制条可拖拽，上一轮被拖到屏幕中间
+           的话，这一轮不该继续留在那儿（用户报的就是"跑到屏幕中间去了"）。 */
+        win.setBounds(recbarBounds());
+        /* 穿透态必须复位：上一轮若停在收起态就被隐藏，ignore-mouse-events
+           会一直挂着，这一轮一显示出来就点不动。 */
+        resetRecbarInteractive(win);
         win.showInactive();
         win.show();
         win.setAlwaysOnTop(true);
@@ -2504,6 +2738,7 @@ ipcMain.on("rec-cmd-to-bar", (_e, payload) => {
       if (!recbarWin || recbarWin.isDestroyed()) return;
       emitRecEvent(payload);
     } else if (type === "stop") {
+      resetRecbarInteractive(recbarWin);
       try { if (recbarWin && !recbarWin.isDestroyed()) recbarWin.hide(); } catch { /* 已经没了 */ }
     } else {
       log("[recbar] 未知事件类型:", String(type));
@@ -2523,6 +2758,7 @@ ipcMain.on("rec-bar-cmd", (_e, cmd) => {
     }
     // 面板没了（被强关 / 崩溃）：控制条再挂着只会让用户点一个没反应的按钮
     if (!panel || panel.isDestroyed()) {
+      resetRecbarInteractive(recbarWin);
       try { if (recbarWin && !recbarWin.isDestroyed()) recbarWin.hide(); } catch { /* ignore */ }
       return;
     }
@@ -2532,11 +2768,155 @@ ipcMain.on("rec-bar-cmd", (_e, cmd) => {
   }
 });
 
+/* 控制条 → 主进程：能量条收起时切"点击穿透"。
+   细条只被看见、不被挡住 —— 否则屏幕顶部的一条小条会吃掉背后的
+   最大化按钮 / 浏览器标签页。
+
+   ⚠️ 2026-10-22 修（用户报「自动缩起后悬停无法展开、按钮点不到」）：
+   原方案靠 `setIgnoreMouseEvents(true, { forward: true })` 把 mousemove 转发
+   给页面，页面再用坐标判定悬停。但 Windows 下这个转发并不可靠 —— 穿透态里
+   页面常常一个鼠标事件都收不到，于是永远展不开，三个按钮彻底点不到。
+   现在改由**主进程**在穿透期间盯着光标：定时取 screen.getCursorScreenPoint()
+   与控制条矩形比对，进/出各广播一次 `rec:hover`，页面据此展开或收回。
+   这样"收起时不挡背后"与"悬停能展开、按钮能点"两头都成立，且不依赖
+   forward 的平台实现差异（页面里那条 mousemove 判定保留作 macOS 的快路径）。 */
+const REC_HIT = { x0: 16, x1: 224, y0: 0, y1: 34 };   // 与 recbar.html 的 HIT 保持一致
+const REC_HOVER_PAD = 8;                              // 判定区外扩，别让人正正好好对准
+let recbarPassthru = false;
+let recbarHoverTimer = null;
+let recbarHoverInside = false;
+function stopRecbarHoverWatch() {
+  if (recbarHoverTimer) { clearInterval(recbarHoverTimer); recbarHoverTimer = null; }
+  recbarHoverInside = false;
+}
+function startRecbarHoverWatch() {
+  if (recbarHoverTimer) return;
+  recbarHoverInside = false;
+  recbarHoverTimer = setInterval(() => {
+    try {
+      if (!recbarPassthru || !recbarWin || recbarWin.isDestroyed()) { stopRecbarHoverWatch(); return; }
+      const b = recbarWin.getBounds();
+      const p = screen.getCursorScreenPoint();
+      const inside = p.x >= b.x + REC_HIT.x0 - REC_HOVER_PAD && p.x <= b.x + REC_HIT.x1 + REC_HOVER_PAD
+                  && p.y >= b.y + REC_HIT.y0 - REC_HOVER_PAD && p.y <= b.y + REC_HIT.y1 + REC_HOVER_PAD;
+      if (inside === recbarHoverInside) return;   // 只在跨越边界时广播一次
+      recbarHoverInside = inside;
+      sendToBar("rec:hover", { inside: inside });
+    } catch (e) {
+      /* 光标/窗口查询偶尔会失败（显示器热插拔、窗口正在销毁）：
+         停掉监视，别把异常每 140ms 刷一次日志 */
+      stopRecbarHoverWatch();
+      log("[recbar] 悬停监视异常，已停止:", (e && e.message) || String(e));
+    }
+  }, 140);
+}
+ipcMain.on("rec-bar-passthru", (_e, on) => {
+  try {
+    if (!recbarWin || recbarWin.isDestroyed()) return;
+    /* 关穿透时不带 options：回到普通可交互窗口 */
+    if (on) {
+      recbarWin.setIgnoreMouseEvents(true, { forward: true });
+      recbarPassthru = true;
+      startRecbarHoverWatch();
+    } else {
+      recbarPassthru = false;
+      stopRecbarHoverWatch();
+      recbarWin.setIgnoreMouseEvents(false);
+    }
+  } catch (e) {
+    log("[recbar] 切换点击穿透失败:", (e && e.message) || String(e));
+  }
+});
+/* 穿透必须跟着"不再显示"一起复位：否则上一轮录制停在收起态就隐藏了窗口，
+   下一轮 show() 出来时 ignore-mouse-events 还挂着 → 一上来就点不动。 */
+function resetRecbarInteractive(win) {
+  recbarPassthru = false;
+  stopRecbarHoverWatch();
+  try { if (win && !win.isDestroyed()) win.setIgnoreMouseEvents(false); } catch { /* 已销毁 */ }
+}
+
+/* ---------- 控制条偏好（皮肤 / 能量条 / 自选描边色） ----------
+ * 一处校验、一处落盘、一处推给控制条。渲染层（设置 › 录屏）只发patch，
+ * 不自己判断默认值 —— 默认口径必须和主进程一致，否则会出现
+ * "面板显示灰白纱、控制条画深纱"这种两侧对不上的情况。 */
+safeHandle("set-rectheme", (_e, patch) => {
+  const p = patch || {};
+  const skin = p.skin === "dark" ? "dark" : (p.skin === "light" ? "light" : state.recSkin);
+  const energy = typeof p.energy === "boolean" ? p.energy : state.recEnergy;
+  const borderRaw = typeof p.borderColor === "string" ? p.borderColor.trim().toLowerCase() : "";
+  const borderColor = borderRaw === "" || /^#[0-9a-f]{6}$/.test(borderRaw) ? borderRaw : (state.recBorderColor || "");
+  normalizeRecPrefs();
+  const next = { recSkin: skin, recEnergy: energy, recBorderColor: borderColor };
+  saveState(next);
+  if (recbarWin && !recbarWin.isDestroyed()) sendRecCfg();   // 控制条活着就当场生效
+  return { ok: true, rec: recCfg() };
+}, { ok: false, error: "保存悬浮条偏好失败" });
+
+/* ---------- 实时字幕窗偏好（皮肤 + 描边色） ---------- */
+safeHandle("set-sub-theme", (_e, patch) => {
+  const p = patch || {};
+  const skin = p.skin === "light" ? "light" : (p.skin === "dark" ? "dark" : state.subSkin);
+  const borderRaw = typeof p.borderColor === "string" ? p.borderColor.trim().toLowerCase() : "";
+  const borderColor = borderRaw === "" || /^#[0-9a-f]{6}$/.test(borderRaw) ? borderRaw : (state.subBorderColor || "");
+  normalizeThemePrefs();
+  saveState({ subSkin: skin, subBorderColor: borderColor });
+  sendSubCfg();                       // 字幕窗开着就当场生效
+  return { ok: true, sub: subCfg() };
+}, { ok: false, error: "保存字幕窗偏好失败" });
+
+/* ---------- 主题自选：交互色 / 渐变搭配 / 自定义背景图 ----------
+ * 一处校验、一处落盘。渲染层（设置 › 外观）只发 patch，默认值口径以这里为准，
+ * 否则会出现"面板显示默认、实际套了别的"这类两侧对不上。 */
+safeHandle("set-theme-accent", (_e, patch) => {
+  const p = patch || {};
+  normalizeThemePrefs();
+  if (typeof p.grad === "string") {
+    state.themeGrad = (p.grad === "custom" || T3_GRAD_IDS.includes(p.grad)) ? p.grad : "";
+  }
+  /* 自定义渐变两端：随 patch 一起校验。端点不合法时若正选着自定义档，一并退回默认 */
+  if (p.gradCustom && typeof p.gradCustom === "object") {
+    const ghex = (v) => { const s = String(v || "").trim().toLowerCase(); return /^#[0-9a-f]{6}$/.test(s) ? s : ""; };
+    const c1 = ghex(p.gradCustom.c1), c2 = ghex(p.gradCustom.c2);
+    if (c1 && c2) state.themeGradCustom = { c1, c2 };
+    else if (state.themeGrad === "custom") state.themeGrad = "";
+  }
+  /* 毛玻璃：只改指定主题那一份；极光不接受这个开关（它自带玻璃） */
+  if (typeof p.glass === "boolean") {
+    const t = THEME_IDS.includes(p.theme) ? p.theme : "t2";
+    if (t !== "t3") state.themeGlass[t] = p.glass;
+  }
+  if (typeof p.accentColor === "string") {
+    const t = THEME_IDS.includes(p.theme) ? p.theme : "t2";
+    const c = p.accentColor.trim().toLowerCase();
+    state.themeAccent[t] = (c === "" || /^#[0-9a-f]{6}$/.test(c)) ? c : (state.themeAccent[t] || "");
+  }
+  saveState({});
+  return { ok: true, prefs: themePrefsPayload() };
+}, { ok: false, error: "保存主题偏好失败" });
+
+/* 自定义主题背景图：对话框在主进程（渲染层没有文件系统权限），
+ * 选完直接回 data URL，面板拿它当 --theme-image 用。 */
+safeHandle("pick-theme-image", async () => {
+  try { return await pickThemeImage(); }
+  catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+}, { ok: false, error: "选择图片失败" });
+safeHandle("clear-theme-image", () => clearThemeImage(), { ok: false, error: "清除背景图失败" });
+
 ipcMain.handle("get-state", () => ({
   pinned: state.pinned,
   coordMode: state.coordMode,
   border: state.border,
   avatar: avatarDataUrl(),
+  /* 悬浮控制条偏好：设置 › 录屏 里的皮肤 / 能量条 / 自选描边色 */
+  rec: recCfg(),
+  /* 实时字幕窗偏好：皮肤 + 自选描边色（默认深纱） */
+  sub: subCfg(),
+  /* 主题自选：每套主题的交互色、极光渐变搭配 id、自定义渐变两端、自定义主题背景图 */
+  themeAccent: { ...state.themeAccent },
+  themeGrad: state.themeGrad,
+  themeGradCustom: { ...state.themeGradCustom },
+  themeGlass: { ...state.themeGlass },
+  themeImage: themeImageDataUrl(),
   voice: {
     engine: state.voice?.engine ?? "auto",
     endpoint: state.voice?.endpoint ?? "",
@@ -2554,6 +2934,9 @@ ipcMain.handle("get-state", () => ({
      看完之后调用 set-wizard-done 把 envWizardDone 落盘。 */
   firstRun: !!state.firstRun,
   envWizardDone: !!state.envWizardDone,
+  /* 截屏引导卡（第一档）：没装 Snipaste 时首启弹一次，看完 snip-guide-done 落盘。
+     和 envWizardDone 同一个套路：主进程落盘为准，localStorage 只是保底。 */
+  snipGuideDone: !!state.snipGuideDone,
   display: (() => {
     const d = screen.getPrimaryDisplay();
     return { width: d.size.width * d.scaleFactor, height: d.size.height * d.scaleFactor, scale: d.scaleFactor };

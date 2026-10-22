@@ -24,6 +24,14 @@
  *   桩启动时读尾部 trailer，反推出 payload 的偏移与长度，
  *   因此桩可以被任意重编译而不需要同步任何常量。
  *
+ *   签名（Authenticode）之后布局变成：
+ *
+ *     [ 桩本体 ][ payload zip ][ 32 字节 trailer ][ 签名块 ]
+ *
+ *   签名块是 signtool 追加的，trailer 不再是文件最后 32 字节。所以桩改成
+ *   从尾部往前倒扫魔数（见 locate_trailer），并用 payload 起点必须是
+ *   zip local file header 来排除误命中。见 docs/代码签名获取方案调研.md §8。
+ *
  * 运行流程：
  *   1. 把自己尾部的 payload 写到 %TEMP%\orb-sfx-<pid>.zip
  *   2. 解压到 <目标>\_raw（优先用系统自带 tar.exe；没有则退 PowerShell
@@ -92,6 +100,74 @@ static unsigned long long le64(const unsigned char *p) {
 static unsigned long le32(const unsigned char *p) {
     return (unsigned long)p[0] | ((unsigned long)p[1] << 8) |
            ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
+}
+
+/* ---- 签名感知的 trailer 定位 ----
+ *
+ * 为什么要倒扫而不是直接读 total-32：
+ *   Authenticode（signtool）把签名块**追加在文件最末尾**。一旦 OV/自签名证书
+ *   签了这个便携包，最后 32 字节就不再是 trailer，而是签名块的一部分 ——
+ *   老写法 `back = total - SFX_TRAILER` 会读到垃圾，桩当场报「尾部签名不匹配」，
+ *   208 MB 的包直接打不开。所以改成从尾部往前找魔数。
+ *
+ * 误命中怎么排除（zip 数据里也可能恰好出现 "ORBSFX1"）：
+ *   1) payload_len 必须落在 (0, SFX_PAYLOAD_MAX] 内；
+ *   2) 反推出的 payload 起点必须在桩之后、且在文件内；
+ *   3) 起点处 4 个字节必须是 "PK\x03\x04"（zip local file header）。
+ *   三条同时成立才认，实际数据里几乎不可能撞出来。
+ *
+ * 倒扫命中顺序：从后往前，第一个通过校验的就是真 trailer（它永远在 payload 之后）。
+ */
+#define SFX_SCAN_WINDOW (256 * 1024)   /* 签名块通常 1.5–8 KB，256 KB 极宽松 */
+
+/* 供 orb/sign.cjs 识别"本桩能处理签名后的包"。别删 —— 删了签名脚本会拒绝给
+   便携包签名（它宁可拒签，也不产出一个打不开的包）。 */
+static const char k_sign_marker[] = "ORBSFXSIGN1";
+
+static int read_at(HANDLE h, long long off, void *buf, DWORD n) {
+    LARGE_INTEGER p;
+    p.QuadPart = off;
+    DWORD got = 0;
+    if (!SetFilePointerEx(h, p, NULL, FILE_BEGIN)) return 0;
+    return ReadFile(h, buf, n, &got, NULL) && got == n;
+}
+
+/* 返回 1 = 找到并校验通过；0 = 根本没有魔数；-1 = 有魔数但 payload 字段不合法 */
+static int locate_trailer(HANDLE h, long long total,
+                          long long *payload_off,
+                          unsigned long long *payload_len,
+                          unsigned long *want_crc) {
+    static const unsigned char PK_LOCAL[4] = { 0x50, 0x4B, 0x03, 0x04 };
+    long long win = total < SFX_SCAN_WINDOW ? total : SFX_SCAN_WINDOW;
+    if (win < SFX_TRAILER) return 0;
+
+    long long base = total - win;
+    unsigned char *buf = (unsigned char *)malloc((size_t)win);
+    if (!buf) return 0;
+    if (!read_at(h, base, buf, (DWORD)win)) { free(buf); return 0; }
+
+    int magic_seen = 0, ok = 0;
+    for (long long i = win - SFX_TRAILER; i >= 0; --i) {
+        if (buf[i] != (unsigned char)SFX_MAGIC[0]) continue;
+        if (memcmp(buf + i, SFX_MAGIC, SFX_MAGIC_LEN) != 0) continue;
+        magic_seen = 1;
+
+        unsigned long long len = le64(buf + i + 8);
+        long long off = base + i - (long long)len;
+        if (len == 0 || len > SFX_PAYLOAD_MAX || off < 16 || off > total) continue;
+
+        unsigned char sig[4];
+        if (!read_at(h, off, sig, 4)) continue;
+        if (memcmp(sig, PK_LOCAL, 4) != 0) continue;
+
+        *payload_off = off;
+        *payload_len = len;
+        *want_crc = le32(buf + i + 16);
+        ok = 1;
+        break;
+    }
+    free(buf);
+    return ok ? 1 : (magic_seen ? -1 : 0);
 }
 
 /** 把一段文件内容复制到另一个文件。成功返回 1。 */
@@ -227,7 +303,7 @@ int wmain(int argc, wchar_t **argv) {
         else if (!target) target = argv[i];   /* 第一个非选项参数当目标目录 */
     }
 
-    /* ---------- 1. 读 trailer，反推 payload 位置 ---------- */
+    /* ---------- 1. 从尾部倒扫 trailer，反推 payload 位置 ---------- */
     HANDLE h = CreateFileW(self, GENERIC_READ, FILE_SHARE_READ, NULL,
                            OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
     if (h == INVALID_HANDLE_VALUE) { msgbox(L"打不开自身文件。", L"ORB 控制台"); return 1; }
@@ -237,30 +313,25 @@ int wmain(int argc, wchar_t **argv) {
         msgbox(L"这个文件不是 ORB 便携包（体积过小）。", L"ORB 控制台");
         return 1;
     }
-    unsigned char tr[SFX_TRAILER];
-    DWORD got = 0;
-    LARGE_INTEGER back;
-    back.QuadPart = total.QuadPart - SFX_TRAILER;
-    if (!SetFilePointerEx(h, back, NULL, FILE_BEGIN) ||
-        !ReadFile(h, tr, SFX_TRAILER, &got, NULL) || got != SFX_TRAILER) {
-        CloseHandle(h);
-        msgbox(L"读不到包尾寻址信息。", L"ORB 控制台");
-        return 1;
-    }
+
+    /* 这个判断永远不会成立，存在的唯一目的是让 /O2 不敢把 k_sign_marker 优化掉
+       —— 少了这串字面量，orb/sign.cjs 就认不出这是"签名感知"的桩，会拒签。 */
+    if (k_sign_marker[0] == '\0') { CloseHandle(h); return 1; }
+
+    long long payload_off = 0;
+    unsigned long long payload_len = 0;
+    unsigned long want_crc = 0;
+    int loc = locate_trailer(h, total.QuadPart, &payload_off, &payload_len, &want_crc);
     CloseHandle(h);
 
-    if (memcmp(tr, SFX_MAGIC, SFX_MAGIC_LEN) != 0) {
-        msgbox(L"这个文件不是 ORB 便携包（尾部签名不匹配）。", L"ORB 控制台");
+    if (loc == 0) {
+        msgbox(L"这个文件不是 ORB 便携包（找不到包尾寻址信息）。", L"ORB 控制台");
         return 1;
     }
-    unsigned long long payload_len = le64(tr + 8);
-    unsigned long want_crc = le32(tr + 16);
-    if (payload_len == 0 || payload_len > SFX_PAYLOAD_MAX ||
-        (long long)payload_len > total.QuadPart - SFX_TRAILER) {
-        msgbox(L"便携包的长度字段不合法。", L"ORB 控制台");
+    if (loc < 0) {
+        msgbox(L"便携包的寻址信息已损坏（长度字段不合法）。", L"ORB 控制台");
         return 1;
     }
-    long long payload_off = total.QuadPart - SFX_TRAILER - (long long)payload_len;
 
     /* ---------- 2. 定目标目录 ---------- */
     WCHAR dest[MAX_PATH];
