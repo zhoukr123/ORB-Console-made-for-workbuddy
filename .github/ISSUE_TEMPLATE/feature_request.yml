@@ -1,0 +1,59 @@
+name: 功能建议
+description: 想要一个新能力，或觉得现有流程该改
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提之前先看一眼 [ROADMAP.md](../../ROADMAP.md)：里面已经写了的东西就不用重复提了，
+        但**如果你觉得优先级排错了，欢迎直接说理由**。
+
+  - type: textarea
+    id: scene
+    attributes:
+      label: 你的使用场景
+      description: 别先说方案，先说你在什么情况下卡住了 —— 场景比方案更重要
+      placeholder: 每天要把十几张截图整理进同一份文档，现在得一张张手动搬……
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你希望的解法
+      description: 如果有具体想法写这里；没有也没关系
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternative
+    attributes:
+      label: 你现在怎么绕过这个问题
+      description: 临时办法是什么、哪里不好用
+    validations:
+      required: false
+
+  - type: dropdown
+    id: track
+    attributes:
+      label: 大概属于哪一块
+      options:
+        - 前台轨道（点击 / 输入 / 窗口）
+        - 后台轨道（派给 Agent）
+        - 视觉轨道（截图 + 视觉模型）
+        - 录屏 / 截屏 / 存储
+        - 主题 / 界面 / 动效
+        - 打包 / 安装 / 兼容性
+        - 文档
+        - 说不清
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我搜过现有 Issue 和 ROADMAP，没有重复
+          required: true

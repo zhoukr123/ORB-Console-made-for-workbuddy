@@ -1,0 +1,75 @@
+name: 报告 Bug
+description: 崩溃、功能不工作、行为和文档不一致
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。ORB 会操作鼠标键盘，所以**请务必在描述里写清权限档位** —— 同一个问题在「只读」和「完全访问」下表现完全不同。
+
+  - type: textarea
+    id: env
+    attributes:
+      label: 运行环境
+      description: 请尽量填全，缺项会让排查慢很多
+      value: |
+        - ORB 版本：（设置 › 关于，或发布资产名）
+        - 安装方式：便携单文件 / zip / 源码运行
+        - Windows 版本：（如 Windows 11 23H2）
+        - 权限档位：只读 / 工作区可写 / 完全访问
+        - 是否装了 CodeBuddy CLI：
+        - 视觉模型：（服务商 + 模型名，Key 不要贴）
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动开始写，越具体越好
+      placeholder: |
+        1. 双击 portable.exe，等悬浮球出现
+        2. 权限切到「完全访问」
+        3. 输入「打开记事本」
+        4. ……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果 vs 实际结果
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: 日志
+      description: |
+        开发态在 `orb/desktop/.orbdata/orb.log`，打包版在 `%APPDATA%\ORB 控制台\` 下。
+        请粘贴出错时间点前后 30 行左右，不要贴整份（里面有你的窗口标题和路径）。
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 截图或录屏
+      description: 界面错位、闪烁一类的问题，一张图胜过一段描述（拖进来即可）
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已在最新版本上复现（旧版本的问题请先升级）
+          required: true
+        - label: 我搜过现有 Issue，没有重复
+          required: true
+        - label: 这不是安全问题（安全漏洞请走 SECURITY.md 的私密报告）
+          required: true

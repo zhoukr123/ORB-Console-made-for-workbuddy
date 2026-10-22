@@ -97,7 +97,7 @@ npm install --prefix orb/desktop
 | 视觉决策循环 | 千分比坐标 + 主动缩放 + 失败自动切备选模型 |
 | 录屏 | 原生直出 MP4（1080p / 30fps），悬浮控制条可暂停、继续、取消、完成（v1.1.0） |
 | 截屏 | 唤起本机 Snipaste 框选标注，截图统一归档到你的存储目录（v1.1.0） |
-| 四套主题 | 深空 / 白昼 / 极光·氤氲 / 自定义渐变，一键切换；深空与自定义可开毛玻璃 |
+| 四套主题 | 深空 / 白昼 / 极光·氤氲 / 自定义（整窗图片），一键切换；极光另带 6 款渐变；深空与自定义可开毛玻璃 |
 | 首跑向导 | 首次启动自动体检四条通道（前台 / 语音 / 视觉 / 后台），逐条给出可用状态 |
 
 ### 四套主题
@@ -106,9 +106,9 @@ npm install --prefix orb/desktop
 | --- | --- |
 | ![深空主题](docs/shots/theme-deepspace.png) | ![白昼主题](docs/shots/theme-daylight.png) |
 
-| 极光·氤氲 | 自定义渐变 |
+| 极光·氤氲（6 款渐变之一） | 自定义（整窗图片，示例壁纸） |
 | --- | --- |
-| ![极光主题](docs/shots/theme-aurora.png) | ![自定义渐变](docs/shots/theme-custom.png) |
+| ![极光主题](docs/shots/theme-aurora.png) | ![自定义主题](docs/shots/theme-custom.png) |
 
 ---
 
