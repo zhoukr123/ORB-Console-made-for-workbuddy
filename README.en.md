@@ -88,8 +88,8 @@ npm install --prefix orb/desktop
 | Select-to-act | Select any text and a toolbar pops up (search / translate / send to agent) — no global keyboard hook |
 | Voice input | Streaming transcription from the mic button. Pluggable engine: browser Web Speech or your own Whisper endpoint |
 | Vision loop | Per-mille coordinates + active zoom + automatic model fallback |
-| Screen recording | Native MP4 output (1080p / 30fps) with a floating control bar: pause / resume / cancel / finish (v1.1.0) |
-| Screenshot | Invokes your local Snipaste for selection and annotation, archives into your storage folder (v1.1.0) |
+| Screen recording | Native MP4 output (1080p / 30fps) with a floating control bar: pause / resume / cancel / finish (v1.2.0) |
+| Screenshot | Invokes your local Snipaste for selection and annotation, archives into your storage folder (v1.2.0) |
 | Four themes | Deep Space / Daylight / Aurora / Custom gradient; frosted glass available on Deep Space and Custom |
 
 ---
