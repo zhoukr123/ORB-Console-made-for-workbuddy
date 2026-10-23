@@ -187,3 +187,6 @@ docs/磨砂玻璃-验证截图.png
 .vscode/
 .idea/
 .DS_Store
+
+# 对外宣传文案：QQ 频道帖 / 演示页文案，只留本地
+/docs/渠道-*
