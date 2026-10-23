@@ -34,7 +34,7 @@ ELECTRON_RUN_AS_NODE= ./node_modules/.bin/electron .
 
 ## 图标
 
-三处图标位共用同一个 `icon.png`，当前是 **WorkBuddy 应用 Logo 的蓝色版**（原版是青绿渐变，见对比图 `icon-before-after.png`）：
+三处图标位共用同一个 `icon.png`：
 
 | 位置 | 文件 | 尺寸 |
 |---|---|---|
@@ -44,19 +44,19 @@ ELECTRON_RUN_AS_NODE= ./node_modules/.bin/electron .
 
 根目录还有一个同名 `icon.png`，是托盘找不到 `desktop/icon.png` 时的回退路径。
 
-### 蓝色版是怎么来的
+### 源文件与设计说明
 
-WorkBuddy 应用 Logo（`D:/workbuddy/resources/app.asar.unpacked/resources/icon.png`，1024×1024）的结构是
-**青绿渐变背景 + 纯白图案**。改色时**不要整体旋转固定角度**——原背景色相跨度有 137°→169°，
-统一 +45° 会让右下角停在 182°（依旧是青绿）。正确做法是**把背景色相统一锁到目标蓝**，
-明暗层次交给原有的亮度(l)与饱和度(s)：
+多档位源文件在 `docs/icon/`：`icon-1024.png` / `icon-512.png` / `icon-256.png` / `icon-64.png`，
+`desktop/icon.png` 是其中的 512 档。
 
-```python
-if s > 0.12:                                        # 彩色像素 = 背景
-    r2, g2, b2 = colorsys.hls_to_rgb(213/360, l, s)  # 锁 213° 蓝，保留 l / s
-else:                                               # 纯白图案 s≈0，原样保留
-    pass
-```
+图标为**圆角方形蓝底 + 白色图形**，是本项目自有的视觉标识：
+
+- 不使用任何第三方产品的图形元素，图形由本项目的白色有机轮廓 + 两个符号构成；
+- 圆角方形与蓝白配色属于**通用视觉语言**（不受著作权保护），仅用于与所处生态保持视觉一致；
+- 原图为位图，已做边缘修复后按 4 档输出：4×4 超采样重渲染消除锯齿、泛洪分离背景后
+  置透明（无白边）、过渡带统一着色为品牌蓝（无灰边），并按长边等比缩放居中（原图非正方形）。
+
+三处图标位共用同一张图，改完**必须重启**（托盘在启动时创建）。
 
 ### 换图标
 
@@ -65,7 +65,6 @@ C:/Users/%USERNAME%/.workbuddy/binaries/python/envs/default/Scripts/python.exe s
 ```
 
 自动补齐 512 / 64 两个尺寸，覆盖前备份到 `.icon-backup/`。改完**必须重启**（托盘在启动时创建）。
-`.icon-backup/` 里留着历次素材：原始图标、WorkBuddy 卡通头像（`assistant-avatar`）及头像版图标，想换回任意一版都能直接拿来用。
 
 ## 已脱离 DeepSeek Orb 独立运行
 

@@ -14,6 +14,8 @@
 ![release](https://img.shields.io/github/v/release/zhoukr123/ORB-Console-made-for-workbuddy)
 ![stars](https://img.shields.io/github/stars/zhoukr123/ORB-Console-made-for-workbuddy)
 
+<p align="center"><sub>为 WorkBuddy / CodeBuddy 生态而建 · 后台轨道直接调用你本机的 CodeBuddy CLI，无需另配 Key</sub></p>
+
 </div>
 
 ![ORB 控制台界面：悬浮球展开后的主面板](ORB界面预览.png)
@@ -184,8 +186,19 @@ node orb\selftest.mjs --full   :: 额外跑一次真实后台任务（会消耗�
 - 截屏功能唤起你本机安装的 **Snipaste**（闭源免费软件），ORB 只做「检测 + 唤起 + 归档」，不含其代码。
 - 第三方组件的许可与归属见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 
-> 名字里的 ORB 指悬浮球形态，与 DeepSeek Orb 及其它同名产品**没有关联**。能力对照见
+> 名字里的 ORB 指悬浮球形态，与 DeepSeek Orb 及其它同名产品**没有关联**；
+> 与腾讯 WorkBuddy / CodeBuddy **也无隶属关系**，本项目是独立的第三方作品。能力对照见
 > [功能对标分析.md](功能对标分析.md)。
+
+---
+
+## 关于图标
+
+应用图标是**圆角方形蓝底 + 白色图形**，为本项目自有的视觉标识：
+
+- 不使用任何第三方产品的图形元素；
+- 圆角方形与蓝白配色属于**通用视觉语言**（不受著作权保护），仅用于与所处生态保持视觉一致；
+- 多档位源文件在 [`docs/icon/`](docs/icon/)（1024 / 512 / 256 / 64）。
 
 ---
 

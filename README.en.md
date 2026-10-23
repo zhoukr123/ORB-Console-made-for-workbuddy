@@ -103,7 +103,19 @@ This repo ships **only its own source, docs and build scripts** — no third-par
 - The screenshot feature invokes **Snipaste** if you have it installed; ORB only detects, invokes and archives.
 - See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-> "ORB" refers to the floating-orb form factor. This project is **not affiliated** with DeepSeek Orb or any other same-named product.
+> "ORB" refers to the floating-orb form factor. This project is **not affiliated** with DeepSeek Orb or any other
+> same-named product, nor with Tencent WorkBuddy / CodeBuddy — it is an independent third-party project.
+
+---
+
+## About the icon
+
+The app icon is a **rounded blue square with a white graphic**, the project's own visual identity:
+
+- it uses no graphic elements from any third-party product;
+- rounded squares and blue/white palettes are **generic visual language** (not protected by copyright),
+  used only to stay visually consistent with the ecosystem this project lives in;
+- source renders in [`docs/icon/`](docs/icon/) (1024 / 512 / 256 / 64).
 
 ---
 
