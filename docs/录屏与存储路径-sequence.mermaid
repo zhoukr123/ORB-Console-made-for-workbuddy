@@ -1,0 +1,43 @@
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant P as panel.html CaptureController
+    participant B as preload.js window.orb
+    participant S as main.js StorageService
+    participant W as main.js RecordingWriter
+    participant F as mp4finalize.js
+
+    U->>P: 点「录屏」常驻键
+    P->>P: phase=preparing，键加 .cap-on（红点呼吸）
+    P->>B: capSources()
+    B->>S: desktopCapturer.getSources({screen,window})
+    S-->>P: [{id:'screen:0:0',name:'整个屏幕'}]
+    P->>P: 探测 isTypeSupported(候选链) 得到 video/mp4;codecs="avc1.42E01E"
+    P->>P: getUserMedia({chromeMediaSource:'desktop'}) 得到 1920x1080@30 流
+    P->>B: capOpen('mp4')
+    B->>W: 建临时写句柄 <storageRoot>/recordings/.tmp/xxx.part
+    W-->>P: {ok, id}
+    P->>P: new MediaRecorder(stream,{mimeType, videoBitsPerSecond:4e6}); start(1000)
+    P->>P: phase=recording，键上显示计时 mm:ss
+
+    loop 每 1s（MediaRecorder timeslice）
+        P->>B: capChunk(id, ArrayBuffer)
+        B->>W: append 到 .part
+        W-->>P: {ok}
+    end
+
+    U->>P: 再点一次（停止）
+    P->>P: recorder.stop()，phase=finalizing
+    P->>B: capClose(id,'recordings',{ms,mime})
+    B->>W: 收尾
+    W->>S: pathOf('recordings')
+    S-->>W: <root>/recordings
+    W->>W: rename .part 到 录屏-YYYYMMDD-HHmmss.mp4
+    W->>F: inspect(buf)
+    F-->>W: {durationMs}
+    alt durationMs === 0（罕见）
+        W->>F: patchDuration(file, 实测ms)
+    end
+    W-->>P: {ok, path, bytes, ms}
+    P->>P: phase=saved，去掉 .cap-on
+    P->>U: 气泡「已保存到 path（xx MB / mm:ss）[打开文件夹][复制路径]」

@@ -1,0 +1,69 @@
+classDiagram
+    class AppState {
+      +string? storageRoot
+      +string? storageRootPrev
+      +boolean storageMigrated
+      +object? lastRecording
+      +saveState(patch) void
+    }
+
+    class StorageService {
+      -AppState state
+      -string DATA_ROOT
+      +SUBDIRS map~string,string~
+      +resolveRoot() string
+      +pathOf(kind) string
+      +ensureSubdirs(root) Result
+      +pickRoot() Promise~string?~
+      +setRoot(root) Promise~Result~
+      +migrate(from,to) Promise~MigrateResult~
+      +openSubdir(kind) Promise~boolean~
+      +stat(root) Promise~Stat~
+    }
+
+    class Mp4Finalizer {
+      +inspect(buf) Mp4Info
+      +patchDuration(file, ms) boolean
+    }
+
+    class RecordingWriter {
+      -Map~string,Handle~ handles
+      +open(ext) Promise~OpenResult~
+      +chunk(id, bytes) Promise~boolean~
+      +close(id, kind, meta) Promise~SaveResult~
+      +abort(id) Promise~void~
+    }
+
+    class CaptureController {
+      +string phase
+      +string? sourceId
+      +string? mimeType
+      +number startedAt
+      +number bytes
+      +pickSource() Promise~Source~
+      +start(opts) Promise~void~
+      +stop() Promise~void~
+      +tick() void
+      +onError(name) void
+    }
+
+    class OrbIpc {
+      <<contextBridge>>
+      +storageGet() Promise~Stat~
+      +storagePick() Promise~string?~
+      +storageSet(root) Promise~Result~
+      +storageMigrate() Promise~MigrateResult~
+      +storageOpen(kind) Promise~boolean~
+      +capSources() Promise~Source[]~
+      +capOpen(ext) Promise~OpenResult~
+      +capChunk(id, bytes) Promise~boolean~
+      +capClose(id, kind, meta) Promise~SaveResult~
+      +capAbort(id) Promise~void~
+    }
+
+    StorageService --> AppState : reads/writes
+    RecordingWriter --> StorageService : pathOf()
+    RecordingWriter --> Mp4Finalizer : inspect/patchDuration
+    CaptureController --> OrbIpc : uses
+    OrbIpc ..> StorageService : ipc
+    OrbIpc ..> RecordingWriter : ipc

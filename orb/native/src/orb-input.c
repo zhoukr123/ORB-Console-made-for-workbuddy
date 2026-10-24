@@ -108,16 +108,113 @@ static int need_int(const char *s, int *out) {
     return 1;
 }
 
+/* ---------------- 键盘（key 子命令） ----------------
+ * 键名 → 虚拟键码。只列实测用得上的那几十个。
+ * SendInput 的 KEYBDINPUT 在 64 位下 dwFlags 之后还有 padding，
+ * 直接 memset 清零再填字段，不要用初始化器（对齐会错）。 */
+static WORD vk_of(const char *name) {
+    if (!name || !*name) return 0;
+    if (_stricmp(name, "esc") == 0 || _stricmp(name, "escape") == 0) return VK_ESCAPE;
+    if (_stricmp(name, "enter") == 0 || _stricmp(name, "return") == 0) return VK_RETURN;
+    if (_stricmp(name, "tab") == 0) return VK_TAB;
+    if (_stricmp(name, "space") == 0) return VK_SPACE;
+    if (_stricmp(name, "backspace") == 0) return VK_BACK;
+    if (_stricmp(name, "left") == 0) return VK_LEFT;
+    if (_stricmp(name, "right") == 0) return VK_RIGHT;
+    if (_stricmp(name, "up") == 0) return VK_UP;
+    if (_stricmp(name, "down") == 0) return VK_DOWN;
+    if (_stricmp(name, "home") == 0) return VK_HOME;
+    if (_stricmp(name, "end") == 0) return VK_END;
+    if (_stricmp(name, "delete") == 0 || _stricmp(name, "del") == 0) return VK_DELETE;
+    if (_stricmp(name, "f1") == 0) return VK_F1;
+    if (_stricmp(name, "f2") == 0) return VK_F2;
+    if (_stricmp(name, "f3") == 0) return VK_F3;
+    if (_stricmp(name, "f4") == 0) return VK_F4;
+    if ((name[0] == 'f' || name[0] == 'F') && name[1] >= '0' && name[1] <= '9') {
+        int n = name[1] - '0';
+        if (n >= 1 && n <= 9) return (WORD)(VK_F1 + n - 1);
+    }
+    /* 单字符 → 按键码（ASCII 一律映射到 VK 布局的等价虚拟键） */
+    if (name[1] == '\0') {
+        char c = name[0];
+        if (c >= 'a' && c <= 'z') return (WORD)(c - 'a' + 'A');
+        if (c >= 'A' && c <= 'Z') return (WORD)c;
+        if (c >= '0' && c <= '9') return (WORD)c;
+        if (c == '+') return VK_OEM_PLUS;
+        if (c == '-') return VK_OEM_MINUS;
+    }
+    return 0;
+}
+
+/* 组合键：修饰键（Ctrl/Shift/Alt）要作为**独立按键**先按下，
+   再按主键，最后依次抬起 —— 不能用 dwFlags 里的修饰位（那不是这么用的）。
+   扩展键标志（方向键/Home/End 等）需要 KEYEVENTF_EXTENDEDKEY。 */
+#define ORB_KEYEVENTF_EXTENDEDKEY 0x0001
+#define ORB_KEYEVENTF_KEYUP        0x0002
+
+static void key_event(WORD vk, BOOL up, BOOL extended) {
+    INPUT in;
+    memset(&in, 0, sizeof(in));
+    in.type = INPUT_KEYBOARD;
+    in.ki.wVk = vk;
+    in.ki.dwFlags = up ? ORB_KEYEVENTF_KEYUP : 0;
+    if (extended) in.ki.dwFlags |= ORB_KEYEVENTF_EXTENDEDKEY;
+    SendInput(1, &in, sizeof(INPUT));
+}
+
+/* 这些键在扩展键盘布局里，必须带 EXTENDEDKEY 标志 */
+static BOOL is_extended_key(WORD vk) {
+    switch (vk) {
+        case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN:
+        case VK_HOME: case VK_END: case VK_INSERT: case VK_DELETE:
+        case VK_DIVIDE: case VK_NUMPAD0: case VK_NUMPAD1: case VK_NUMPAD2:
+        case VK_NUMPAD3: case VK_NUMPAD4: case VK_NUMPAD5: case VK_NUMPAD6:
+        case VK_NUMPAD7: case VK_NUMPAD8: case VK_NUMPAD9:
+        case VK_DECIMAL: case VK_APPS: case VK_PRIOR: case VK_NEXT:
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+
+static void send_key(WORD vk, BOOL ctrl, BOOL shift, BOOL alt) {
+    BOOL ext = is_extended_key(vk);
+    if (ctrl)  key_event(VK_CONTROL, FALSE, FALSE);
+    if (shift) key_event(VK_SHIFT,   FALSE, FALSE);
+    if (alt)   key_event(VK_MENU,    FALSE, FALSE);
+    Sleep(20);
+    key_event(vk, FALSE, ext);
+    Sleep(30);
+    key_event(vk, TRUE, ext);
+    Sleep(20);
+    if (alt)   key_event(VK_MENU,    TRUE, FALSE);
+    if (shift) key_event(VK_SHIFT,   TRUE, FALSE);
+    if (ctrl)  key_event(VK_CONTROL, TRUE, FALSE);
+}
+
 int main(int argc, char **argv) {
     make_dpi_aware();
 
     if (argc < 2) {
-        printf("usage: orb-input <cursor|move|press|release|longpress|drag|scroll> ...\n");
+        printf("usage: orb-input <cursor|move|press|release|longpress|drag|scroll|key> ...\n");
         return 2;
     }
 
     const char *cmd = argv[1];
     int x = 0, y = 0, x2 = 0, y2 = 0, ms = 0, clicks = 1;
+
+    /* key <键名> [ctrl] [shift] [alt] —— 发一次按键（按下+抬起）。 */
+    if (_stricmp(cmd, "key") == 0) {
+        if (argc < 3) { printf("ERROR: need key name\n"); return 2; }
+        WORD vk = vk_of(argv[2]);
+        if (!vk) { printf("ERROR: unknown key %s\n", argv[2]); return 2; }
+        BOOL ctrl = (argc > 3 && _stricmp(argv[3], "ctrl") == 0);
+        BOOL shift = (argc > 4 && _stricmp(argv[4], "shift") == 0);
+        BOOL alt = (argc > 5 && _stricmp(argv[5], "alt") == 0);
+        send_key(vk, ctrl, shift, alt);
+        printf("keyed %s\n", argv[2]);
+        return 0;
+    }
 
     if (_stricmp(cmd, "cursor") == 0) {
         POINT p;

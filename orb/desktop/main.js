@@ -13,7 +13,8 @@ const storage = require("./storage");
 const mp4finalize = require("./mp4finalize");
 /* Snipaste 调用接口（截屏功能走它：检测 / 唤起 / 落盘到截屏分区）。 */
 const snipaste = require("./snipaste");
-/* 桌面模糊背景：藏窗抓桌面实拍，垫给玻璃态面板与录制条（原因见文件头）。 */
+/* 桌面模糊背景：抓桌面实拍垫给玻璃态面板与录制条（原因见文件头）。
+   2026-10-23 起窗口自身用 setContentProtection 排除出截图，所以抓图不再需要藏窗。 */
 const glassbg = require("./glassbg");
 
 app.disableHardwareAcceleration();
@@ -63,8 +64,31 @@ snipaste.init({
 
 /* 桌面模糊背景（磨砂玻璃的实拍来源）：按窗口挂载，渲染层申报要不要。
    为什么必须自己抓桌面见 glassbg.js 头注（三个探针实测：透明窗里
-   backdrop-filter 采不到桌面、开 GPU 无效、原生 acrylic 三条路全死）。 */
-glassbg.init({ log: (...a) => log(...a) });
+   backdrop-filter 采不到桌面、开 GPU 无效、原生 acrylic 三条路全死）。
+   beforeShot / afterShot：抓底图那一瞬间临时把自家窗口排除出截图，
+   抓完恢复（见 beginShotShield / endShotShield 的引用计数说明）。 */
+glassbg.init({
+  log: (...a) => log(...a),
+  beforeShot: () => beginShotShield(),
+  afterShot: () => endShotShield(),
+});
+
+/* 原生录屏 helper（Stage 2）：orb/native/dist/orb-cap.exe —— DXGI 复制 + MF 直出
+   MP4。这是唯一碰它的地方，行协议的解析全在 cap-native.js 里。
+   注意：它只是"更优路径"，MediaRecorder(VP9/WebM) 链路原样保留做兜底。 */
+const capNative = require("./cap-native");
+capNative.init({ log: (...a) => log(...a) });
+
+/* helper 在录制中意外退出（崩溃 / 被任务管理器杀掉）：提示用户，并让面板把状态机
+   复位回 idle。⚠️ 这个文案前缀与 panel.html 里 onNotice 的判断必须保持一致
+   （那边据此调用 captureController.nativeHelperGone()），改文案要两边一起改。 */
+const CAP_NATIVE_EXIT_PREFIX = "原生编码器意外退出";
+capNative.on("exit", (info) => {
+  if (!info) return;
+  log("[cap-native] 意外退出:", JSON.stringify(info));
+  const where = info.path ? "（已写入的部分保留在 " + info.path + "）" : "";
+  sendToPanel("notice", CAP_NATIVE_EXIT_PREFIX + "，已保留已写入的部分" + where);
+});
 
 /* 打包态：把随包附带的使用说明释放到数据目录（DATA_ROOT 可写，用户也能自己改） */
 function ensureBundledExtras() {
@@ -481,6 +505,97 @@ function clampToWorkArea(x, y, w, h) {
 
 /* ---------------- 悬浮球 ---------------- */
 
+/* ---------------- 从系统截图里排除自身窗口（毛玻璃底图的干净来源） ----------------
+ * 本机实测（docs/_protect_probe.js，Electron 44 / Win11）：setContentProtection(true)
+ * 是 WDA_EXCLUDEFROMCAPTURE 语义 —— 同一块窗口区域，开启前截到纯红 (253,2,2)，
+ * 开启后截到的是背后的桌面 (249,249,249)，即窗口**从截图里消失**，不是被糊成黑块。
+ * 这一个事实带来两处收益（见 glassbg.js 头注）：
+ *   ① glassbg 抓桌面时不必再藏窗 —— 藏窗正是那 430ms 白闪的来源，现在彻底没有；
+ *   ② 底图里不会出现 ORB 自己，"模糊再模糊"的递归鬼影从根上消失。
+ * 所以**三个窗口都要挂**：漏掉任何一个，它就会被拍进别人的玻璃底图。
+ * 老版本 / 非 Windows 上没这个方法时不致命（只是底图里会含自身），记一行日志。 */
+/* ---------------- 从系统截图里排除自身窗口（按需，非常驻） ----------------
+ * 本机实测（docs/_protect_probe.js，Electron 44 / Win11）：setContentProtection(true)
+ * 是 WDA_EXCLUDEFROMCAPTURE 语义 —— 同一块窗口区域，开启前截到纯红 (253,2,2)，
+ * 开启后截到的是背后的桌面 (249,249,249)，即窗口**从截图里消失**，不是被糊成黑块。
+ *
+ * ⚠️ 2026-10-24 改为**按需**：早先是三个窗口一创建就常驻排除，副作用是
+ *   用户想截 ORB 自己的界面反馈问题、做演示时**根本截不到**（用户实测反馈）。
+ *   现在只在真正需要的两个时段开启：
+ *     ① 录屏进行中 —— 成片里不能出现 ORB 自己（这是刚需）
+ *     ② glassbg 抓桌面底图的那一瞬间 —— 底图不能含 ORB，否则"模糊再模糊"出鬼影
+ *   其余时间一律不排除，ORB 界面可以被正常截图 / 录屏 / 共享。
+ *
+ * ⚠️ 调试逃生开关：ORB_NO_PROTECT=1 启动则彻底不开启（排查 / 录演示用）。
+ *    正常启动不要写进任何默认配置或启动脚本。 */
+let captureShieldOn = false;   // 录屏期间为 true（glassbg 的临时开关不改写它）
+
+function shieldWin(win, tag, on) {
+  if (!win || (win.isDestroyed && win.isDestroyed())) return;
+  if (process.env.ORB_NO_PROTECT === "1") return;
+  try {
+    win.setContentProtection(!!on);
+  } catch (e) {
+    log(`[glassbg] ${tag} ${on ? "开启" : "关闭"}排除截图失败:`, (e && e.message) || String(e));
+  }
+}
+
+/**
+ * 录屏开始 / 结束时调用：整段录制期间把自家窗口从画面里摘掉。
+ *
+ * ⚠️ recbar（录屏悬浮条）**不参与排除** —— 用户反馈过："开启录屏时截屏，
+ * 录屏悬浮窗也会一并隐藏"。WDA_EXCLUDEFROMCAPTURE 是让窗口从**所有**截图里
+ * 消失（不是黑块），所以排除它 = 用户按系统截图键时它就没了。
+ * 代价是成片里会有一条悬浮条 —— 换来"用户截屏时看得见自己的录屏控制条"，
+ * 这个取舍更划算（悬浮条本身很小，且用户知道它在那儿）。
+ */
+function setCaptureShield(on) {
+  captureShieldOn = !!on;
+  shieldWin(ball, "ball", captureShieldOn);
+  shieldWin(panel, "panel", captureShieldOn);
+  shieldWin(toolbar, "toolbar", captureShieldOn);
+  shieldWin(subWin, "subtitle", captureShieldOn);
+  shieldWin(borderWin, "border", captureShieldOn);
+  log("[glassbg] 截图排除", captureShieldOn ? "已开启（录屏中）" : "已关闭");
+}
+
+/* ---- glassbg 抓底图那一瞬间的临时排除 ----
+ *
+ * 底图是**整屏**截图，不是只截窗口那块。所以任何一个自家窗口（悬浮球 / 面板 /
+ * 工具条 / 字幕窗 / 观察边框 / 录制条）只要在屏幕任意位置，就会被拍进底图，
+ * 模糊之后是"模糊再模糊"的鬼影。必须**一次全排除**，不能只排除被抓的那一个。
+ *
+ * 引用计数是必须的，不是过度设计：panel 与 recbarWin 都被 watch，而 entry.busy
+ * 是**按窗口**粒度的 —— 两个窗口可以并发进 captureBehind，两次 getSources 重叠。
+ * 若用布尔开关，先完成的那次会在后一次还在 await 时把排除撤掉，
+ * 后一次的底图就会拍到 ORB 自己。计数归零才恢复。
+ */
+let shotShieldDepth = 0;
+
+/** 抓图前：所有自家窗口临时排除。 */
+function beginShotShield() {
+  shotShieldDepth += 1;
+  if (shotShieldDepth > 1) return;   // 已有一次在抓，别重复设置
+  shieldWin(ball, "ball", true);
+  shieldWin(panel, "panel", true);
+  shieldWin(toolbar, "toolbar", true);
+  shieldWin(subWin, "subtitle", true);
+  shieldWin(borderWin, "border", true);
+  shieldWin(recbarWin, "recbar", true);
+}
+
+/** 抓图后：计数减一，归零才恢复到基线状态（录屏中则仍保持排除）。 */
+function endShotShield() {
+  if (shotShieldDepth > 0) shotShieldDepth -= 1;
+  if (shotShieldDepth > 0) return;
+  shieldWin(ball, "ball", captureShieldOn);
+  shieldWin(panel, "panel", captureShieldOn);
+  shieldWin(toolbar, "toolbar", captureShieldOn);
+  shieldWin(subWin, "subtitle", captureShieldOn);
+  shieldWin(borderWin, "border", captureShieldOn);
+  shieldWin(recbarWin, "recbar", captureShieldOn);
+}
+
 function createBall() {
   const wa = screen.getPrimaryDisplay().workArea;
   const dx = wa.x + wa.width - BALL - 24;
@@ -501,6 +616,11 @@ function createBall() {
   ball.loadFile(path.join(__dirname, "ball.html"));
   ball.setAlwaysOnTop(true, "screen-saver");
   ball.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  /* 悬浮球也在抓图范围里：不排除的话，它会被拍进面板/录制条的玻璃底图，
+     在底图里留一个"跟着球走"的鬼影。 */
+  /* 不再常驻排除：只在录屏期间 / 抓底图那一瞬间开（见 setCaptureShield 注释）。
+     常驻的代价是用户截不到 ORB 自己的界面。 */
+  shieldWin(ball, "ball", false);
   ball.webContents.on("console-message", (e) => log(`[ball:${e.level}] ${e.message}`));
   ball.on("closed", () => { ball = null; });
   ball.webContents.once("did-finish-load", () => {
@@ -662,8 +782,12 @@ function createPanel() {
   panel.on("hide", () => { try { panel.webContents.setBackgroundThrottling(true); } catch {} });
   panel.loadFile(path.join(__dirname, "panel.html"));
   /* 桌面模糊底图：面板玻璃态（t1/t2）时要抓桌面实拍。挂载即可，
-     抓不抓由渲染层的 glass-bg-want 说了算（非玻璃态零开销）。 */
-  glassbg.watch(panel, "glass:bg");
+     抓不抓由渲染层的 glass-bg-want 说了算（非玻璃态零开销）。
+     mode:"full" = 整屏底图 + 位移流：拖动时只发 16ms 节流的位移帧、不重截，
+     消除旧「裁窗口块」方案拖动 0.4s 滞后 + 拖完闪一下的问题。
+     面板自身先排除出截图，所以抓到的桌面里没有 ORB 自己（不必藏窗、不闪）。 */
+  shieldWin(panel, "panel", false);   // 同理：按需排除，非常驻
+  glassbg.watch(panel, "glass:bg", { mode: "full" });
   panel.webContents.on("console-message", (e) => log(`[panel:${e.level}] ${e.message}`));
   panel.webContents.on("render-process-gone", (_e, d) => log("[panel] gone:", d.reason));
   panel.setAlwaysOnTop(true, "screen-saver");
@@ -751,9 +875,17 @@ function createRecBar() {
       },
     });
     recbarReady = false;
+    /* 先把自己排除出截图，再挂抓取（顺序即因果：抓到的桌面里已经不含这条控制条，
+       所以不必藏窗）。控制条贴在屏幕上沿、长驻可见，藏窗闪一下最刺眼。 */
+    shieldWin(recbarWin, "recbar", false);   // 同理：按需排除，非常驻
     recbarWin.loadFile(path.join(__dirname, "recbar.html"));
-    /* 录制条的纱（α.82）在透明窗里同样采不到桌面，一并挂上实拍抓取 */
-    glassbg.watch(recbarWin, "recbar:glass-bg");
+    /* 录制条的纱（α.82）在透明窗里同样采不到桌面，一并挂上实拍抓取。
+       full 模式（整屏图 + 位移流）：控制条靠 -webkit-app-region:drag 拖窗口，
+       旧 crop 模式要「停稳 250ms 后重截」才跟得上，拖动时底图滞后 0.4s、
+       松手还要闪一下；整屏图对桌面静止时窗口的任意位置都成立，所以拖动只发
+       {kind:"pos",x,y}（16ms 节流）让渲染层改 background-position 即可，
+       全程零重截、零闪烁。只有换屏（DPI/内容变）与停稳补新鲜度才真抓。 */
+    glassbg.watch(recbarWin, "recbar:glass-bg", { mode: "full" });
     recbarWin.webContents.on("console-message", (e) => log(`[recbar:${e.level}] ${e.message}`));
     recbarWin.webContents.on("render-process-gone", (_e, d) => log("[recbar] gone:", d.reason));
     recbarWin.on("closed", () => {
@@ -838,6 +970,7 @@ function flushNotices() {
 function openPanel() {
   clearTimeout(hoverOpenTimer);
   startTrack();
+  startSnipPoll();   // 面板在 = 可能被截屏打断，开始盯着 Snipaste
   if (!panel) createPanel();
   panel.setBounds(panelBounds());
   panel.show();
@@ -856,6 +989,9 @@ function closePanel() {
   panelHover = false;
   if (!panel || !panel.isVisible()) return;
   log("[close-panel]");
+  /* 不再停掉截屏轮询：改成常驻（见 startSnipPoll 的注释）。
+     面板收起后仍要知道"用户是不是在截屏"，否则下一次开面板时
+     判据还没热起来，又会出现"一截屏面板就缩回"。 */
   panel.hide();
   sendToBall("panel-state", false);
   if (!ballHover && !panelHover) stopTrack();
@@ -888,12 +1024,111 @@ function onBallClick() {
   }
 }
 
+/* Snipaste 装没装，缓存 60s。
+   只有装了才值得在折叠前多等一会儿（见 scheduleClose 的观察窗口），
+   没装 Snipaste 的机器行为完全不变 —— 不能为了一个不存在的功能
+   让所有人的面板都晚 1.2 秒收起。 */
+let snipInstalledCache = { v: null, at: 0 };
+async function snipInstalled() {
+  const now = Date.now();
+  if (snipInstalledCache.v !== null && now - snipInstalledCache.at < 60000) return snipInstalledCache.v;
+  let v = false;
+  try {
+    const r = await snipaste.detect();
+    v = !!(r && r.installed);
+  } catch { v = false; }
+  snipInstalledCache = { v, at: now };
+  return v;
+}
+
 function scheduleClose(delay = 500) {
   clearTimeout(closeTimer);
   closeTimer = setTimeout(() => {
     if (state.pinned || panelHover || ballHover || drag || holdOpen) return;
-    closePanel();
+    if (snippingNow) {
+      log("[panel] 截屏进行中，推迟折叠");
+      scheduleClose(1200);
+      return;
+    }
+    /* ⚠️ 折叠前先给截屏一个「观察窗口」。
+       只查一次是查不准的：实测鼠标离开面板后，Snipaste 的框选浮层要
+       约 2 秒才真正拿到前台（进程要起、浮层要铺满屏），而折叠只等 500ms
+       —— 判据还没成立，面板已经收了。这在**系统端**唤起时尤其明显
+       （没有 ORB 自己的"刚唤起"标记可依赖，只能看前台是谁）。
+       所以这里改成：装了 Snipaste 的话，先花 ~1.2s 分几次再看，
+       期间 Snipaste 一出现就转保持；始终没出现才收。 */
+    snipInstalled().then((installed) => {
+      if (!installed) { gracefulClose(); return; }
+      let waited = 0;
+      const probe = () => {
+        if (state.pinned || panelHover || ballHover || drag || holdOpen) return;
+        if (snippingNow) {
+          log("[panel] 观察到截屏开始，保持面板");
+          scheduleClose(1200);
+          return;
+        }
+        waited += 300;
+        if (waited < 1200) { setTimeout(probe, 300); return; }
+        gracefulClose();
+      };
+      probe();
+    }).catch(() => gracefulClose());
   }, delay);
+}
+
+/** 真正收面板前再问一次划词那套判据（它认"最近是否由 ORB 唤起过"），
+    两条路互为补充：snippingNow 看前台，这个看 ORB 自己的唤起记录。 */
+function gracefulClose() {
+  snipBlockWatch()
+    .then((snipping) => {
+      if (snipping) { log("[panel] 截屏进行中（复查），推迟折叠"); scheduleClose(1200); return; }
+      if (state.pinned || panelHover || ballHover || drag || holdOpen) return;
+      closePanel();
+    })
+    .catch(() => closePanel());
+}
+
+/* ---------------- 截屏态轮询 ----------------
+ * 为什么不能「等要折叠时才查一次前台进程」：
+ *   ① nativeForegroundRect 首次调用时常驻探针还没回 ready，直接返回 null；
+ *   ② Snipaste 的框选往往刚开始，只查一次很容易落在它拿到前台之前。
+ * 两者叠加的结果就是：系统端唤起 Snipaste → 一查不准 → 面板当场收掉，
+ * 用户想「再框一次」时控制台已经缩回去了（用户实测反馈）。
+ * 改为面板可见期间持续轮询（600ms 一次，只是给常驻探针写一行，开销可忽略），
+ * 维护 snippingNow，折叠判定直接读它。 */
+let snipPollTimer = null;
+let snippingNow = false;
+function startSnipPoll() {
+  log("[snip] startSnipPoll 被调用，timer=", !!snipPollTimer);
+  fgEnsure();
+  if (snipPollTimer) return;
+  log("[snip] 启动截屏态轮询（常驻）");
+  const tick = async () => {
+    /* 判据：Snipaste 是否处在截屏会话中（见 nativeSnipping 的注释）。
+       ⚠️ 必须重试：探针是**单通道**的，观察边框每 500ms 也在查前台，
+       两个查询共用一个 fgPending —— 先到的那个会被后到的 settle(null) 打断，
+       于是 snip 查询经常拿到 null（表现为"明明在框选却判定没在截"）。
+       多问几次就能绕开这个争用，代价只是几十毫秒。 */
+    let byWindow = false;
+    for (let i = 0; i < 3; i++) {
+      byWindow = await nativeSnipping().catch(() => false);
+      if (byWindow) break;
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    /* 前台进程判断只作补充：Snipaste 的浮层常常不抢前台，靠它会漏判。 */
+    const fg = byWindow ? null : await nativeForegroundRect().catch(() => null);
+    const now = byWindow || !!(fg && fg.exe && /snipaste/i.test(String(fg.exe)));
+    if (now !== snippingNow) {
+      snippingNow = now;
+      log("[snip] 截屏态", now ? "进入（保持面板不折叠）" : "退出");
+    }
+  };
+  tick();
+  snipPollTimer = setInterval(tick, 600);
+}
+function stopSnipPoll() {
+  if (snipPollTimer) { clearInterval(snipPollTimer); snipPollTimer = null; }
+  snippingNow = false;
 }
 
 function cancelClose() {
@@ -909,6 +1144,7 @@ let toolbar;
    （text 还是空串）。所以先把文本存起来，等页面就绪再补发。 */
 let toolbarReady = false;
 let pendingToolbarText = null;
+let panelTheme = 't2';
 
 function flushToolbarText() {
   if (toolbarReady && pendingToolbarText !== null && toolbar && !toolbar.isDestroyed()) {
@@ -929,10 +1165,21 @@ function createToolbar() {
   toolbar.webContents.once("did-finish-load", () => {
     toolbarReady = true;
     flushToolbarText();
+    applyToolbarTheme();
   });
   toolbar.on("blur", () => toolbar && toolbar.hide());
   toolbar.on("closed", () => { toolbar = null; toolbarReady = false; pendingToolbarText = null; });
 }
+
+/* 把当前主题同步给划词工具栏（toolbar.html 是独立窗口、自己没有主题系统，
+   靠这里给 <html> 打 data-theme 才能跟随面板换肤；面板没报过主题时退回浅色）。
+   换肤时面板会经 theme-changed 报新主题名，这里即时重打。 */
+function applyToolbarTheme() {
+  if (toolbar && toolbarReady && !toolbar.isDestroyed()) {
+    try { toolbar.webContents.executeJavaScript("document.documentElement.setAttribute('data-theme','" + panelTheme + "')"); } catch {}
+  }
+}
+ipcMain.on("theme-changed", (_e, name) => { if (name) panelTheme = name; applyToolbarTheme(); });
 
 async function bridgeCall(tool, args, timeoutMs = 30000, retried = false) {
   const ctrl = new AbortController();
@@ -962,10 +1209,13 @@ async function bridgeCall(tool, args, timeoutMs = 30000, retried = false) {
 }
 
 async function captureSelection() {
-  const before = clipboard.readText();
+  /* ⚠️ Electron 44 的 clipboard.readText() 返回 **Promise<string>**（不是 string）。
+     忘了 await 的话，`before`/`text` 都是 Promise 对象，
+     `text !== before` 恒为 true → 把上一个 Promise 当成"选中的文字"返回。 */
+  const before = await clipboard.readText();
   await bridgeCall("Shortcut", { shortcut: "ctrl+c" }, 8000).catch(() => {});
   await new Promise((r) => setTimeout(r, 320));
-  const text = clipboard.readText();
+  const text = await clipboard.readText();
   /* 没有新选区时必须返回空串。
      原来是 `text || before` —— Ctrl+C 没取到东西时剪贴板没变，text === before，
      于是把**上一次复制的内容**当成"这次选中的文字"塞给面板/工具条。 */
@@ -981,18 +1231,22 @@ async function captureSelection() {
  * 内容，就不做这次降级，避免悄悄弄丢用户的东西。
  */
 async function clipboardSelection() {
-  const hadText = clipboard.readText();
+  /* ⚠️ Electron 44：clipboard.readText() 返回 **Promise<string>**，
+     clipboard.has(...) 返回 **Promise<boolean>** —— 都必须 await。
+     （readImage 则已被彻底移除：只剩 clear/has/read/readText/write/writeText。） */
+  const hadText = await clipboard.readText();
+  /* 判断"剪贴板里是不是只有图、没法还原" —— 用 has 探，不真把图读出来。 */
   let hadImage = false;
-  try { hadImage = !clipboard.readImage().isEmpty(); } catch {}
+  try { hadImage = await clipboard.has("image/png"); } catch { /* 读不到就当没有 */ }
 
   if (!hadText && hadImage) return null;   // 无法还原，宁可不取
 
   await bridgeCall("Shortcut", { shortcut: "ctrl+c" }, 8000).catch(() => {});
   await new Promise((r) => setTimeout(r, 300));
-  const text = clipboard.readText();
+  const text = await clipboard.readText();
 
   if (hadText && text !== hadText) {
-    try { clipboard.writeText(hadText); } catch {}
+    try { await clipboard.writeText(hadText); } catch {}
   }
   return text && text !== hadText ? text : null;
 }
@@ -1143,10 +1397,39 @@ function overOurWindow(point) {
     });
 }
 
+/**
+ * 截屏进行中？—— 是就别插手划词。
+ *
+ * Snipaste 的框选和划词是同一个手势（按下 → 拖动 → 松手），会被划词监听当成
+ * 一次文本选中；而监听随后注入的 Ctrl+C，在 Snipaste 截屏里等于「复制并退出」。
+ * 结果就是：用户框完选区正要标注，截屏被这一下按死，而且走的是剪贴板、
+ * 不写 -o 指定的文件（2026-10-23 实测：松手后 0.86s 截屏关闭、截屏目录无新文件）。
+ *
+ * 两道判据：
+ *   ① 前台进程是不是 Snipaste —— 截屏时它的全屏覆盖层在最前面；
+ *   ② 刚由我们唤起过截屏 —— 覆盖"覆盖层还没抢到前台"的那几百毫秒。
+ * 探针取不到数据时保守一点：20 秒内唤起过就当仍在截屏（够一次正常标注，又不至于
+ * 把划词挡太久 —— 探针正常情况下是 0.2ms 常驻的，这条分支只在它坏掉时走）。
+ */
+async function snipBlockWatch() {
+  if (snipaste.launchedRecently(8000)) return true;
+  /* 先问"Snipaste 有没有可见窗口"：框选浮层常常不抢前台，
+     只看前台进程会漏判（用户框选全程前台都不是 Snipaste）。 */
+  if (await nativeSnipping().catch(() => false)) return true;
+  const fg = await nativeForegroundRect().catch(() => null);
+  if (fg && fg.exe) return /snipaste/i.test(String(fg.exe));
+  return snipaste.launchedRecently(20000);
+}
+
 async function handleWatchEvent(line) {
   let ev;
   try { ev = JSON.parse(line); } catch { return; }
   if (ev.type !== "select") return;
+  /* 截屏期间整段跳过：不取词、不弹工具条（理由见 snipBlockWatch） */
+  if (await snipBlockWatch()) {
+    log("[watch] 截屏进行中，跳过划词");
+    return;
+  }
   log("[watch] select", ev.text ? "uia=" + JSON.stringify(String(ev.text).slice(0, 26)) : "(uia 无文字)");
 
   // 坐标空间不一（脚本是 DPI-unaware，拿到的可能不是 DIP），
@@ -1185,6 +1468,7 @@ function showToolbar(text, point) {
   const y = Math.max(wa.y + 4, Math.min(point.y + 18, wa.y + wa.height - h - 4));
   toolbar.setBounds({ x: Math.round(x), y: Math.round(y), width: w, height: h });
   if (!toolbar.isVisible()) toolbar.showInactive();
+  applyToolbarTheme();
   pendingToolbarText = text;
   flushToolbarText();
 }
@@ -1393,8 +1677,26 @@ let fgReady = false;
 let fgBroken = false;          // true = 永久退回 PowerShell（避免反复徒劳地重启）
 let fgRestarts = 0;
 let fgBuf = "";
-let fgPending = null;          // 当前在途请求 { settle }
+let fgPending = null;          // 当前在途请求 { settle, id }
 let fgSpawnAt = 0;             // 本次进程启动时刻，用来算"就绪宽限期"
+let fgReqId = 0;               // 请求 id 自增：用来识别"孤儿响应"（见 fgDrain）
+
+/** 下一个请求 id。native 端原样带回，JS 侧据此匹配。 */
+function fgNextId() {
+  fgReqId += 1;
+  return fgReqId;
+}
+
+/** 发一条命令（带 id），返回该命令的 id。 */
+function fgSend(cmd) {
+  const id = fgNextId();
+  try {
+    fgProc.stdin.write(JSON.stringify({ cmd, id }) + "\n");
+  } catch (e) {
+    /* 写失败由调用方的 settle 处理，这里不抛 */
+  }
+  return id;
+}
 
 /** 进程没了：清干净状态，并把在途请求结算掉（绝不能让调用方挂着） */
 function fgDrop() {
@@ -1416,7 +1718,20 @@ function fgDrain() {
     let j = null;
     try { j = JSON.parse(line); } catch { continue; }   // 半行/杂行直接丢
     if (j && j.ready) { fgReady = true; continue; }
-    if (fgPending) { const p = fgPending; fgPending = null; p.settle(j); }
+    if (!fgPending) continue;
+    /* ⚠️ 按 id 匹配，不要把**任意**响应行塞给当前占槽者（2026-10-24 修）。
+     *
+     * 为什么：新查询会抢占旧查询（把旧的 settle(null) 掉），但被抢占那条
+     * 请求的**响应行照样会从 stdout 回来**。管道是 FIFO，于是这条"孤儿
+     * 响应"会被投递给下一个占槽者 —— 响应错配。
+     * 实测错配率 4.7%、最坏连续 2 轮；而"连续 2 轮 snipping=false"正好
+     * 是「判用户取消」的阈值 → 一次错配就把正常截图判成取消、丢掉用户的图。
+     *
+     * 现在：id 对得上才交付；对不上就是孤儿响应，丢弃。
+     * （老版本 exe 不回 id —— 那时没有 id 机制，响应内容也不一样，
+     *   这里保留"没有 id 字段就按 FIFO 兜底"的兼容分支。） */
+    if (typeof j.id === "number" && fgPending.id !== j.id) continue;   // 孤儿响应，丢弃
+    const p = fgPending; fgPending = null; p.settle(j);
   }
 }
 
@@ -1474,8 +1789,138 @@ function nativeForegroundRect() {
       resolve(v);
     };
     const timer = setTimeout(() => settle(null), FG_REQ_MS);
-    fgPending = { settle };
-    try { fgProc.stdin.write('{"cmd":"fg"}\n'); } catch (e) { settle(null); }
+    const id = fgSend("fg");
+    fgPending = { settle, id };
+  });
+}
+
+/* Snipaste 是否正在截屏（框选 / 标注栏）。
+ *
+ * 判据是「Snipaste 有没有处在截屏会话中」而不是「前台是不是 Snipaste」——
+ * 后者根本不成立：Snipaste 的框选浮层不抢前台，实测用户框选全程
+ * 前台进程一次都不是 Snipaste（日志里 [snip] 截屏态 一次都没进入）。
+ *
+ * ⚠️ 这条判据在 native 侧返工过三次（详见 orb-foreground.c 里 enum_snip
+ * 的注释）：绝对判据实测都会失效。**现在排除的是 Snipaste 主面板**
+ *   （标题 "Snipaste" + class 带 ToolSaveBits）—— 用户点托盘图标弹出的
+ *   那个面板与截屏无关，早期版本把它算进去，导致"已在框选中"永远成立。
+ *
+ * ⚠️ 超时兜底返回 **false**（而不是 true）：这里的用途是
+ *   「Snipaste 已经在框选中就别再发一次 snip 命令」（连发会让 Snipaste
+ *   状态错乱：标注工具栏不出现、第二次截取直接关闭）。
+ *   ⚠️ 但这是**截图功能的唯一入口守卫** —— 返回 true 会让用户**完全截不了图**
+ *   （探针刚起来时 fgReady 还是 false）。两害相权：
+ *     · 误报 false（其实在框选）→ 重复发 snip → Snipaste 状态错乱，可恢复；
+ *     · 误报 true（其实不在框选）→ 截图功能整个不可用。
+ *   所以兜底必须是 false。
+ *   ⚠️ 但"探针没就绪"和"查过了，确认不在框选中"是两回事 ——
+ *     前者返回 false 会让守卫失效（重复发 snip）。
+ *     所以调用方**必须先等探针就绪**再查（见 waitFgReady），
+ *     别把"没查到"当成"不在框选中"。
+ *   复用同一条常驻管道，单次同样是毫秒级。 */
+function nativeSnipping() {
+  return new Promise((resolve) => {
+    if (!fgEnsure() || !fgReady) return resolve(false);
+    let done = false;
+    const settle = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (fgPending && fgPending.settle === settle) fgPending = null;
+      /* fgDrain 递回来的是整行 JSON（{"ok":true,"snipping":true}），不是布尔 */
+      resolve(!!(v && v.snipping));
+    };
+    /* 超时/被打断 → settle(null) → false（兜底，见上） */
+    const timer = setTimeout(() => settle(null), FG_REQ_MS);
+    if (fgPending) { const p = fgPending; fgPending = null; p.settle(null); }
+    const id = fgSend("snip");
+    fgPending = { settle, id };
+  });
+}
+
+/**
+ * 等常驻探针就绪（收到过 {"ok":true,"ready":true}）。
+ *
+ * 为什么需要：nativeSnipping() 在探针未就绪时返回 false（保守兜底），
+ * 而它的调用方是「已在框选中就别重复发 snip」的守卫 —— 探针没就绪时
+ * 这个 false 会让守卫**失效** → 重复发 snip → Snipaste 状态错乱
+ * （标注工具栏不出现、第二次截取直接关闭）。
+ * 所以守卫必须**先确保探针就绪**，再问"在不在框选"。
+ *
+ * 超时 2 秒：探针正常起来是毫秒级；2 秒还没好就当它坏了，
+ * 让守卫失效（宁可重复发一次 snip，也不能整个截屏功能不可用）。
+ */
+function waitFgReady(timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    if (fgEnsure() && fgReady) return resolve(true);
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+      if (fgReady) { clearInterval(iv); resolve(true); return; }
+      if (Date.now() - t0 >= timeoutMs) { clearInterval(iv); resolve(false); }
+    }, 50);
+  });
+}
+
+/**
+ * 截屏态 + 剪贴板序列号，**一次往返**取三样。
+ *
+ * 为什么合并：orb-foreground 是**单通道**管道，观察边框每 500ms 查一次前台、
+ * 截屏轮询再查一次，两者共用一个 fgPending —— 后到的会把先到的 settle(null)
+ * 打断。查询种类越多，争用越频繁（表现为"明明在框选却判定没在截"）。
+ * 截屏流程要的正是这几样，合成一条最省。
+ *
+ * 返回 { known, snipping, ready, seq }
+ *   known=false → 这次没查准（探针还没起来 / 被打断 / 超时）。
+ *         ★ 这时 snipping **一律填 true**（"还在框选"），
+ *           调用方按"保守地认为还在框选"处理。
+ *           ⚠️ 两处 known=false 必须同值：之前一处填 false 一处填 true，
+ *             语义不一致 → 取消判定在"探针恰好失败"时会误触发（丢截图）。
+ *   snipping = Snipaste 是否处在截屏会话（框选浮层 / 标注栏）中。
+ *         ★ 调用方靠 **true → false 的跳变** 判断"用户取消了"，
+ *           不靠绝对值。native 侧的判据返工过四次（详见 orb-foreground.c
+ *           里 enum_snip 上方的注释）—— 绝对判据（有可见窗口 / hwnd 集合变化 /
+ *           黑名单排除）在实测中都会失效。
+ *   ready    = Snipaste 的框选浮层窗口**是否存在**（不论可见与否）。
+ *         ★ 和 snipping 语义不同，别混用。它用来区分两种"没有截屏态"：
+ *           · ready 是 false → 这个 Snipaste 压根没有框选浮层
+ *             （版本不同 / 功能被禁用）→ 可以早点放弃本次截屏；
+ *           · ready 是 true 但 snipping 是 false → 浮层窗口在但当前不可见
+ *             → 可能用户开着贴图窗，也可能浮层还没建出来 → 此时**绝不能**
+ *             用"没进过截屏态"去否定用户，只能等剪贴板序列号变化或总超时。
+ *           ⚠️ 早期版本这里用的是「Snipaste 有任何可见窗口」（alive），
+ *             实测**太宽**：Snipaste 空闲时主面板 169×221 就是常可见的
+ *             → alive 恒为 true → "压根没弹框选"的兜底永远不触发
+ *             → 面板被锁 180 秒。
+ *   seq = Windows 剪贴板序列号（GetClipboardSequenceNumber），**内容被改写就 +1**，
+ *         与内容无关 —— 用它判断"剪贴板被写过"比比较图片字节可靠得多：
+ *         · 新旧图字节完全相同 → 指纹法失效，序列号照样变；
+ *         · 基线读取失败 → 指纹法会把旧图当成本次截图落盘，序列号法没这个问题。
+ */
+function nativeSnapState() {
+  return new Promise((resolve) => {
+    /* ⚠️ known=false 时 ready 填 false —— 它表示"没查到"，
+       不是"确认没有浮层窗口"。调用方必须先看 known 再用 ready，
+       别把"没查到"当成"没有"。 */
+    if (!fgEnsure() || !fgReady) return resolve({ known: false, snipping: true, ready: false, seq: -1 });
+    let done = false;
+    const settle = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (fgPending && fgPending.settle === settle) fgPending = null;
+      /* settle(null) = 被打断/超时 → known=false，调用方按"还在框选"保守处理。 */
+      if (v === null) return resolve({ known: false, snipping: true, ready: false, seq: -1 });
+      resolve({
+        known: true,
+        snipping: !!(v && v.snipping),
+        ready: !!(v && v.ready),
+        seq: (v && typeof v.seq === "number") ? v.seq : -1,
+      });
+    };
+    const timer = setTimeout(() => settle(null), FG_REQ_MS);
+    if (fgPending) { const p = fgPending; fgPending = null; p.settle(null); }
+    const id = fgSend("snap");
+    fgPending = { settle, id };
   });
 }
 
@@ -1753,6 +2198,67 @@ function clearThemeImage() {
   return { ok: true };
 }
 
+/* ---------------- 附件（加号）：引用语义，不拷贝文件 ----------------
+ * 对话框在主进程（渲染层没有 fs 权限），选完只回 {name,path,size}——
+ * 文件本身原地不动，面板把路径拼进任务文本，后台 Agent 凭路径读取。
+ * ⚠️ 本文件模块顶层不许直接调用 dialog 等 ready-gated API（见文件头事故注释），
+ *    所以所有逻辑都收在这些函数体内，由 safeHandle 回调触发。 */
+const ATTACH_MAX_SIZE = 100 * 1024 * 1024;   // 单文件 100MB 上限，超过跳过并计数
+const ATTACH_PREVIEW_MAX = 4 * 1024 * 1024;  // 缩略图 4MB 上限（与主题背景图一致）
+const ATTACH_IMG_EXT = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+
+async function pickAttachments() {
+  const r = await dialog.showOpenDialog({
+    title: "选择要引用的文件",
+    filters: [
+      {
+        name: "常见格式",
+        extensions: [
+          "png", "jpg", "jpeg", "gif", "webp", "bmp",
+          "mp4", "mov", "webm", "mp3", "wav", "m4a", "flac",
+          "pdf", "txt", "md", "doc", "docx", "xls", "xlsx",
+          "ppt", "pptx", "csv", "json", "zip",
+        ],
+      },
+      { name: "所有文件", extensions: ["*"] },
+    ],
+    properties: ["openFile", "multiSelections"],
+  });
+  /* 取消不是错误：回空列表，面板什么都不做 */
+  if (r.canceled || !r.filePaths.length) return { ok: true, files: [], skipped: 0, failed: 0 };
+  const files = [];
+  /* skipped 与 failed 分开数：一个是「超限」一个是「读不到」，面板要分开提示，
+     混在一起会让「文件被删/无权限」也报成「超过 100MB」，文案不精确。 */
+  let skipped = 0;
+  let failed = 0;
+  for (const p of r.filePaths) {
+    let size = 0;
+    try { size = fs.statSync(p).size; }
+    catch { failed++; continue; }
+    if (size > ATTACH_MAX_SIZE) { skipped++; continue; }
+    files.push({ name: path.basename(p), path: p, size });
+  }
+  return { ok: true, files, skipped, failed };
+}
+
+/* 缩略图：只读图片扩展名且 ≤4MB，转 data URL 回面板；
+   非图片 / 超限 / 读失败一律 { ok: false }，面板收到后移除那个 <img>。 */
+function attachPreview(p) {
+  if (typeof p !== "string" || !p) return { ok: false };
+  const ext = path.extname(p).slice(1).toLowerCase();
+  if (ATTACH_IMG_EXT.indexOf(ext) < 0) return { ok: false };
+  let size = 0;
+  try { size = fs.statSync(p).size; } catch { return { ok: false }; }
+  if (size > ATTACH_PREVIEW_MAX) return { ok: false };
+  try {
+    const buf = fs.readFileSync(p);
+    const mime = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+    return { ok: true, dataUrl: `data:${mime};base64,${buf.toString("base64")}` };
+  } catch {
+    return { ok: false };
+  }
+}
+
 /* ---------------- 菜单 ---------------- */
 
 /* ---------------- 剪贴板可用性 ----------------
@@ -1886,6 +2392,15 @@ function showContextMenu() {
 app.whenReady().then(async () => {
   // 没抢到单实例锁的进程不建任何 UI（它马上会退出）。
   if (!gotSingleInstanceLock) return;
+  /* 前台探针在这里就拉起来常驻。
+     否则它要等到第一次 nativeForegroundRect() 才 spawn，而那一次必然返回 null
+     （探针还没回 ready）——「系统端唤起 Snipaste 时面板别缩回」的判据正是靠它，
+     首次不准就等于判不出来，面板当场收掉。 */
+  fgEnsure();
+  /* ⚠️ startSnipPoll() 必须放在 logPath 赋值**之后**：
+     log() 在 logPath 还是 null 时只往控制台打、不落盘，
+     放前面会让这里所有 [snip] 日志凭空消失，排查时完全看不到。
+     （轮询本身是异步的，所以晚一点启动不影响功能。） */
   loadState();
   /* 三个长期子目录要在任何读写之前就位。
    * 放在 loadState() 之后是有讲究的：storage 要按 state.storageRoot 算路径，
@@ -1902,6 +2417,8 @@ app.whenReady().then(async () => {
   state.firstRun = !state.envWizardDone;
   logPath = path.join(app.getPath("userData"), "orb.log");
   log("[app] 启动，日志:", logPath);
+  /* 截屏态轮询：常驻，不等面板打开。必须放在 logPath 赋值之后（见上面的说明）。 */
+  startSnipPoll();
 
   /* ---------------- 麦克风权限 ----------------
    * 语音输入需要音频采集权限。我们的窗口都是本地 file:// 页面，
@@ -1982,7 +2499,9 @@ app.whenReady().then(async () => {
   reg(hk.panel, () => togglePanel());
   reg(hk.selection, () => showSelectionToolbar());
   reg(hk.clipboard, async () => {
-    const text = clipboard.readText();
+    /* ⚠️ Electron 44 的 readText() 返回 Promise —— 必须 await，
+       否则塞给面板的是 "[object Promise]"。 */
+    const text = await clipboard.readText().catch(() => "");
     if (panel && panel.isVisible()) sendToPanel("prefill", text);
     else { prefillQueue.push(text); openPanel(); }
   });
@@ -2114,6 +2633,10 @@ function stopBridge() {
 
 let bridgeStopping = false;
 app.on("before-quit", (e) => {
+  /* 原生录屏要最先收：它有自己的文件要 Finalize（写 moov）。这里只做"关 stdin
+     让它走 EOF→stop 优雅收尾 + 3s 后兜底 kill"，不阻塞退出 —— 子进程在父进程
+     退出后仍会把 mp4 写完。放在早退 return 之前，保证有无桥都会执行。 */
+  try { capNative.shutdown(); } catch { /* 退出路径上不允许再抛 */ }
   if (bridgeStopping || !bridgeProc) return;
   bridgeStopping = true;
   e.preventDefault();
@@ -2425,18 +2948,499 @@ safeHandle("storage-open", async (_e, kind) => storage.openSubdir(kind), () => (
 /* ---------------- Snipaste（截屏） ----------------
  * 三条通道都只做「一件具体的事」，不暴露 fs、不暴露通用 spawn：
  *   snip-detect     装没装 / 在不在跑（设置页状态行、首跑引导卡、聚焦重查都用它）
- *   snip-run        唤起框选；截图直落 <存储根>/screenshots，不回传图片字节
+ *   snip-run        唤起框选；截图落 <存储根>/screenshots，不回传图片字节
  *   snip-guide-done 首跑引导卡「知道了」落盘，同一台机器不再弹第二次
- * 唤起逻辑（两步式、-o 落盘）的依据写在 snipaste.js 顶部注释。 */
+ * 唤起逻辑（两步式、为什么发裸 `snip`）的依据写在 snipaste.js 顶部注释。 */
 safeHandle("snip-detect", async () => {
   try { return await snipaste.detect(); }
   catch (e) { return { ok: false, installed: false, running: false, path: "", source: "" }; }
 }, () => ({ ok: false, installed: false, running: false, path: "", source: "" }));
 
 safeHandle("snip-run", async () => {
-  try { return await snipaste.runSnip(); }
+  try {
+    /* ⚠️ Snipaste 已经在框选/标注中，就**不要再发一次 snip 命令**。
+       实测（用户反馈）：连着发第二次会让 Snipaste 状态错乱 ——
+       标注工具栏不出现、第二次截取直接关闭。
+       原来这里无脑 spawn，连点两下「截屏」或程序重复调用都会踩到。
+       ⚠️ 探针必须**先就绪**再问 —— nativeSnipping() 在探针未就绪时
+          返回 false（保守兜底，否则整个截屏功能不可用），
+          那个 false 会让本守卫失效 → 重复发 snip → 状态错乱。 */
+    await waitFgReady();
+    let busy = false;
+    for (let i = 0; i < 3; i++) {
+      busy = await nativeSnipping().catch(() => false);
+      if (busy) break;
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    if (busy) {
+      log("[snip] Snipaste 已在框选中，不重复唤起（避免状态错乱）");
+      return { ok: true, launched: true, file: "", reason: "already-snipping" };
+    }
+    /* ⚠️ 基线必须在**唤起之前**取（2026-10-24 修）。
+     * 基线 = "唤起这一刻剪贴板的状态"，用来判断"之后剪贴板有没有被改写过"。
+     * 如果先唤起再取基线：Snipaste 响应很快时（比如它复用了上次的选区）
+     * 可能在基线查询到达之前就已经把图写进剪贴板 → 基线取到的是"写完之后"的
+     * 序列号 → 之后序列号再不变 → 判定永远不成立 → 截图丢失。 */
+    const base = await takeClipSeqBaseline();
+    const r = await snipaste.runSnip();
+    /* 产物走剪贴板（裸 snip 的正常行为），所以盯剪贴板而不是盯文件。
+       落盘文件名在这里生成 —— 目录此刻就要在（用户可能刚改过存储根）。 */
+    if (r && r.ok) {
+      const dir = storage.pathOf("screenshots");
+      const file = snipaste.snipFile(dir);
+      duckForSnip(true);
+      watchSnipClipboard(file, base.seq, base.hash);
+      return { ok: true, launched: true, file, reason: "" };
+    }
+    return r;
+  }
   catch (e) { return { ok: false, launched: false, file: "", reason: "exception: " + String((e && e.message) || e) }; }
 }, () => ({ ok: false, launched: false, file: "", reason: "唤起失败（详见 .orbdata/orb.log）" }));
+
+/* ---------------- 截屏期间把自家窗口从「最上层」让开 ----------------
+ * Snipaste 的框选浮层是它自己的全屏窗口（topmost），而 ORB 的球/面板/字幕窗
+ * 都是 screen-saver 级置顶 —— 比 topmost 还高。结果就是：点「截屏」后
+ * Snipaste 浮层被 ORB 的窗口压在下面，鼠标一拖就被 ORB 吃掉，根本框不了选区
+ * （用户反馈「无法截屏」的真因，不是唤起失败）。
+ * 修法：截屏期间把这些窗口降回普通层级，浮层就能正常盖在上面；
+ * 截完（落盘 / 取消 / 超时）再恢复 screen-saver。
+ * 只改 alwaysOnTop 这一个开关，不动 show/hide —— 面板仍是可见的，
+ * 所以「截图时控制台不缩回」那条依然成立。 */
+function duckForSnip(on) {
+  /* ⚠️ 录屏悬浮条（recbar）**不参与让开**。
+     用户反馈：录屏中截屏时，控制条跟着一起被压到 Snipaste 浮层下面，
+     像是"消失"了 —— 录屏还在跑，控制条却找不着，没法暂停/结束。
+     控制条只有 240×54，压在浮层下会挡住巴掌大一块；
+     反过来让它保持在最上层，用户绕开这块区域框选就行，比"控制条消失"划算。 */
+  const wins = [ball, panel, toolbar, subWin, borderWin];
+  for (const w of wins) {
+    if (!w || w.isDestroyed()) continue;
+    try {
+      /* 第二个参数只在 flag=true 时有意义，降级时传 undefined 即可 */
+      if (on) w.setAlwaysOnTop(false);
+      else w.setAlwaysOnTop(true, "screen-saver");
+    } catch { /* 窗口正在销毁，跳过 */ }
+  }
+  log("[snip] 自家窗口层级", on ? "已让开（降到普通层）" : "已恢复（screen-saver）");
+}
+
+/* ---------------- 截屏期间别让控制台缩回 ----------------
+ * Snipaste 是外部进程：runSnip 一 spawn 就返回，渲染层的 withHold 随即解锁，
+ * 而用户这时正把鼠标移去框选 —— 面板的「鼠标移开自动折叠」就把整个控制台收了。
+ * 现象：点「截屏」→ 控制台消失，截完还得重新唤出。
+ *
+ * ⚠️ 盯的是**剪贴板**，不是文件（2026-10-24 改）：
+ *   原来发的是 `snip --hold -o <文件>`，盯那个文件出现。但 `--hold` 是
+ *   **PRO 专属**（Snipaste 二进制内嵌更新日志：「[PRO] New command line
+ *   option: --hold」），免费个人版静默忽略它 → `-o` 退化成无人值守自动保存，
+ *   标注工具栏整个不出现（用户实测：二次截取后直接保存，没有工具栏）。
+ *   现在发裸 `snip`（与按 F1 同一条路径），产物走剪贴板，所以盯剪贴板。
+ *
+ * ★ 实测事实（本机 Snipaste 2.11.3，2026-10-24 全流程实测）：
+ *   · 框选松手 → 出现 427×33 的**标注工具栏**（13 个按钮：矩形/箭头/铅笔/
+ *     高亮/橡皮/马赛克/文本/吸管/撤销/重做/删除/复制/贴图），可改选区、
+ *     划线、二次裁剪 —— 用户要的「二次截取后显示工具栏」由此满足。
+ *   · 此刻剪贴板**是空的** —— Snipaste 不会自动复制，等用户点「复制」。
+ *   · 点「复制」→ Snipaste 全部可见窗口消失 + **剪贴板写入 PNG**。
+ *   ⇒ 「剪贴板出现图像」就是「用户完成标注并点了复制」的确切信号，
+ *     比「Snipaste 有没有可见窗口」更准（工具栏存活与否不作数）。
+ *
+ * Electron 44 的 clipboard **没有 readImage()**（只剩 clear/has/read/
+ * readText/write/writeText），且 read()/has() 返回 Promise，
+ * read() 给的是 Array<ClipboardItem>，getType() 给的是 Blob（不是 Buffer）。
+ * 实测：外部程序（Snipaste）写进 Windows 系统剪贴板的 PNG，主进程用
+ *   await clipboard.read() → item.getType("image/png") → await blob.arrayBuffer()
+ * 能原样读到（182KB PNG，校验通过）。
+ */
+/**
+ * 截屏轮询的定时器句柄（模块级全局）。
+ *
+ * ⚠️ 这个全局只承担**一个**用途：新会话顶掉旧会话。
+ *   它**不能**被 finish() 用来清定时器 —— 那是两个不同会话的定时器，
+ *   清错会导致新会话的轮询被停掉（面板锁死 + 截图永不落盘）。
+ *   finish() 用的是自己闭包里的 pollTimer，详见 watchSnipClipboard。
+ */
+let snipWatchTimer = null;
+
+/** 顶掉上一个截屏会话的轮询（新会话开始时调用）。 */
+function stopSnipWatch() {
+  if (snipWatchTimer) {
+    clearInterval(snipWatchTimer);
+    snipWatchTimer = null;
+  }
+}
+
+/**
+ * 读剪贴板里的图像 → { buf: Buffer }；没有图像返回 null。
+ *
+ * Electron 44 的正确写法（clipboard.readImage 已被移除）：
+ *   const items = await clipboard.read();
+ *   const it = items[0];
+ *   if (!it || !it.types.includes("image/png")) return null;
+ *   const blob = await it.getType("image/png");   // Blob
+ *   const buf = Buffer.from(await blob.arrayBuffer());
+ *
+ * ⚠️ 这里**不**返回内容指纹作为"有没有变化"的判据 —— 判断"剪贴板有没有被
+ *    写过"用的是 **Windows 剪贴板序列号**（见 nativeSnapState），
+ *    指纹法已被淘汰：用户截的图和旧图字节完全相同时，指纹法永远等不到
+ *    变化（用户白截一次）。
+ *    但指纹仍有另一个用途：**校验"这张图是不是本次产生的"**
+ *    （见 takeClipSeqBaseline 的 baseHash）—— 那是"是不是同一张图"的
+ *    问题，与"有没有变化"是两个不同的问题，用指纹是恰当的。
+ *
+ * @returns {Promise<{buf: Buffer}|null>}
+ */
+async function readClipboardImage() {
+  try {
+    const items = await clipboard.read();
+    if (!items || !items.length) return null;
+    for (const it of items) {
+      if (!it || !it.types || !it.types.includes("image/png")) continue;
+      const blob = await it.getType("image/png");
+      if (!blob) continue;
+      const buf = Buffer.from(await blob.arrayBuffer());
+      if (!buf || !buf.length) continue;
+      return { buf };
+    }
+  } catch (e) {
+    /* 剪贴板被别的进程锁住 / 没有可读格式 —— 当作「没有图」，下一轮再试 */
+  }
+  return null;
+}
+
+/**
+ * 剪贴板里当前图片的指纹（长度 + 采样校验和）。
+ *
+ * 用途只有一个：**校验"落盘的图是不是本次截图产生的"**。
+ * 用户在框选期间如果别的程序改了剪贴板（复制了旧图 / 文字），
+ * 序列号会变、ORB 会去读图 —— 读到的是**别人的旧图**，
+ * 存下来就是存错图（独立审查实测复现）。
+ *
+ * ⚠️ 为什么不能用指纹判断"有没有变化"：用户两次截同一区域，
+ *    字节完全相同 → 指纹法永远等不到变化 → 白截一次。
+ *    那是序列号存在的理由。两者用途不同，不冲突。
+ */
+function bufFingerprint(buf) {
+  if (!buf || !buf.length) return "";
+  let sum = 0;
+  const step = Math.max(1, Math.floor(buf.length / 1024));
+  for (let i = 0; i < buf.length; i += step) sum = (sum * 31 + buf[i]) >>> 0;
+  return buf.length + ":" + sum;
+}
+
+/**
+ * 取剪贴板基线（带重试）：**序列号** + **当前图片的指纹**。
+ *
+ * 为什么必须重试（2026-10-24 独立验证打回来的必现 bug）：
+ *   取基线走的是 native 探针，而探针刚 spawn 时还没 ready（等 {"ok":true,
+ *   "ready":true}），此时查询会直接返回 {known:false, seq:-1}。
+ *   如果拿这个 -1 去当基线，后续每轮的真实序列号都 >= 0，
+ *   判定式 `baseSeq >= 0 && st.seq >= 0 && st.seq !== baseSeq` 恒为 false
+ *   → **截图永远不落盘**。用户看到的是"复制了但没存下来"。
+ *   而"应用刚启动就点截屏"这个时序非常容易命中。
+ *
+ * 所以：取不到就重试，最多约 3 秒；一直取不到才放弃（放弃也要明确失败，
+ * 不能硬撑着往下走）。
+ *
+ * ⚠️ 指纹是**顺带**取的，取不到不算失败（空串 = 不做校验）——
+ *   它只是用来发现"读到的是别人的旧图"，不是主判据。
+ *   ⚠️ 指纹必须在**序列号之后**取：先拿到 seq，再读内容。
+ *      反过来的话，中间夹着的写入会让 seq 与内容对不上号。
+ *
+ * @returns {Promise<{seq: number, hash: string}>} seq=-1 表示取不到
+ */
+async function takeClipSeqBaseline(attempt = 0) {
+  const st = await nativeSnapState().catch(() => ({ known: false, seq: -1 }));
+  if (st && st.known && st.seq >= 0) {
+    /* 顺带记下"此刻剪贴板里的图"的指纹，用来识别"读到的其实是旧图" */
+    const cur = await readClipboardImage().catch(() => null);
+    return { seq: st.seq, hash: cur ? bufFingerprint(cur.buf) : "" };
+  }
+  if (attempt < 20) {
+    await new Promise((r) => setTimeout(r, 150));
+    return takeClipSeqBaseline(attempt + 1);
+  }
+  log("[snip] 取不到剪贴板序列号基线（native 探针未就绪）");
+  return { seq: -1, hash: "" };
+}
+
+/**
+ * 「Snipaste 压根没进过截屏态」的宽限期（毫秒）。
+ *
+ * 为什么需要它：取消判定靠的是 **snipping 的 true → false 跳变**，
+ * 而跳变的前提是"先见过 true"。用户框选**极快**时，400ms 的轮询可能
+ * 一次都没采到 true —— 这时按 Esc 也判不出取消，只能干等到超时。
+ * 加上这条兜底：超过这个时间还从没进过截屏态，就认定"Snipaste 压根
+ * 没弹出来"，直接放弃本次截屏（并把面板解锁）。
+ *
+ * 它同时覆盖了另一种真实故障：Snipaste 冷启动时序问题导致 `snip` 命令
+ * 根本没生效（snipaste.js 头部注释①：CLI 子命令只在 Snipaste 已运行时
+ * 生效）—— 这时用户看到的就是"点了截屏什么也没发生"。
+ *
+ * 取值 20 秒：Snipaste 从命令到浮层出现实测在 1 秒内；留足余量
+ * （要 > CANCEL_GRACE_MS，否则写图慢的用户会被误杀），
+ * 又不至于让用户对着一个什么都没发生的屏幕干等。
+ *
+ * ⚠️ 这条兜底**只在 alive 也一直是 false 时才用**（见 nativeSnapState 的
+ *   alive 字段说明）：用户开着贴图窗/设置窗时 alive 为 true 而 snipping 为
+ *   false —— 那不是"Snipaste 没弹出来"，只是判据看不见框选浮层。
+ *   这时若拿"没进过截屏态"去放弃，用户点了复制也会被丢掉。
+ */
+const NO_SESSION_MS = 20000;
+
+/**
+ * 判取消前给剪贴板写入留的余量（毫秒）。
+ *
+ * ⚠️ 为什么是 8 秒而不是 1.5/3 秒 —— 这是独立审查用**真实跨进程写者**
+ *    实测出来的（模拟 Snipaste 的写图行为）：
+ *      写图耗时 3.0 秒 → 图在 t=3328ms 才可读
+ *      写图耗时 6.0 秒 → 图在 t=6172ms 才可读
+ *      写图耗时 9.0 秒 → 图在 t=9375ms 才可读
+ *    空档 = 「浮层消失」到「剪贴板里有图」，由 PNG 编码耗时 + 剪贴板争用
+ *    决定，很容易超过 3 秒。宽限太短 → 用户点了复制却什么都没存下来。
+ *
+ *    代价是"用户按了 Esc"要等 8 秒才解锁面板 —— 这个可以接受，
+ *    而"丢截图"是用户真正无法接受的。
+ */
+const CANCEL_GRACE_MS = 8000;
+
+/**
+ * 盯剪贴板，等本次截图落盘。
+ *
+ * ★ 完成信号 = **剪贴板序列号变了**（不是"图片内容变了"）。
+ *
+ * 为什么不比内容（这是本轮踩过的坑，独立验证时被打回来了两次）：
+ *   ① 用户截的图和剪贴板里旧图**字节完全相同**（截了同一个区域两次）
+ *      → 指纹法永远等不到变化 → 截图卡到超时，用户白截一次。
+ *   ② 基线指纹读取失败（比如剪贴板正被别的进程锁住）→ baseStamp="" →
+ *      判定退化成"只要有图就算新图" → **旧图被当成本次截图落盘**，
+ *      用户没点复制也存了一张，还把真正的截图丢了。
+ * 序列号（GetClipboardSequenceNumber）只在**内容被改写**时 +1，与内容无关，
+ * 基线是一个整数、读取不会失败，两个坑一起解决。
+ *
+ * 流程：
+ *   唤起前记基线 seq → 轮询 {snipping, alive, seq}
+ *        · seq 变了 → 读剪贴板里的图 → 有图就落盘（这就是 Snipaste 的「复制」）
+ *        · snipping 从 true 变回 false 且 seq 持续不变 → 用户按了 Esc → 判取消
+ *
+ * ⚠️ 三条铁律（都是这轮被独立验证打回来的）：
+ *   ① 取消判定必须**先见过 snipping=true**（否则 snip 命令刚发出、
+ *      Snipaste 还没建浮层的那一刻，绝对值也是 false → 误杀正常流程）。
+ *   ② 取消判定必须给剪贴板写入留 **CANCEL_GRACE_MS** 的余量，
+ *      且判取消前**再读一次剪贴板**做二次确认（防止"刚写完还没被观察到"）。
+ *   ③ **所有 return 分支都必须检查 deadline** —— 探针失联（known=false）
+ *      或 snipping 卡住 true 时，180 秒总兜底是唯一的救命绳。
+ *      漏掉它 → 轮询永不结束 → duckForSnip(false) 永不执行 →
+ *      ORB 的球/面板/字幕窗**永久停在普通层**（不再置顶），面板锁 3 分钟。
+ *
+ * @param {string} file 落盘目标路径（调用方算好，目录已存在）
+ * @param {number} baseSeq 唤起前取的序列号基线（-1 = 未知）
+ */
+function watchSnipClipboard(file, baseSeqIn, baseHashIn) {
+  stopSnipWatch();                    // 顶掉上一个会话的轮询
+  const startAt = Date.now();
+  const deadline = startAt + 180000;   // 3 分钟总兜底（正常路径都用不到）
+  let baseSeq = (typeof baseSeqIn === "number" && baseSeqIn >= 0) ? baseSeqIn : -1;
+  /* 基线时刻剪贴板里那张图的指纹。用来识别"读到的是别人的旧图"
+     （用户在框选期间别的程序改了剪贴板）。空串 = 不做这项校验。 */
+  const baseHash = typeof baseHashIn === "string" ? baseHashIn : "";
+  let pollTimer = null;                // ★ 本会话私有的定时器句柄
+  let finished = false;                // ★ 本会话的重入保护
+  let inflight = false;                // 防重入：查询是异步的
+  let seenSnipping = false;            // 见过框选/标注态
+  let seenReady = false;               // 见过 Snipaste 的框选浮层窗口存在
+  let lastSnippingAt = 0;              // ★ 最后一次观测到 snipping=true 的时刻
+  let idleSince = 0;                   // "已退出且 seq 未变"持续了多久（毫秒）
+  let noImgRounds = 0;                 // "seq 变了但读不到图"连续几轮
+
+  const finish = (path) => {
+    /* ★ 重入保护：finish 可能被两条路径同时触发（tick 里的落盘分支
+     *   与异常分支），重复发 snip-done 会让面板的锁定计数错乱。 */
+    if (finished) return;
+    finished = true;
+    /* ★ 只清**自己**的定时器。
+     *   之前这里调的是全局 stopSnipWatch()，而全局此刻可能已经指向
+     *   **下一个**会话的定时器（用户在本次会话飞行途中又点了一次截屏）
+     *   → 把新会话的轮询清掉 → 新会话永不落盘、面板锁死。
+     *   这个竞态在独立审查里被仿真确证为必现，不是理论风险。 */
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (snipWatchTimer === pollTimer) snipWatchTimer = null;
+    duckForSnip(false);
+    log("[snip] 截图落盘 ->", path || "(无)");
+    sendToPanel("snip-done", { file: path || "" });
+  };
+
+  /* 基线彻底取不到 → 明确失败，不要硬撑。
+     硬撑（拿 -1 当基线）的后果是"序列号永远等于基线" → 判定恒不成立 →
+     截图永远不落盘，用户还以为存下来了。宁可这次不存，也不能存错。 */
+  if (baseSeq < 0) {
+    log("[snip] 剪贴板基线不可用，放弃本次截屏");
+    setTimeout(() => finish(""), 0);
+    return;
+  }
+
+  const tick = async () => {
+    if (inflight) return;
+    inflight = true;
+    try {
+      const st = await nativeSnapState().catch(() => ({ known: false, snipping: true, alive: false, seq: -1 }));
+
+      /* ★ 铁律③：总兜底必须在**每个** return 分支之前检查。
+       *   探针失联（known=false 持续）或 snipping 卡住 true 时，
+       *   没有别的出口 —— 这个 deadline 是唯一的救命绳。
+       *   漏掉它 → 轮询永不结束 → duckForSnip(false) 永不执行 →
+       *   ORB 的球/面板/字幕窗**永久停在普通层**（不再置顶），面板锁死。 */
+      if (Date.now() >= deadline) {
+        log("[snip] 等待截图超时");
+        finish("");
+        return;
+      }
+
+      /* 探针失联 → 保守当"还在框选"，下一轮再说。
+         ⚠️ 这里**不能**因为查不准就判取消 —— 探针抖一下就把用户的截图丢掉，
+         是比多等几秒糟糕得多的错。 */
+      if (!st.known) return;
+
+      if (st.ready) seenReady = true;
+
+      /* 剪贴板被改写过 → 这就是 Snipaste 的「复制」。读图落盘。
+         ⚠️ seq 变了但读不到图**不能**就此放弃 —— 这是**常态**，不是异常：
+           实测 Snipaste 写一次图，**EmptyClipboard 会先把 seq 推高**，
+           然后才 SetClipboardData 把图放进去。于是中间有一整段
+           "seq 已变、剪贴板里还没图"的窗口（写图耗时 3/6/9 秒时
+           分别长达 1~7 秒）。
+         正确做法：**保持基线不变**、下一轮接着读。
+         序列号一旦变过就一直变着，直到我们真的把图取出来。 */
+      if (st.seq >= 0 && st.seq !== baseSeq) {
+        const r = await readClipboardImage();
+        if (r) {
+          /* ⚠️ 校验"这张图不是基线时就在剪贴板里的旧图"。
+             用户框选期间别的程序改了剪贴板（复制了旧图）时，
+             seq 会变、但读到的是那张旧图 —— 存下来就是存错图。
+             （⚠️ 这与"用指纹判断有没有变化"是两回事：
+               用户两次截同一区域时字节相同，指纹法判断"变化"会失效，
+               那是序列号存在的理由；这里判断的是"是不是同一张图"。） */
+          if (baseHash && bufFingerprint(r.buf) === baseHash) {
+            /* 内容与基线一致 → 不是本次新产生的图，继续等 */
+            noImgRounds += 1;
+            if (noImgRounds > 40) { baseSeq = st.seq; noImgRounds = 0; }
+            idleSince = 0;
+            return;
+          }
+          try {
+            fs.writeFileSync(file, r.buf);
+          } catch (e) {
+            log("[snip] 剪贴板图片写盘失败:", (e && e.message) || String(e));
+            finish("");
+            return;
+          }
+          finish(file);
+          return;
+        }
+        noImgRounds += 1;
+        /* ⚠️ 这里的"放弃"阈值必须**远大于**写图耗时上限。
+           之前是 12 轮（≈4.8 秒）—— 遇上写图耗 6 秒/9 秒就正好把
+           还没写完的图永久放弃（丢图）。独立审查实测把阈值提到
+           40 轮（≈16 秒）才够覆盖最坏情况。
+           ⚠️ 但也不能无限等：如果用户复制的是**文字**（不是图），
+           seq 也会变、但永远读不到图 → 那要靠这个上限收场。
+           两者取兼顾：40 轮 ≈ 16 秒，覆盖 9 秒的写图耗时还有余量。 */
+        if (noImgRounds > 40) {
+          log("[snip] 剪贴板内容不是图片（seq 变了但读不到图），放弃本次截屏");
+          baseSeq = st.seq; noImgRounds = 0;
+        }
+        idleSince = 0;
+        return;
+      }
+      noImgRounds = 0;
+
+      if (st.snipping) { seenSnipping = true; lastSnippingAt = Date.now(); idleSince = 0; return; }
+
+      /* ★ 取消判定（2026-10-24 重写，独立验证打回两次后定稿）。
+       *
+       * 判据 = **snipping 从 true 变回 false**（跳变），且剪贴板没被写过。
+       * 之前用「有没有可见窗口」当绝对判据，实测会被 Snipaste 的各种窗口
+       * 带偏（主面板 169×221、贴图窗、设置窗…）→ 恒 true → 用户按 Esc
+       * 判不出取消，只能干等到超时。native 侧已经返工过四次，
+       * 详见 orb-foreground.c 里 enum_snip 上方的注释。
+       *
+       * 为什么靠跳变而不是绝对值 false：snip 命令刚发出、Snipaste 还没建
+       * 浮层的那一刻，绝对值也是 false。那时候判取消 = 误杀正常流程。
+       * 所以必须**先见过 true**（seenSnipping）才认这个 false 是"用户取消了"。
+       */
+      if (!seenSnipping) {
+        /* ⚠️ 只有「连框选浮层窗口都不存在」才能用 NO_SESSION_MS 兜底放弃。
+           ready=true 而 snipping=false = 浮层窗口在但当前不可见 ——
+           可能是用户开着贴图窗，也可能是浮层还没建出来。这两种情况下
+           若拿"没进过截屏态"去放弃，用户点了复制也会被丢掉
+           （这正是独立验证实测复现的丢图路径）。
+           所以这种情况只能等剪贴板序列号变化或总超时。 */
+        if (!seenReady && Date.now() - startAt >= NO_SESSION_MS) {
+          log("[snip] Snipaste 未进入截屏态（可能命令未生效），放弃本次截屏");
+          finish("");
+        }
+        return;
+      }
+      /* 进过截屏态、现在退出来了，但剪贴板没被写过 —— 用户按了 Esc。
+         用**时间**而不是"轮数"来确认：轮数会被查询失败/重入丢掉，
+         按时间才稳。 */
+      if (!idleSince) { idleSince = Date.now(); return; }
+      /* ★ 铁律②：给剪贴板写入留 CANCEL_GRACE_MS 余量。
+         Snipaste 窗口消失与剪贴板写入不是同一瞬间 —— 实测写图耗时 3/6/9 秒
+         时，图分别要到 t=3328/6172/9375ms 才可读。太短就丢截图。
+         这段余量**就是**防丢图的全部机制：宽限期内只要 seq 变了，
+         上面那个分支就会接手落盘。
+         ⚠️ 起算点是**最后一次见到 snipping=true** 的时刻，不是"首次见 false"。
+            二者可以差很远（用户点「复制」→ 浮层消失 → ORB 在几秒后才
+            第一次采到 false，此时距浮层消失已经过了好几秒）。
+            若从"首次见 false"起算，真正的空档就被算短了 → 误判取消 → 丢图。 */
+      const sinceLastSnipping = Date.now() - (lastSnippingAt || startAt);
+      if (sinceLastSnipping < CANCEL_GRACE_MS) return;
+      if (Date.now() - idleSince < 1500) return;
+
+      /* 到这里 seq 仍然等于基线 —— 剪贴板内容确实**从没被改写过**。
+         ⚠️ 这里**故意不再读一次剪贴板**做"二次确认"：
+           走到这里说明 seq 没变 → 剪贴板里还是**旧内容**。
+           若此刻读出图并落盘，存下来的就是用户之前复制的旧图
+           （A-2 类缺陷的翻版：旧图被当成本次截图）。
+           真正的"刚写完还没被观察到"由上面的 seq 变化分支负责，
+           它每轮轮询都会检查，3000ms 宽限就是给它的观察窗口。 */
+      log("[snip] 用户取消了本次框选（Snipaste 已退出且剪贴板未被改写）");
+      finish("");
+    } catch (e) {
+      log("[snip] 截屏轮询异常:", (e && e.message) || String(e));
+    } finally {
+      inflight = false;
+    }
+  };
+
+  pollTimer = setInterval(() => { tick().catch(() => {}); }, 400);
+  snipWatchTimer = pollTimer;
+}
+
+/* ---------------- 设置面板打开时把实时字幕窗让开 ----------------
+ * 字幕窗（subWin）是独立窗口、screen-saver 级置顶，面板里的遮罩管不到它。
+ * 设置面板一打开，它就浮在设置卡片表面上挡视线。
+ * 修法：遮罩期间把它收起来，关掉设置再放回（只恢复"原本可见"的那些，
+ * 用户本来就没开字幕时不凭空弹出来）。 */
+let sheetOpenNow = false;
+let subDucked = false;
+function applySheetDuck() {
+  if (!subWin || subWin.isDestroyed()) return;
+  try {
+    if (sheetOpenNow) {
+      if (subWin.isVisible()) { subDucked = true; subWin.hide(); }
+    } else if (subDucked) {
+      subDucked = false;
+      subWin.showInactive();
+    }
+  } catch { /* 窗口正在销毁，忽略 */ }
+}
+safeHandle("sheet-open", (_e, on) => {
+  sheetOpenNow = !!on;
+  applySheetDuck();
+  return sheetOpenNow;
+}, false);
 
 safeHandle("snip-guide-done", (_e, done) => {
   if (done === true) saveState({ snipGuideDone: true });
@@ -2582,6 +3586,9 @@ safeHandle("cap-open", (_e, opts) => {
     mime: typeof o.mime === "string" ? o.mime : "",
     sourceId: typeof o.sourceId === "string" ? o.sourceId : "",
   });
+  /* MediaRecorder 回退链路同样要排除自家窗口，成片里不该有控制台自己。
+     与原生链路一致：recbar 不排除（见 setCaptureShield 的注释）。 */
+  setCaptureShield(true);
   log("[cap] 开始录制:", id, "mime =", String(o.mime || "").slice(0, 64));
   return { ok: true, sessionId: id, file, mime: o.mime || "" };
 }, () => ({ ok: false, sessionId: "", error: "开始录制失败（详见 .orbdata/orb.log）" }));
@@ -2611,6 +3618,9 @@ safeHandle("cap-close", (_e, sessionId, opts) => {
   if (!s) return { ok: false, path: "", error: "录制会话不存在或已结束" };
   const o = opts && typeof opts === "object" ? opts : {};
   capSessions.delete(sessionId);
+  /* 录制结束 → 恢复可截图。放在最前面：后面无论走哪条 return 分支都要恢复，
+     漏一条就等于"用户再也截不到自己的界面"。 */
+  setCaptureShield(false);
   let size = s.bytes;
   try { fs.closeSync(s.fd); } catch { /* 已经关了 */ }
   try { size = fs.statSync(s.file).size; } catch { /* 用内存里累计的值兜底 */ }
@@ -2697,6 +3707,112 @@ safeHandle("cap-abort", (_e, sessionId) => {
   return { ok: true, removed: dropped.removed, note: dropped.removed ? "已删除临时文件" : "临时文件清理失败" };
 }, () => ({ ok: false, removed: false, error: "放弃录制失败（详见 .orbdata/orb.log）" }));
 
+/* ---------------- 原生录屏（Stage 2：orb-cap.exe 直出 MP4） ----------------
+ * 与上面的 cap-* 会话链路**完全并行**，互不影响：
+ *   · cap-*      渲染进程 MediaRecorder 编码 → 分片写 .part → cap-close 原子 rename
+ *   · cap-native-*  原生 exe 自己写一个 .mp4（DXGI 复制 + MF H.264）
+ * 面板先试原生，失败（组件缺失 / 被 ORB_CAP=media 禁用 / 启动报错）就**原样**走
+ * MediaRecorder —— 兜底是硬要求，任何一处失败都不能让"录屏"这个功能消失。
+ * ORB_CAP=native|media|auto（默认 auto）：auto = 有 exe 就用原生，否则 media。
+ */
+function capMode() {
+  const v = String(process.env.ORB_CAP || "auto").trim().toLowerCase();
+  return (v === "native" || v === "media") ? v : "auto";
+}
+
+safeHandle("cap-native-start", async (_e, opts) => {
+  const mode = capMode();
+  if (mode === "media") return { ok: false, error: "已按 ORB_CAP=media 禁用原生录制" };
+  if (!capNative.available()) {
+    return { ok: false, error: "原生录屏组件不存在（native/dist/orb-cap.exe）" };
+  }
+  const o = opts && typeof opts === "object" ? opts : {};
+  const dir = storage.pathOf("recordings");
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    return { ok: false, error: "录屏目录不可用：" + ((e && e.message) || String(e)) };
+  }
+  /* 命名与 MediaRecorder 链路一致（录屏-YYYYMMDD-HHmmss.mp4），同秒冲突自动加序号。
+     路径在这里就定死并回给渲染层：即使后面 start 失败，UI 也知道该去哪找残留。 */
+  const target = uniqueFile(dir, "录屏-" + recStamp(), ".mp4");
+  try {
+    /* 录制期间把自家窗口从画面里摘掉 —— 成片里不该出现控制台自己。
+       注意 recbar 不在排除名单里（见 setCaptureShield 的注释）。
+       必须在 start **之前**打开：DXGI 复制是连续的，晚一帧成片里就有一帧带自己。
+       start 失败要在 catch 里撤回来，否则用户永远截不到自己的界面。 */
+    setCaptureShield(true);
+    let r;
+    try {
+      r = await capNative.start({
+        outPath: target,
+        fps: o.fps,
+        bitrate: o.bitrate,
+        display: o.display,
+      });
+    } catch (e) {
+      setCaptureShield(false);
+      throw e;
+    }
+    log("[cap-native] 开始录制:", target, r.w + "x" + r.h + "@" + r.fps);
+    return { ok: true, mode: "native", w: r.w, h: r.h, fps: r.fps, path: target };
+  } catch (e) {
+    setCaptureShield(false);   // 启动失败要把排除撤回来，否则用户永远截不到自己的界面
+    log("[cap-native] 启动失败:", (e && e.message) || String(e));
+    return { ok: false, error: (e && e.message) || String(e), path: target };
+  }
+}, { ok: false, error: "启动原生录制失败（详见 .orbdata/orb.log）" });
+
+/* pause / resume / abort 走这一条：abort 是"取消并存半成品"，和 stop 语义不同 */
+safeHandle("cap-native-cmd", async (_e, cmd) => {
+  const c = String(cmd || "");
+  try {
+    if (c === "abort") {
+      const r = await capNative.abort();
+      setCaptureShield(false);   // 取消录制同样要恢复可截图
+      return { ok: !!(r && r.ok) };
+    }
+    const r = await capNative.cmd(c);
+    return { ok: !!(r && r.ok), line: r && r.line };
+  } catch (e) {
+    log("[cap-native] 命令失败:", c, (e && e.message) || String(e));
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}, { ok: false, error: "原生录屏命令失败（详见 .orbdata/orb.log）" });
+
+safeHandle("cap-native-stop", async () => {
+  let saved = null;
+  try {
+    saved = await capNative.stop();
+  } catch (e) {
+    /* 失败也把 path 带回去：文件可能已经写了一半，UI 要能提示"可能不完整"
+       并给用户一个自己去看的位置，而不是只吐一句"保存失败"。 */
+    const partial = capNative.currentPath() || "";
+    setCaptureShield(false);   // 录制结束，恢复可截图（失败路径同样要恢复）
+    log("[cap-native] 收尾失败:", (e && e.message) || String(e));
+    return { ok: false, error: (e && e.message) || String(e), path: partial };
+  }
+  setCaptureShield(false);     // 录制结束 → 恢复可截图
+  const out = {
+    ok: true,
+    mode: "native",
+    path: String(saved.path || ""),
+    bytes: Number(saved.bytes) || 0,
+    ms: Number(saved.ms) || 0,
+    w: Number(saved.w) || 0,
+    h: Number(saved.h) || 0,
+    mime: "video/mp4",
+    ext: ".mp4",
+    /* 原生链路的 mvhd 由 MF 写全（不像 MediaRecorder 需要事后补），
+       所以没有 patched/viaCopy 那些字段，valid 直接为 true。 */
+    valid: true,
+    durationMs: Number(saved.ms) || 0,
+  };
+  /* 与 cap-close 一样落一份 lastRecording：面板/托盘下次启动要靠它显示"最近的录屏" */
+  saveState({ lastRecording: { path: out.path, bytes: out.bytes, ms: out.ms, mime: out.mime } });
+  log("[cap-native] 录制完成:", out.path, out.bytes, "bytes /", out.ms, "ms");
+  return out;
+}, { ok: false, error: "停止原生录制失败（详见 .orbdata/orb.log）", path: "" });
 /* ---------------- 悬浮录屏控制条的事件转发 ----------------
  * 三方协议（通道名已定死，任何一侧改名都会静默失效，改名前先打招呼）：
  *   面板 → 主 : rec-cmd-to-bar  { type: 'start' | 'pause' | 'resume' | 'stop' }
@@ -2751,6 +3867,11 @@ ipcMain.on("rec-cmd-to-bar", (_e, payload) => {
 /* 控制条 → 主进程 → 面板 */
 ipcMain.on("rec-bar-cmd", (_e, cmd) => {
   const c = String(cmd || "");
+  /* 诊断日志（常驻、只在收到命令时各打一行 —— 一次点击两条，不会刷屏）：
+     用户报"按钮点了没反应"时，先看这两行在不在 ——
+       只有"收到"没有"已转发" → 面板没了 / 命令名不认识；
+       两条都没有 → 点击根本没到页面（穿透还挂着 / 窗口被别的窗口盖住）。 */
+  log(`[recbar] 收到命令 "${c}"`);
   try {
     if (c !== "pause" && c !== "resume" && c !== "finish" && c !== "abort") {
       log("[recbar] 未知命令:", c);
@@ -2758,11 +3879,13 @@ ipcMain.on("rec-bar-cmd", (_e, cmd) => {
     }
     // 面板没了（被强关 / 崩溃）：控制条再挂着只会让用户点一个没反应的按钮
     if (!panel || panel.isDestroyed()) {
+      log(`[recbar] 命令 "${c}" 被丢弃：面板不存在`);
       resetRecbarInteractive(recbarWin);
       try { if (recbarWin && !recbarWin.isDestroyed()) recbarWin.hide(); } catch { /* ignore */ }
       return;
     }
     sendToPanel("rec:cmd", c);
+    log(`[recbar] 已转发命令 "${c}" → 面板`);
   } catch (e) {
     log("[recbar] 转发命令失败:", (e && e.message) || String(e));
   }
@@ -2801,6 +3924,11 @@ function startRecbarHoverWatch() {
                   && p.y >= b.y + REC_HIT.y0 - REC_HOVER_PAD && p.y <= b.y + REC_HIT.y1 + REC_HOVER_PAD;
       if (inside === recbarHoverInside) return;   // 只在跨越边界时广播一次
       recbarHoverInside = inside;
+      /* 诊断日志：只在跨越边界时打一行（140ms 轮询的每帧分支里绝不打）。
+         这行是"悬停能不能展开"的唯一证据 —— 如果用户报"收回细条后鼠标放上去不动"，
+         看它有没有出现：没出现 = 光标判定区没命中（REC_HIT/REC_HOVER_PAD 与窗口位置对不上、
+         或穿透压根没开）；出现了但没有展开日志 = 页面侧 expand() 没跑。 */
+      log(`[recbar] 悬停 ${inside ? "进入" : "离开"}（光标 ${p.x},${p.y}；窗口 ${b.x},${b.y} ${b.width}x${b.height}；HIT 内=${inside}）`);
       sendToBar("rec:hover", { inside: inside });
     } catch (e) {
       /* 光标/窗口查询偶尔会失败（显示器热插拔、窗口正在销毁）：
@@ -2808,20 +3936,31 @@ function startRecbarHoverWatch() {
       stopRecbarHoverWatch();
       log("[recbar] 悬停监视异常，已停止:", (e && e.message) || String(e));
     }
-  }, 140);
+  /* 60ms（原 140ms）：悬停展开要赶在用户"移过去就点"之前完成。
+     穿透态的窗口收不到鼠标事件，只能靠这一条轮询把"可交互"还回去；
+     140ms 的粒度下人很容易在第一帧就按下 —— 那一下会被穿透吃掉。 */
+  }, 60);
 }
 ipcMain.on("rec-bar-passthru", (_e, on) => {
   try {
-    if (!recbarWin || recbarWin.isDestroyed()) return;
+    if (!recbarWin || recbarWin.isDestroyed()) {
+      /* 窗口没了但渲染层还在申报穿透：记一行，别静默 —— 这种"状态没人接"的情况
+         正是按钮点不动的常见来源。 */
+      log(`[recbar] 穿透 ${on ? "ON" : "OFF"} 被忽略：控制条窗口不存在`);
+      return;
+    }
+    const b = recbarWin.getBounds();
     /* 关穿透时不带 options：回到普通可交互窗口 */
     if (on) {
       recbarWin.setIgnoreMouseEvents(true, { forward: true });
       recbarPassthru = true;
       startRecbarHoverWatch();
+      log(`[recbar] 穿透 ON（窗口已忽略鼠标）${b.x},${b.y} ${b.width}x${b.height}`);
     } else {
       recbarPassthru = false;
       stopRecbarHoverWatch();
       recbarWin.setIgnoreMouseEvents(false);
+      log(`[recbar] 穿透 OFF（窗口恢复可交互）${b.x},${b.y} ${b.width}x${b.height}`);
     }
   } catch (e) {
     log("[recbar] 切换点击穿透失败:", (e && e.message) || String(e));
@@ -2833,6 +3972,7 @@ function resetRecbarInteractive(win) {
   recbarPassthru = false;
   stopRecbarHoverWatch();
   try { if (win && !win.isDestroyed()) win.setIgnoreMouseEvents(false); } catch { /* 已销毁 */ }
+  log("[recbar] 交互复位（穿透=false，HIT 监视停）");
 }
 
 /* ---------- 控制条偏好（皮肤 / 能量条 / 自选描边色） ----------
@@ -2901,6 +4041,14 @@ safeHandle("pick-theme-image", async () => {
   catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
 }, { ok: false, error: "选择图片失败" });
 safeHandle("clear-theme-image", () => clearThemeImage(), { ok: false, error: "清除背景图失败" });
+
+/* 附件两条通道：选文件（多选 + 体积上限）+ 图片缩略图 data URL。
+   与 pick-theme-image 同一模式：对话框在主进程，渲染层零 fs 权限。 */
+safeHandle("attach-pick", async () => {
+  try { return await pickAttachments(); }
+  catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+}, { ok: false, error: "选择附件失败" });
+safeHandle("attach-preview", (_e, p) => attachPreview(p), { ok: false, error: "读取图片失败" });
 
 ipcMain.handle("get-state", () => ({
   pinned: state.pinned,
@@ -3014,8 +4162,10 @@ safeHandle("cursor", () => {
     permilleY: Math.round((p.y / h) * 1000),
   };
 }, { x: 0, y: 0, permilleX: 0, permilleY: 0 });
-safeHandle("clipboard-read", () => clipboard.readText(), "");
-safeHandle("clipboard-write", (_e, text) => { clipboard.writeText(String(text ?? "")); return true; }, false);
+/* ⚠️ Electron 44 的 readText()/writeText() 都是 **Promise** —— 必须 await，
+   否则 IPC 返回的是 Promise 对象（渲染层拿到 "[object Promise]"）。 */
+safeHandle("clipboard-read", async () => await clipboard.readText().catch(() => ""), "");
+safeHandle("clipboard-write", async (_e, text) => { await clipboard.writeText(String(text ?? "")).catch(() => {}); return true; }, false);
 
 /* 录制时要用：把 ORB 自己的窗口矩形交给 bridge，
    全局钩子据此排除"用户点的是 ORB 面板/悬浮球"的情况 ——

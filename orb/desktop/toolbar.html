@@ -9,18 +9,34 @@
     font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
     user-select: none;
   }
+  /* 主题令牌：浅色（t2 / t3 / t4 回退）写在 :root，深空 t1 单独覆盖。
+     主进程会按当前主题给 <html> 打 data-theme（与面板同源）；没收到时退回浅色，不会黑块。 */
+  :root {
+    --bg:#ffffff; --bg-soft:#faf9f6; --bg-sunken:#f4f3ef;
+    --fg:#2c2c2a; --fg-soft:#5f5e5a; --fg-muted:#928f86;
+    --border:#eceae3; --border-strong:#d9d6cc;
+    --accent:#534ab7; --accent-soft:#eeedfe; --accent-fg:#3c3489;
+    --sh-lg:0 3px 14px rgba(38,33,92,.20);
+  }
+  [data-theme="t1"] {
+    --bg:#12162b; --bg-soft:#171c35; --bg-sunken:#0e1224;
+    --fg:#e8eaf6; --fg-soft:#b9bfe0; --fg-muted:#7c85ad;
+    --border:#262c4d; --border-strong:#39406b;
+    --accent:#5b6ee8; --accent-soft:#1e2547; --accent-fg:#a8b6ff;
+    --sh-lg:0 3px 14px rgba(0,0,0,.45);
+  }
   .bar {
     height: 40px; margin: 2px; display: flex; align-items: stretch;
-    background: #ffffff; border: 0.5px solid #d3d1c7; border-radius: 10px;
-    box-shadow: 0 3px 14px rgba(38,33,92,.20); overflow: hidden;
+    background: var(--bg-soft); border: 0.5px solid var(--border-strong); border-radius: 10px;
+    box-shadow: var(--sh-lg); overflow: hidden;
   }
   button {
     flex: 1; border: none; background: transparent; cursor: pointer;
-    font-family: inherit; font-size: 12.5px; color: #2c2c2a;
-    border-right: 0.5px solid #eceae3; white-space: nowrap;
+    font-family: inherit; font-size: 12.5px; color: var(--fg);
+    border-right: 0.5px solid var(--border); white-space: nowrap;
   }
   button:last-child { border-right: none; }
-  button:hover { background: #eeedfe; color: #3c3489; }
+  button:hover { background: var(--accent-soft); color: var(--accent-fg); }
 </style>
 </head>
 <body>

@@ -35,7 +35,8 @@ contextBridge.exposeInMainWorld("orb", {
   onRecHover: (cb) => ipcRenderer.on("rec:hover", (_e, payload) => cb(payload)),
 
   /* 桌面模糊底图：控制条的纱（α.82）在透明窗里同样采不到桌面 —— .skin 的
-     backdrop-filter 身后只有透明。由主进程藏窗抓实拍垫在 .skin 背后，
+     backdrop-filter 身后只有透明。由主进程抓桌面实拍垫在 .skin 背后
+     （窗口已 setContentProtection 排除出截图，抓图不含自身，故不藏窗、不闪），
      .skin 的 blur(8px) 负责糊成磨砂。控制条常驻可见，所以常申报。 */
   glassBgWant: (on) => ipcRenderer.send("glass-bg-want", !!on),
   onGlassBg: (cb) => ipcRenderer.on("recbar:glass-bg", (_e, payload) => cb(payload)),

@@ -83,14 +83,30 @@ contextBridge.exposeInMainWorld("orb", {
   capClose: (sessionId, opts) => ipcRenderer.invoke("cap-close", sessionId, opts),
   capAbort: (sessionId) => ipcRenderer.invoke("cap-abort", sessionId),
 
+  /* 原生录屏（Stage 2）：编码在主进程起的 orb-cap.exe 里（DXGI + MF 直出 MP4），
+     渲染层不碰流也不碰字节，只要三条命令式调用。失败一律回 { ok:false, error }，
+     面板据此回退到上面的 MediaRecorder 链路 —— 所以这三条**不能抛**。
+     刻意只开三个具名通道，不给通用 invoke（白名单一旦变成万能钥匙，
+     contextIsolation 就只剩个名字了）。 */
+  capNativeStart: (opts) => ipcRenderer.invoke("cap-native-start", opts),
+  capNativeCmd: (cmd) => ipcRenderer.invoke("cap-native-cmd", cmd),
+  capNativeStop: () => ipcRenderer.invoke("cap-native-stop"),
+
   /* 截屏（Snipaste）：装没装 / 唤起框选 / 首跑引导卡已读。
      唤起后截图由 Snipaste 直写 <存储根>/screenshots，字节不经过 IPC。 */
   snipDetect: () => ipcRenderer.invoke("snip-detect"),
   snipRun: () => ipcRenderer.invoke("snip-run"),
   snipGuideDone: (v) => ipcRenderer.invoke("snip-guide-done", !!v),
+  /* 截屏期间别缩回：主进程盯着这次截图的目标文件，落盘/取消/超时才回这一条。
+     渲染层据此决定什么时候解除面板保持（见 panel.html 的 snipHold）。 */
+  onSnipDone: (cb) => on("snip-done", cb),
+  /* 设置遮罩开关：主进程据此把实时字幕窗（独立置顶窗）让开，
+     否则它会浮在设置卡片表面上。 */
+  setSheetOpen: (v) => ipcRenderer.invoke("sheet-open", !!v),
 
   /* 桌面模糊背景（磨砂玻璃的"磨砂"来源）：透明窗里 backdrop-filter 采不到桌面，
-     由主进程藏窗抓一张桌面实拍垫在卡片背后。want = 申报要不要（玻璃态才要），
+     由主进程抓一张桌面实拍垫在卡片背后（窗口已 setContentProtection 排除出截图，
+     抓图不含自身，故不藏窗、不闪）。want = 申报要不要（玻璃态才要），
      通道名与 recbar-preload 共用，主进程按发送窗口各记各的回传通道。 */
   glassBgWant: (on) => ipcRenderer.send("glass-bg-want", !!on),
   glassBgRefresh: () => ipcRenderer.send("glass-bg-refresh"),
@@ -109,8 +125,16 @@ contextBridge.exposeInMainWorld("orb", {
   /* 主题自选（设置 › 外观）：交互键换色、极光渐变搭配、自定义主题背景图。
      图片对话框在主进程（渲染层没有 fs 权限），选完回 data URL。 */
   setThemeAccent: (patch) => ipcRenderer.invoke("set-theme-accent", patch),
+  /* 主题切换时把当前主题名报给主进程，由它同步给划词工具栏等独立窗口
+     （那些窗口没有自己的主题系统，靠主进程打 data-theme 才能跟随换肤）。 */
+  reportTheme: (name) => ipcRenderer.send("theme-changed", name),
   pickThemeImage: () => ipcRenderer.invoke("pick-theme-image"),
   clearThemeImage: () => ipcRenderer.invoke("clear-theme-image"),
+  /* 附件（加号）：引用语义 —— 选文件只回 {name,path,size}，文件不拷贝不移动，
+     面板把路径拼进任务文本，Agent 凭路径自己读；缩略图另走 attach-preview
+     读一张 ≤4MB 的图片 data URL。同样守白名单：不给 fs、不给通用 invoke。 */
+  pickAttachments: () => ipcRenderer.invoke("attach-pick"),
+  attachPreview: (p) => ipcRenderer.invoke("attach-preview", p),
   /* 字幕窗皮肤推送（主进程 → 字幕窗；面板只负责发起点，不转发） */
   onSubCfg: (cb) => ipcRenderer.on("sub:cfg", (_e, payload) => cb(payload)),
 

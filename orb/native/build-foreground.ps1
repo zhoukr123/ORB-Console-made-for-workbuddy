@@ -80,8 +80,10 @@ $env:PATH    = "$($cl.Directory.FullName);" + $env:PATH
 
 Write-Output ""
 Write-Output "== 编译 =="
+# psapi.lib：snip 命令要用 EnumProcesses / QueryFullProcessImageNameW
+# 按进程名找 Snipaste 的 PID（判断它有没有可见窗口 = 是不是在截屏）。
 & $cl.FullName /nologo /O2 /W3 /utf-8 /DUNICODE /D_UNICODE `
-    "/Fo:$dist\" "/Fe:$out" $src /link user32.lib
+    "/Fo:$dist\" "/Fe:$out" $src /link user32.lib psapi.lib
 if ($LASTEXITCODE -ne 0) { throw "编译失败，退出码 $LASTEXITCODE" }
 
 if (-not (Test-Path $out)) { throw "未生成 $out" }

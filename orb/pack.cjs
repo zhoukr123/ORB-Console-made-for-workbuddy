@@ -23,7 +23,7 @@ const { execSync } = require('child_process');
 const ROOT = process.env.ORB_ROOT ? path.resolve(process.env.ORB_ROOT) : path.resolve(__dirname, '..');
 const APP = path.join(ROOT, 'orb', 'desktop');
 const ELECTRON = path.join(APP, 'node_modules', 'electron', 'dist');
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 /* 输出目录带时间戳：不删旧构建。早先这里是 fs.rmSync(OUT) 一把清空，
    但批量删除会触发安全保护（3789 个文件远超阈值）而被拦截。
    版本化目录反而更好——每次构建都是可回溯的产物，旧的由用户自行清理。 */
@@ -45,6 +45,10 @@ const APP_FILES = [
   /* 桌面模糊背景（2026-10-22 新增）：glassbg.js 被 main.js require，
      漏打包 = 发布版毛玻璃退化成"锐利透出桌面"（开发态完全正常、测不出来）。 */
   'glassbg.js',
+  /* 原生录屏（2026-10-23 新增）：cap-native.js 被 main.js require，
+     它是 orb-cap.exe 的唯一入口。漏打包 = 发布版一 require 就抛，
+     main.js 整个起不来（比"少个功能"严重得多）。 */
+  'cap-native.js',
   'icon.png', 'icon.ico', 'icon-64.png', 'selection-watch.ps1', 'package.json',
 ];
 /* 随包附带的配置文件（都放在包根，桥的 DATA_DIR 在开发态就是项目根，行为一致）：
@@ -73,8 +77,11 @@ const CONFIG_FILES = ['approvals.json', 'danger-tools.json'];
    - runtime.mjs                     前台通道运行时的单一真相源（T02 引入）。
      bridge.mjs **顶层静态 import** 它 —— 漏打包的后果不是"某个功能坏"，
      而是整个桥进程 ERR_MODULE_NOT_FOUND 起不来，面板全线无响应。
+   - native/dist/orb-cap.exe         原生录屏（DXGI 复制 + MF 直出 MP4），
+     cap-native.js 定位。缺失不致命（面板自动回退 MediaRecorder/VP9），但发布版
+     就白丢原生 MP4，而且只有真去录一段才看得出来 —— 所以必须校验。
      （2026-10-15 实测踩过：加上 runtime.mjs 后忘了同步这里，发布版直接瘫。） */
-const NATIVE_FILES = ['orb-foreground.exe', 'orb-selection.exe', 'orb-input.exe'];
+const NATIVE_FILES = ['orb-foreground.exe', 'orb-selection.exe', 'orb-input.exe', 'orb-cap.exe'];
 const BRIDGE_LOCAL = ['mousehook.mjs', 'runtime.mjs'];
 
 /* 随包释放的示例工作流（桥读 DATA_DIR/workflows，打包态 DATA_DIR 是 APPDATA，
@@ -299,6 +306,7 @@ const must = [
   path.join('resources', 'native', 'dist', 'orb-foreground.exe'),
   path.join('resources', 'native', 'dist', 'orb-selection.exe'),
   path.join('resources', 'native', 'dist', 'orb-input.exe'),
+  path.join('resources', 'native', 'dist', 'orb-cap.exe'),
   path.join('resources', 'runtime', 'python', 'python.exe'),
   path.join('resources', 'runtime', 'python', 'LICENSE.txt'),
   path.join('resources', 'asr', 'asr_server.py'),

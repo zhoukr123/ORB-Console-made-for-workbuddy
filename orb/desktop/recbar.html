@@ -27,6 +27,18 @@
     --dur-1: .14s;                        /* 微交互：hover / active */
     --dur-2: .22s;                        /* 标准：状态切换 / 能量条收展 */
     --dur-3: .32s;                        /* 入场 */
+    /* 能量条收起态的缩放比：.skin / #glassbg / .mini 三处引用同一组值。
+       抽成变量是因为这三层必须"同一个数"：纱缩多少、玻璃就缩多少、
+       .mini 的盒子也得按同一个数算 —— 以前 .78/.34 在两条规则里各写一遍，
+       改一处忘一处就是错位的来源。
+       命名刻意避开 energy 前缀：那属于 panel 侧的令牌族（t1/t2 能量色），
+       _recbar_verify 有一条红线断言「recbar.html 不得出现 energy 变量」。 */
+    --shrink-x: .78;
+    --shrink-y: .34;
+    /* .skin / #glassbg 到窗口边的呼吸边，等于那两条规则里的 `inset: 4px`。
+       那两处保留字面量（读起来更直白，也让既有探针的字面断言继续成立），
+       但只要改了它，这里的 --pad 必须同改 —— 收起态细条的盒宽盒高从它算。 */
+    --pad: 4px;
   }
 
   /* ---------------- 皮肤令牌 ----------------
@@ -88,8 +100,12 @@
      只用 transform / opacity 过渡，符合"动效只动 transform/opacity"的铁律。 */
   .bar {
     position: relative; width: 100%; height: 100%;
-    /* 拖拽区：整个窗口（含那 4px 透明边），按钮区域单独 no-drag */
-    -webkit-app-region: drag;
+    /* ⚠️ 2026-10-23 修「点按钮变成拖窗口」：原来整条 .bar 都是 drag 区，
+       只要按下的位置偏出按钮（能量条收起过、或 `.full` 的 transform 让
+       Chromium 的拖拽区命中测试算出偏移），Windows 就把这一下当"拖窗"，
+       click 永远不会进页面 —— 日志里表现为窗口被拖动 N 帧、却没有任何
+       "点击 btnXXX"。现在拖拽区收窄到左侧计时块（.left），其余区域不拖窗：
+       按偏了最多没反应，不会再吃掉按钮的点击。 */
   }
   .skin {
     position: absolute; inset: 4px;
@@ -131,26 +147,68 @@
   }
 
   /* 能量条态：skin 缩成细条，full 淡出，mini 淡入 */
-  .bar.energy .skin { transform: scale(.78, .34); }
+  .bar.energy .skin { transform: scale(var(--shrink-x), var(--shrink-y)); }
+  /* 能量条态：把 .mini 的盒子算成"缩放之后的纱层"
+     ------------------------------------------------------------------
+     症状（真机自拍 docs/_recbar_glass_energy.png 实锤）：.mini 是 inset:0 的
+     整窗 flex 居中层，自己不缩放，于是文字停在窗口垂直中心 y≈27；而 .skin 已
+     scale(.78,.34) 贴顶收成细条（top=4、高仅 15.64），红点+计时就漂到条外去了。
+
+     解法：不改字号、不缩放内容，只把 .mini 的**盒子**摆成纱层变换后的那块：
+       top    = 4（纱层自身 top，transform-origin 50% 0 → 缩放不改变上边）
+       宽     = (100% - 8px) * --shrink-x
+       高     = (100% - 8px) * --shrink-y
+       左     = (100% - 宽度) / 2   ← 纱层是左右居中缩的，等价于
+                4 + (100% - 8px) * (1 - --shrink-x) / 2（两式恒等，见探针断言）
+     全部用 calc 从变量算，不写死像素：改缩放比只动 --shrink-x/--shrink-y，
+     盒子自动跟着走。盒内 flex 仍是居中，所以细条上文字居中、读得清。 */
+  .bar.energy .mini {
+    top: var(--pad);
+    left: calc((100% - (100% - var(--pad) * 2) * var(--shrink-x)) / 2);
+    width: calc((100% - var(--pad) * 2) * var(--shrink-x));
+    height: calc((100% - var(--pad) * 2) * var(--shrink-y));
+    right: auto; bottom: auto;
+  }
   /* 桌面模糊底图：.skin 的 backdrop-filter 在透明窗里采不到桌面（身后只有透明，
-     见 docs/_glass_rt_probe.js 实测），所以由主进程藏窗抓一张桌面实拍垫在
-     .skin 背后（inset:0 与窗口 1:1），.skin 的 blur(8px) 负责糊成磨砂。
-     背景尺寸/偏移由 JS 按实拍尺寸设（-4px 是把 .skin 的 4px 呼吸边挪回来，
-     让模糊内容与背后的桌面严格对齐）；energy 收起时跟着 .skin 一起缩。 */
+     见 docs/_glass_rt_probe.js 实测），所以由主进程抓一张桌面实拍垫在
+     .skin 背后（本窗口已 setContentProtection 排除出截图 → 抓图不含自己 →
+     不藏窗、不闪、拖动也无错位），.skin 的 blur(8px) 负责糊成磨砂。
+     ⚠️ inset 必须与 .skin 一致（4px）：
+       ① 盒不同 → 底图比纱大一圈，纱的圆角外会露出"多出来的底图"，读作黑边；
+       ② transform-origin 是按**自身盒**算的，盒不同 → 能量条收起时两层缩放
+          起点不重合，细条里会错位一条缝。同盒 + 同 50% 0 才严格同步。
+     背景尺寸/偏移由 JS 按整屏图与窗口位移算（paintGlass）；energy 收起时
+     跟着 .skin 一起缩。 */
   #glassbg {
-    position: absolute; inset: 0; z-index: 0;
+    position: absolute; inset: 4px; z-index: 0;
     background-repeat: no-repeat;
     border-radius: 12px;
-    opacity: 0; transition: opacity var(--dur-2) var(--ease);
+    /* transform-origin 必须常驻在基础规则里（与 .skin 同为 50% 0）：
+       只写在 .bar.energy 里的话，非收起态算出来是 50% 50%，两层就不"同源"了 ——
+       探针 docs/_recbar_glass_probe.js 一开始正是这样抓到 375px 209px / 375px 0px。 */
+    transform-origin: 50% 0;
+    opacity: 0;
+    /* transform 与 .skin 用**同一条**过渡曲线：收起/展开的 220ms 里两层若一个
+       瞬间跳、一个慢慢缩，中途就会错开（纱还大着、底图已经细了），读作闪。
+       动的是 transform 不是 backdrop-filter —— 不碰既有性能红线。 */
+    transition: opacity var(--dur-2) var(--ease),
+                transform var(--dur-2) var(--ease);
     pointer-events: none;
   }
   #glassbg.on { opacity: 1; }
-  .bar.energy #glassbg { transform: scale(.78, .34); transform-origin: 50% 0; }
-  .bar.energy .full { opacity: 0; transform: scale(.96); pointer-events: none; }
+  /* 收起：与 .skin 用同一个缩放比 —— 两层同盒同源，细条才严丝合缝（不出黑边/错位） */
+  .bar.energy #glassbg { transform: scale(var(--shrink-x), var(--shrink-y)); }
+  /* 收起态只淡出、**不缩放**：`.full` 上有 transform 时，Chromium 的
+     -webkit-app-region 命中测试会按未变换的几何算，导致按钮的 no-drag 区
+     错位、按下被当成拖窗（2026-10-23 实测：点按钮却拖动窗口 52/136 帧）。
+     缩放本来只是观感，去掉不影响任何状态语义。 */
+  .bar.energy .full { opacity: 0; pointer-events: none; }
   .bar.energy .mini { opacity: 1; transform: none; }
 
   /* ---------------- 左侧：红点 + 计时 ---------------- */
-  .left { display: flex; align-items: center; gap: 8px; }
+  /* 拖拽手柄：只有左侧计时块能拖窗（见 .bar 上的说明）。
+     no-drag 留给按钮，语义不变。 */
+  .left { display: flex; align-items: center; gap: 8px; -webkit-app-region: drag; }
   .dot, .mdot {
     border-radius: 50%; background: var(--rec); flex: none;
     /* 录制中：呼吸式闪烁。只动 opacity，不碰 transform —— 红点位置固定，
@@ -217,13 +275,14 @@
   @media (prefers-reduced-motion: reduce) {
     .btn { animation: none; transition: none; }
     .btn:hover { transform: none; }
-    .skin, .full, .mini { transition: none; }
+    .skin, .full, .mini, #glassbg { transition: none; }
     .bar:not(.paused) #btnPP:hover .bar-l,
     .bar:not(.paused) #btnPP:hover .bar-r { transform: none; }
   }
   html.no-motion .btn,
   html.no-motion .btn:hover,
   html.no-motion .skin, html.no-motion .full, html.no-motion .mini,
+  html.no-motion #glassbg,
   html.no-motion .bar:not(.paused) #btnPP:hover .bar-l,
   html.no-motion .bar:not(.paused) #btnPP:hover .bar-r { animation: none; transform: none; transition: none; }
 </style>
@@ -354,6 +413,9 @@
     if (bar.classList.contains("energy")) return;
     bar.classList.add("energy");
     setThrough(true);
+    /* 诊断日志（只在真的收起时打一次，不是每帧）：与主进程的「穿透 ON」配对看，
+       能一眼分清"页面没收起/主进程没收到穿透申报"是哪一环断了。 */
+    console.log("[recbar] 收起成能量条");
   }
   function scheduleCollapse() {
     if (collapseTimer) clearTimeout(collapseTimer);
@@ -365,6 +427,9 @@
     if (bar.classList.contains("energy")) {
       bar.classList.remove("energy");
       setThrough(false);          // 先收回了事件，再收起穿透，否则这一下点击会漏下去
+      /* 诊断日志：只有真的从收起态展开时才打。与主进程的「悬停 进入」配对看 ——
+         有「悬停 进入」没有这一行 = IPC 到了但页面没展开；两行都没有 = 悬停没被判定到。 */
+      console.log("[recbar] 展开（悬停触发）+ 关闭穿透");
     }
   }
 
@@ -460,11 +525,34 @@
   function cmd(c) {
     if (window.orb && typeof window.orb.sendBarCmd === "function") window.orb.sendBarCmd(c);
   }
+  /* 三个按钮各自显式打一行点击日志（不用事件代理：代理只会告诉你"冒泡到了容器"，
+     分不清到底哪个按钮、以及是不是根本没到页面）。这三行 + 主进程的
+     「收到命令 / 已转发命令」两行，就能把"点了没反应"定位到具体环：
+       无「点击」                    → 点击没进页面（穿透挂着 / 窗口被盖 / 坐标不在按钮上）
+       有「点击」无「收到命令」      → preload 桥没起来或 IPC 被拦
+       有「收到命令」无「已转发」    → 面板不存在 / 命令名不认识 */
+  /* 诊断：记录任何进到页面的指针按下（捕获阶段，先于按钮的 click）。
+     与下面的「点击 btnXXX」对照，能再细分一层：
+       有 pointerdown、无 点击  → 按到了拖拽区/别的元素，或 click 被吃掉
+       连 pointerdown 都没有    → 窗口根本没收到输入（穿透还挂着 / 被别的窗口盖住） */
+  document.addEventListener("pointerdown", function (e) {
+    var t = e.target || {};
+    console.log("[recbar] pointerdown @" + Math.round(e.clientX) + "," + Math.round(e.clientY)
+      + " target=" + (t.id || t.className || t.tagName || "?"));
+  }, true);
+
   btnPP.addEventListener("click", function () {
+    console.log("[recbar] 点击 btnPP");
     cmd(running ? "pause" : "resume");
   });
-  document.getElementById("btnAbort").addEventListener("click", function () { cmd("abort"); });
-  document.getElementById("btnFinish").addEventListener("click", function () { cmd("finish"); });
+  document.getElementById("btnAbort").addEventListener("click", function () {
+    console.log("[recbar] 点击 btnAbort");
+    cmd("abort");
+  });
+  document.getElementById("btnFinish").addEventListener("click", function () {
+    console.log("[recbar] 点击 btnFinish");
+    cmd("finish");
+  });
 
   /* 键盘兜底：按钮本来就 focusable，回车/空格浏览器自己会触发 click，
      这里只补 Esc = 取消，符合主流录屏软件的手感。 */
@@ -472,24 +560,70 @@
     if (e.key === "Escape") cmd("abort");
   });
 
+  /* ---------- 桌面模糊底图（整屏图 + 位移平移） ----------
+     主进程（glassbg.js 的 full 模式）给的是**整屏**图 + disp（显示器 DIP 矩形），
+     不是裁好的窗口块 —— 一张整屏图对桌面静止时窗口的任意位置都成立，于是拖动
+     全程只来位移帧 {kind:"pos",x,y}（16ms 节流），这里改 background-position 平移
+     即可：零重截、跟手、松手不再闪那一下。
+     glassShot = 最近一张整屏图载荷（含 disp / at）；glassPos = 最近一帧窗口 DIP 位置。 */
+  var glassShot = null;
+  var glassPos = null;
+
+  /* 只动 background-size / background-position，不碰图片本身（拖动每帧都要跑，
+     重建 data URL 会反复解码，必卡）。 */
+  function paintGlass() {
+    var el = document.getElementById("glassbg");
+    if (!el || !glassShot) return;
+    /* 老 crop 载荷（只有 png、没有 disp）：拉伸铺满兜底，别把底图弄没了。
+       改动后录制条不会再收到这种载荷（main.js 已切 full），纯兼容老版本主进程。 */
+    if (!glassShot.disp) {
+      if (glassShot.png) {
+        el.style.backgroundImage = "url(data:image/png;base64," + glassShot.png + ")";
+        el.style.backgroundSize = "100% 100%";
+        el.style.backgroundPosition = "0 0";
+      }
+      return;
+    }
+    var d = glassShot.disp;
+    var p = glassPos || glassShot.at;
+    if (!p) return;                       // 新图既没 at 也没历史位置：保持上一帧
+    /* 元素比窗口内缩 4px（inset:4px），所以「元素左上角在桌面上的 DIP 坐标」
+       = 窗口位置 + 元素在窗口内的偏移。必须用 offsetLeft/Top：
+       它们不受 transform 影响，能量条收起（scale .78/.34）时读到的仍是 4；
+       换成 getBoundingClientRect 会被缩放算成 3.12，底图整条错开。 */
+    el.style.backgroundSize = d.w + "px " + d.h + "px";
+    el.style.backgroundPosition =
+      -(p.x + el.offsetLeft - d.x) + "px " + -(p.y + el.offsetTop - d.y) + "px";
+  }
+
+  /* 收主进程回传：位移帧走高频路径（只重画位置），其余（换屏 / 隐藏态补新鲜度
+     / 手动刷新）是新图，先换 image 再按抓取时的窗口位置对齐一帧。 */
+  function onGlassBg(shot) {
+    if (!shot) return;
+    var el = document.getElementById("glassbg");
+    if (!el) return;
+    if (shot.kind === "pos" ||
+        (typeof shot.x === "number" && typeof shot.y === "number" && !shot.img && !shot.png)) {
+      glassPos = { x: shot.x, y: shot.y };
+      paintGlass();
+      return;
+    }
+    var data = shot.img || shot.png;
+    if (data) el.style.backgroundImage = "url(data:" + (shot.mime || "image/png") + ";base64," + data + ")";
+    glassShot = shot;
+    glassPos = shot.at || glassPos;
+    paintGlass();
+    el.classList.add("on");
+  }
+
   /* preload 注入的桥：先订阅再允许主进程发事件。
      订阅放在 DOMContentLoaded 之前也没关系（preload 比页面脚本更早跑），
      但统一在末尾显式做一次，读起来更清楚。 */
   if (window.orb) {
     if (typeof window.orb.onRecEvent === "function") window.orb.onRecEvent(onEvent);
     if (typeof window.orb.onRecCfg === "function") window.orb.onRecCfg(applyCfg);
-    /* 桌面模糊底图：常申报（控制条常驻可见）。实拍由主进程藏窗抓，
-       .skin 的 blur(8px) 负责糊；-4px 是把 .skin 的呼吸边挪回来对齐桌面。 */
-    if (typeof window.orb.onGlassBg === "function") {
-      window.orb.onGlassBg(function (shot) {
-        var el = document.getElementById("glassbg");
-        if (!el || !shot || !shot.png) return;
-        el.style.backgroundImage = "url(data:image/png;base64," + shot.png + ")";
-        el.style.backgroundSize = shot.w + "px " + shot.h + "px";
-        el.style.backgroundPosition = "-4px -4px";
-        el.classList.add("on");
-      });
-    }
+    /* 桌面模糊底图：常申报（控制条常驻可见）。整屏图 + 位移帧都从这个通道来。 */
+    if (typeof window.orb.onGlassBg === "function") window.orb.onGlassBg(onGlassBg);
     if (typeof window.orb.glassBgWant === "function") window.orb.glassBgWant(true);
   }
   paint();
