@@ -1,5 +1,6 @@
 <div align="center">
 
+<p><a href="https://github.com/zhoukr123/ORB-Console-made-for-workbuddy#readme"><img alt="README" src="https://img.shields.io/badge/Readme-5b6ee8?style=for-the-badge"></a></p>
 # ORB 控制台
 
 **一个真的会替你操作电脑的桌面 AI 员工。**
