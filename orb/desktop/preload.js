@@ -115,11 +115,15 @@ contextBridge.exposeInMainWorld("orb", {
   /* 悬浮控制条联动。面板录制开始后自己会隐藏，控制键落在独立悬浮窗上，
      所以两条通道都是"转发"：面板把状态递给主进程，主进程再转给控制条；
      控制条的用户操作同样经主进程回到这里。 */
-  onRecCmd: (cb) => ipcRenderer.on("rec:cmd", (_e, cmd) => cb(cmd)),
+  /* 走 on() 表（与其余 20+ 条订阅同一套）：裸 ipcRenderer.on 绕开了去重与
+     off()，重复注册解不掉，窗口复用（hide/show）时会叠监听。 */
+  onRecCmd: (cb) => on("rec:cmd", cb),
   sendRecBarEvent: (payload) => ipcRenderer.send("rec-cmd-to-bar", payload),
   /* 控制条偏好（皮肤 / 能量条 / 描边颜色）。落盘在主进程 orb-state.json，
      由 set-rectheme 收口：一处校验、一处落盘、一处推给控制条。 */
   setRecTheme: (patch) => ipcRenderer.invoke("set-rectheme", patch),
+  setRecAudio: (patch) => ipcRenderer.invoke("set-recaudio", patch),
+  setRecCam: (patch) => ipcRenderer.invoke("set-reccam", patch),
   /* 实时字幕窗偏好（皮肤 + 描边色）：同一套皮肤逻辑，字幕默认深纱。 */
   setSubTheme: (patch) => ipcRenderer.invoke("set-sub-theme", patch),
   /* 主题自选（设置 › 外观）：交互键换色、极光渐变搭配、自定义主题背景图。
@@ -127,7 +131,7 @@ contextBridge.exposeInMainWorld("orb", {
   setThemeAccent: (patch) => ipcRenderer.invoke("set-theme-accent", patch),
   /* 主题切换时把当前主题名报给主进程，由它同步给划词工具栏等独立窗口
      （那些窗口没有自己的主题系统，靠主进程打 data-theme 才能跟随换肤）。 */
-  reportTheme: (name) => ipcRenderer.send("theme-changed", name),
+  reportTheme: (name, vars) => ipcRenderer.send("theme-changed", name, vars || null),
   pickThemeImage: () => ipcRenderer.invoke("pick-theme-image"),
   clearThemeImage: () => ipcRenderer.invoke("clear-theme-image"),
   /* 附件（加号）：引用语义 —— 选文件只回 {name,path,size}，文件不拷贝不移动，
@@ -136,7 +140,7 @@ contextBridge.exposeInMainWorld("orb", {
   pickAttachments: () => ipcRenderer.invoke("attach-pick"),
   attachPreview: (p) => ipcRenderer.invoke("attach-preview", p),
   /* 字幕窗皮肤推送（主进程 → 字幕窗；面板只负责发起点，不转发） */
-  onSubCfg: (cb) => ipcRenderer.on("sub:cfg", (_e, payload) => cb(payload)),
+  onSubCfg: (cb) => on("sub:cfg", cb),
 
   /* 剪贴板 */
   readClipboard: () => ipcRenderer.invoke("clipboard-read"),

@@ -17,7 +17,9 @@
   }
   .ball img {
     width: 66px; height: 66px; display: block;
-    filter: drop-shadow(0 2px 6px rgba(38, 33, 92, .35));
+    /* 投影改中性黑：以前是紫罗兰色调（rgba(38,33,92,.35)），
+       自选交互色是青柠/琥珀时这一坨永远是脏紫 */
+    filter: drop-shadow(0 2px 6px rgba(0,0,0,.28));
     transition: transform .18s ease;
     -webkit-user-drag: none;
   }
@@ -29,23 +31,24 @@
   body.dock-left .ball { border-radius: 0 8px 8px 0; }
   body.dock-right .ball { border-radius: 8px 0 0 8px; }
 
-  /* 思考动效：蓝色光晕自图标向外同步扩大/缩小（呼吸感）。
-     原来是橙黄色描边脉冲（#ef9f27），与 logo 的蓝不搭，显得脏。 */
+  /* 思考动效：交互色光晕自图标向外同步扩大/缩小（呼吸感）。
+     颜色跟随主题交互色（--accent 由主进程随主题推送，见 main.js pushThemeVars）：
+     以前写死品牌蓝，自选青柠/琥珀时这一圈与主题无关。 */
   .halo {
     display: none; position: absolute; inset: 5px; z-index: 0;
     border-radius: 50%;
-    /* 纯蓝径向光晕，边缘完全透明，缩放时不会看到硬边 */
+    /* 径向光晕，边缘完全透明，缩放时不会看到硬边 */
     background: radial-gradient(circle at 50% 50%,
-                rgba(8, 94, 200, .52) 0%,
-                rgba(8, 94, 200, .30) 44%,
-                rgba(8, 94, 200, .12) 66%,
-                rgba(8, 94, 200, 0) 78%);
+                color-mix(in srgb, var(--accent, #5b6ee8) 52%, transparent) 0%,
+                color-mix(in srgb, var(--accent, #5b6ee8) 30%, transparent) 44%,
+                color-mix(in srgb, var(--accent, #5b6ee8) 12%, transparent) 66%,
+                color-mix(in srgb, var(--accent, #5b6ee8) 0%, transparent) 78%);
     will-change: transform, opacity;
   }
-  /* 第二层：一圈细蓝环，跟光晕同节奏，让"扩大"更明确 */
+  /* 第二层：一圈细环，跟光晕同节奏，让"扩大"更明确 */
   .halo::after {
     content: ''; position: absolute; inset: 7px; border-radius: 50%;
-    border: 1.5px solid rgba(8, 94, 200, .68);
+    border: 1.5px solid color-mix(in srgb, var(--accent, #5b6ee8) 68%, transparent);
     opacity: .9;
   }
   /* logo 压在光晕之上 */
@@ -53,6 +56,15 @@
 
   body.busy .halo { display: block; animation: breathe 1.7s cubic-bezier(.45,0,.55,1) infinite; }
   body.busy .ball img { animation: bob 1.7s cubic-bezier(.45,0,.55,1) infinite; }
+  /* 双兜底必须**紧贴**基类（等特异性 + 基类在后会盖成死代码）。这两条是无限
+     循环的常驻动画：系统开了"减少动态效果"或面板关了动效（html.no-motion 由
+     主进程推）时不停，这个窗口就等于不认用户的动效偏好。 */
+  html.no-motion body.busy .halo,
+  html.no-motion body.busy .ball img { animation: none; }
+  @media (prefers-reduced-motion: reduce) {
+    body.busy .halo,
+    body.busy .ball img { animation: none; }
+  }
 
   /* 同一组 transform 同时驱动光晕与蓝环 → 视觉上"同步扩大/缩小" */
   @keyframes breathe {

@@ -5,12 +5,15 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
 <style>
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  /* 录制边框：跟随主题交互色（--accent 由主进程 executeJavaScript 推进来，
+     推送前用品牌紫兜底）。以前整圈写死 rgba(83,74,183,...) 品牌紫，
+     自选青柠/琥珀时录制边框永远是一圈脏紫。 */
   .ring {
     position: absolute; inset: 0;
-    border: 2.5px solid rgba(83, 74, 183, .85);
+    border: 2.5px solid color-mix(in srgb, var(--accent, #534ab7) 85%, transparent);
     border-radius: 10px;
-    box-shadow: 0 0 10px 1px rgba(83, 74, 183, .45),
-                inset 0 0 10px 1px rgba(83, 74, 183, .25);
+    box-shadow: 0 0 10px 1px color-mix(in srgb, var(--accent, #534ab7) 45%, transparent),
+                inset 0 0 10px 1px color-mix(in srgb, var(--accent, #534ab7) 25%, transparent);
   }
 </style>
 </head>

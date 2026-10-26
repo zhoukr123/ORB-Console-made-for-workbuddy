@@ -1,5 +1,8 @@
 <!doctype html>
+<html lang="zh-CN">
+<head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
 <title>实时字幕</title>
 <style>
   /* ==================================================================
@@ -14,13 +17,18 @@
      皮肤只需换 #wrap 的底衫，不用改窗口创建逻辑。
      ================================================================== */
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
-  /* 皮肤令牌：默认深纱（字幕的默认配方，与实时字幕旧版一致） */
-  html[data-skin="dark"] {
+  /* 皮肤令牌：默认深纱（字幕的默认配方，与实时字幕旧版一致）。
+     ⚠️ 挂在 html 而不是 html[data-skin="dark"] 上：文档初始没有 data-skin
+     属性（要等主进程 sub:cfg 推过来），挂在属性选择器上会让首帧 —— 以及
+     cfg 推送失败时**永久** —— 拿不到 --pill-bg / --fg，表现为透明底 + 浏览器
+     默认黑字，浅色桌面上几乎看不见。深纱作为默认值，浅纱来了再覆盖。 */
+  html {
     --pill-bg: rgba(10,12,18,.82);
     --pill-border: rgba(158,203,255,.28);
     --sheen: rgba(255,255,255,.10);
     --fg: #fff;
-    --line-cur: #9ecbff;
+    /* 高亮行跟随交互色（--accent 由主进程随主题推送，推送前用旧蓝兜底） */
+    --line-cur: var(--accent, #9ecbff);
     --line-old: rgba(255,255,255,.5);
     --line-draft: #cfcfcf;
   }
@@ -29,7 +37,8 @@
     --pill-border: rgba(120,128,145,.38);
     --sheen: rgba(255,255,255,.95);
     --fg: #262a33;
-    --line-cur: #3c3489;
+    /* 浅纱高亮行用 accent-fg（深到能在浅底上当文字），兜底旧靛 */
+    --line-cur: var(--accent-fg, #3c3489);
     --line-old: rgba(38,42,51,.5);
     --line-draft: #5f5e5a;
   }
@@ -42,7 +51,13 @@
     border: 1px solid var(--uc, var(--pill-border));
     border-radius: 12px;
     padding: 8px 18px 10px;
-    display: flex; flex-direction: column; justify-content: center; gap: 2px;
+    /* 靠底对齐而不是居中：窗口是 resizable 的，用户可能把它拉得很矮。
+       居中时行数一旦超出窗高，会**首尾同时**被裁且无从滚动 —— 最新的那句
+       反而看不见。靠底至少保证"最新字幕永远可见"，被裁的是更早的历史。 */
+    display: flex; flex-direction: column; justify-content: flex-end; gap: 2px;
+    /* 拖拽区占了整个窗体，滚动交给 padding 与行数上限（take = 最近 2 条）控制，
+       这里只做保险：内容超出时不让它把圆角撑破。 */
+    overflow: hidden;
     box-shadow: inset 0 1px 0 var(--sheen), inset 0 0 0 1px var(--uc-hair, transparent);
   }
   .line { color: var(--fg); font: 14px/1.45 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -56,9 +71,12 @@
   #wrap:hover #bar { opacity: .85; }
   #bar button { background: transparent; border: 0; color: var(--fg); cursor: pointer; font-size: 12px; padding: 2px 5px; }
 </style>
+</head>
 <div id="wrap">
   <div id="bar">
-    <button id="hide" title="隐藏悬浮窗（字幕服务继续在后台跑，可从面板再打开）">✕</button>
+    <!-- 文案必须说实话：subtitle-hide 在主进程里的第一句就是 stopSubtitleStream()
+         （SSE 断连），关掉之后字幕是**停了**，不是"继续在后台跑"。 -->
+    <button id="hide" title="关闭字幕窗并停止识别（可再从面板打开）">✕</button>
   </div>
   <div class="line cur">（实时字幕：等待系统声音…）</div>
 </div>
@@ -85,12 +103,14 @@
     if (done.length || draft) {
       const take = done.slice(-2);
       wrap.querySelectorAll('.line').forEach((n) => n.remove());
-      for (const it of take) {
+      /* 用**下标**判最后一行，不用对象引用：items 里若出现同一个对象被复用/
+         重复推入（中间结果原地改过就会这样），引用判定会把两行都标成 cur。 */
+      take.forEach((it, i) => {
         const d = document.createElement('div');
-        d.className = 'line' + (it === take[take.length - 1] && !draft ? ' cur' : ' old');
+        d.className = 'line' + (i === take.length - 1 && !draft ? ' cur' : ' old');
         d.textContent = it.text || '';
         wrap.appendChild(d);
-      }
+      });
       if (draft) {
         const d = document.createElement('div');
         d.className = 'line draft';
@@ -103,3 +123,4 @@
   if (window.orb.onSubCfg) window.orb.onSubCfg(applyCfg);
   document.getElementById('hide').onclick = () => window.orb.setSubtitle(false);
 </script>
+</html>

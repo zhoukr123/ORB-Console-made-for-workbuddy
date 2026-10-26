@@ -107,6 +107,14 @@ function settleAny(error) {
   clearTimeout(p.timer);
   p.reject(error);
 }
+/** 收掉 helper 进程、断开在途状态。why 只用于日志。 */
+function killChild(why) {
+  const c = child;
+  if (!c) return;
+  try { if (why) note("清理编码器进程：", why); } catch { /* 记不了就算了 */ }
+  try { c.kill(); } catch { /* 已经退了 */ }
+  if (child === c) child = null;
+}
 function waitFor(kind, ms, label) {
   if (pending) {
     return Promise.reject(new Error("上一条命令还没结束：" + pending.kind));
@@ -114,6 +122,10 @@ function waitFor(kind, ms, label) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       if (pending && pending.kind === kind) pending = null;
+      /* 超时不能只清 pending：helper 还在跑就会继续写文件、抱着输出句柄不放，
+         之后回来的 "done" 也没人接收，下一次 start 还会误报"已有一段录制在跑"。
+         所以超时一律顺手把进程收掉。 */
+      killChild("等待 " + (label || kind) + " 超时");
       reject(new Error("等待 " + (label || kind) + " 超时（" + ms + "ms）"));
     }, ms);
     if (typeof timer.unref === "function") timer.unref();
@@ -280,6 +292,12 @@ async function start(opts) {
     throw new Error("无法启动原生编码器：" + errText(e));
   }
   child = c;
+  /* stdin 的 'error' 必须有监听：helper 意外先退出时，往已断的管道写会触发
+     EPIPE —— 没有监听者就升级成未捕获异常，而调用方那边只是"一直等着"。
+     这里把它当成一次失败，让在途请求立刻 settle。 */
+  try {
+    c.stdin.on("error", (e) => settleAny(new Error("与编码器的管道断开：" + errText(e))));
+  } catch { /* 极端情况下 stdin 已不可用，忽略 */ }
   note("启动：", EXE, "→", outPath, "(" + fps + "fps / " + bitrate + ")");
 
   const ready = waitFor("ready", READY_MS, "ready");

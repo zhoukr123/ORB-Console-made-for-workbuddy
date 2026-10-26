@@ -220,7 +220,12 @@ function isRunning() {  return new Promise((resolve) => {
 
 /** 时间戳文件名：snip_20261022_194500.png。同秒多张时加 -2/-3 序号，绝不互相覆盖。 */
 function snipFile(dir, d = new Date()) {  const p = (n) => String(n).padStart(2, "0");
-  const base = `snip_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  /* 毫秒进文件名：只精确到秒的话，同一秒连按两次截屏会算出同一个名字 ——
+     后一张直接覆盖前一张，用户会以为第一张凭空消失了。
+     （不用"先建空文件占坑"那一套：占坑会在取消/失败路径留下 0 字节的 png，
+       反而多了一类要清理的垃圾。） */
+  const ms = String(d.getMilliseconds()).padStart(3, "0");
+  const base = `snip_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}${ms}`;
   let name = base + ".png";
   for (let i = 2; i <= 999; i++) {
     if (!fs.existsSync(path.join(dir, name))) break;

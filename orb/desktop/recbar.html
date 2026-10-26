@@ -361,6 +361,10 @@
      （transform-origin: 50% 0），所以 y0 从 0 起、往下留到 34 —— 比细条本身
      宽一圈，手指/鼠标不必正正好好对准。必须与 main.js 的 REC_HIT 一致。 */
   var HIT = { x0: 16, x1: 224, y0: 0, y1: 34 };
+  /* 与主进程的 REC_HOVER_PAD 对齐：那条路（轮询光标）判定区是外扩 8px 的，
+     这里（页面自己的 mousemove 快路径）不外扩的话，两条路对"算不算悬停"的
+     答案就不一样 —— 同一个鼠标位置，一条判进、一条判不进。 */
+  var HIT_PAD = 8;
   var energyOn = true;         // 设置 › 录屏 里可关；关了就永远是完整条
   var paused = false;
   var collapseTimer = null;
@@ -433,20 +437,31 @@
     }
   }
 
-  /* 主通道：主进程在穿透期间盯着光标，进出各广播一次 —— Windows 下穿透窗口
-     根本收不到鼠标事件，页面自己判是判不出来的（详见 main.js 的 rec-bar-passthru）。 */
+  /* 主通道：主进程盯着光标，进/出各广播一次 —— Windows 下穿透窗口根本收不到
+     鼠标事件，页面自己判是判不出来的（详见 main.js 的 rec-bar-passthru）。
+     ⚠️ 这条通路在**展开态也必须活着**：展开靠 inside:true，而"该收回去了"完全
+     依赖主进程把 inside:false 送回来（页面自己的 mouseleave 在穿透刚关那一下
+     常常不补发）。主进程那边已改成穿透 OFF 也不停监视，这里保持原样即可。 */
   if (typeof window.orb.onRecHover === "function") {
     window.orb.onRecHover(function (p) {
       if (!p) return;
-      if (p.inside) expand();
-      else scheduleLeave();
+      if (p.inside) {
+        /* 鼠标在条上：取消一切待收（含上一次移开排的 leaveTimer）。 */
+        expand();
+      } else {
+        /* 鼠标移开：排 700ms 后收回。这条日志是"移开后能不能收"的唯一证据 ——
+           报"再也不缩起"时，若 orb.log 里没有这一行，就是主进程没把移开送过来。 */
+        console.log("[recbar] 悬停离开，排 700ms 后收起");
+        scheduleLeave();
+      }
     });
   }
   /* 快路径：macOS 上 forward:true 的 mousemove 转发是可靠的，能省掉一次 IPC 往返。
      两条路都调 expand()，谁先到算谁的，expand() 本身幂等。 */
   window.addEventListener("mousemove", function (e) {
     if (!bar.classList.contains("energy")) return;
-    if (e.clientX >= HIT.x0 && e.clientX <= HIT.x1 && e.clientY >= HIT.y0 && e.clientY <= HIT.y1) expand();
+    if (e.clientX >= HIT.x0 - HIT_PAD && e.clientX <= HIT.x1 + HIT_PAD
+        && e.clientY >= HIT.y0 - HIT_PAD && e.clientY <= HIT.y1 + HIT_PAD) expand();
   });
   /* 键盘 Tab 到按钮上也要展开，否则焦点落在看不见的按钮上 */
   window.addEventListener("focusin", expand);
@@ -535,7 +550,12 @@
      与下面的「点击 btnXXX」对照，能再细分一层：
        有 pointerdown、无 点击  → 按到了拖拽区/别的元素，或 click 被吃掉
        连 pointerdown 都没有    → 窗口根本没收到输入（穿透还挂着 / 被别的窗口盖住） */
+  /* 默认关闭：拖动窗口时 pointerdown 会连着触发，加上主进程那条
+     console-message 转发，一次拖拽就能在 orb.log 里刷一屏。要排查"点击没反应"
+     时把 DIAG 改成 true（收展/离开/按钮那几行不受影响，它们本来就是低频的）。 */
+  var DIAG = false;
   document.addEventListener("pointerdown", function (e) {
+    if (!DIAG) return;
     var t = e.target || {};
     console.log("[recbar] pointerdown @" + Math.round(e.clientX) + "," + Math.round(e.clientY)
       + " target=" + (t.id || t.className || t.tagName || "?"));

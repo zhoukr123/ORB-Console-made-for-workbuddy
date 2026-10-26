@@ -356,6 +356,18 @@ const state = {
   recSkin: "light",
   recEnergy: true,
   recBorderColor: "",
+  /* 录屏音频来源（设置 › 录屏）：none 不录音频（默认，保持既有行为）；
+     system 系统音 / mic 麦克风 / mix 两者混音（软件限幅）。
+     与 recSkin 那组同模式：主进程落盘，渲染层只发 patch。
+     原生编码管线接入音频后，录屏启动时从这里取值。 */
+  recAudio: { source: "none" },
+  /* 摄像头小框（设置 › 录屏）：
+     shape  圆形 circle / 圆角 round / 方框 square
+     ratio  16:9 | 4:3 | 1:1 | custom（用户自定）| free（不约束）
+     customRatio 自定长宽比原文（"16:9" 或 "1.78"），仅 ratio=custom 时有效
+     bx/by 小框中心点（0~1，相对录制画面）；bw/bh 宽高（0~1，相对画面宽/高）
+     归一化口径让面板内的「预览模式」与日后的真实悬浮窗共用同一份配置。 */
+  recCam: { enabled: false, shape: "round", ratio: "4:3", customRatio: "", bx: 0.76, by: 0.72, bw: 0.115, bh: 0.15 },
   /* 实时字幕窗（subtitle.html）：与悬浮条同一套皮肤逻辑，默认深纱 ——
      字幕要压在视频上，深底不抢画面。 */
   subSkin: "dark",
@@ -407,8 +419,32 @@ function loadState() {
     Object.assign(state, raw);
     if (v) state.vision = v;
     normalizeRecPrefs();
+    normalizeRecAudio();
+    normalizeRecCam();
     normalizeThemePrefs();
-  } catch {}
+    normalizeScalars();
+  } catch (e) {
+    /* 这里不能静默：文件损坏 = 主题偏好 / 存储根 / 最近录屏全部回默认值，
+       用户会以为自己从来没设置过。留一行日志，至少能查到是哪次写坏的。 */
+    log("[state] 读取失败，已回默认值:", (e && e.message) || String(e));
+  }
+}
+/* 布尔 / 枚举类的首选项也要收敛：orb-state.json 被手改或被写坏时
+   （"pinned":"false"、"border":"0" 这种字符串）会让面板永久钉住 / 自动折叠
+   永远关不掉，而在 UI 上改不回来 —— 布尔值只有 true/false 两种，没有"写坏了
+   就当没设置"这回事，所以加载时统一按类型收敛。 */
+function normalizeScalars() {
+  const bool = (v, d) => (typeof v === "boolean" ? v : d);
+  state.pinned = bool(state.pinned, false);
+  state.border = bool(state.border, true);
+  state.autoSelect = bool(state.autoSelect, true);
+  state.autoSelectClipboard = bool(state.autoSelectClipboard, true);
+  state.envWizardDone = bool(state.envWizardDone, false);
+  state.snipGuideDone = bool(state.snipGuideDone, false);
+  state.coordMode = state.coordMode === "permille" ? "permille" : "pixel";
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+  state.x = num(state.x);
+  state.y = num(state.y);
 }
 /* 老配置文件里没有录屏偏好这三项；也防手改orb-state.json 时写进奇怪的值 ——
    归一化放在加载后统一做一次，比在每个读取点判空可靠。 */
@@ -418,6 +454,38 @@ function normalizeRecPrefs() {
   state.recBorderColor = /^#[0-9a-fA-F]{6}$/.test(String(state.recBorderColor || ""))
     ? String(state.recBorderColor).toLowerCase()
     : "";
+}
+/* 录屏音频来源：白名单校验，形状不对回 none（不录音频） */
+function normalizeRecAudio() {
+  const src = state.recAudio && typeof state.recAudio === "object" ? state.recAudio.source : "";
+  state.recAudio = { source: ["none", "system", "mic", "mix"].includes(src) ? src : "none" };
+}
+/* 摄像头小框：枚举值白名单 + 数值夹取；custom 档拿不出合法比例时退回 free */
+function normalizeRecCam() {
+  const c = state.recCam && typeof state.recCam === "object" ? state.recCam : {};
+  const shape = ["circle", "round", "square"].includes(c.shape) ? c.shape : "round";
+  const ratio = ["16:9", "4:3", "1:1", "custom", "free"].includes(c.ratio) ? c.ratio : "4:3";
+  const customRatio = typeof c.customRatio === "string" ? c.customRatio.trim().slice(0, 12) : "";
+  const f01 = (v, d) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(1, Number(v))) : d);
+  const fSize = (v, d) => (Number.isFinite(Number(v)) ? Math.max(0.05, Math.min(0.6, Number(v))) : d);
+  state.recCam = {
+    enabled: !!c.enabled,
+    shape,
+    ratio: ratio === "custom" && !validRatioStr(customRatio) ? "free" : ratio,
+    customRatio,
+    bx: f01(c.bx, 0.76),
+    by: f01(c.by, 0.72),
+    bw: fSize(c.bw, 0.115),
+    bh: fSize(c.bh, 0.15),
+  };
+}
+/* 长宽比原文合法性："16:9"（两端 > 0）或小数 "1.78"（> 0）；不合法返回空串 */
+function validRatioStr(s) {
+  const t = String(s || "").trim();
+  let m = t.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+  if (m) { const a = Number(m[1]), b = Number(m[2]); return a > 0 && b > 0 ? t : ""; }
+  if (/^\d+(?:\.\d+)?$/.test(t) && Number(t) > 0) return t;
+  return "";
 }
 /* 主题自选与字幕窗偏好的归一化：同样只做"加载后一次"，形状不对就回默认值。 */
 function normalizeThemePrefs() {
@@ -454,10 +522,19 @@ function themePrefsPayload() {
 }
 function saveState(patch) {
   Object.assign(state, patch || {});
+  /* 原子写：先写 .tmp 再 rename。直接写目标文件时，进程被强杀 / 磁盘只读会把
+     orb-state.json 截成半个 JSON —— 下次启动 loadState 的 catch 会静默回默认值，
+     主题偏好、存储根、最近录屏全丢，用户还不知道发生了什么。
+     写失败也不能再吞：至少留一行日志。 */
   try {
-    fs.mkdirSync(path.dirname(stateFile()), { recursive: true });
-    fs.writeFileSync(stateFile(), JSON.stringify(state));
-  } catch {}
+    const dir = path.dirname(stateFile());
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = stateFile() + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(state));
+    fs.renameSync(tmp, stateFile());
+  } catch (e) {
+    log("[state] 保存失败:", (e && e.message) || String(e));
+  }
 }
 
 function displayOf(bounds) {
@@ -529,6 +606,7 @@ function clampToWorkArea(x, y, w, h) {
  * ⚠️ 调试逃生开关：ORB_NO_PROTECT=1 启动则彻底不开启（排查 / 录演示用）。
  *    正常启动不要写进任何默认配置或启动脚本。 */
 let captureShieldOn = false;   // 录屏期间为 true（glassbg 的临时开关不改写它）
+let captureShieldDepth = 0;    // 录屏会话的引用计数（见 setCaptureShield）
 
 function shieldWin(win, tag, on) {
   if (!win || (win.isDestroyed && win.isDestroyed())) return;
@@ -549,7 +627,7 @@ function shieldWin(win, tag, on) {
  * 代价是成片里会有一条悬浮条 —— 换来"用户截屏时看得见自己的录屏控制条"，
  * 这个取舍更划算（悬浮条本身很小，且用户知道它在那儿）。
  */
-function setCaptureShield(on) {
+function setShieldState(on) {
   captureShieldOn = !!on;
   shieldWin(ball, "ball", captureShieldOn);
   shieldWin(panel, "panel", captureShieldOn);
@@ -557,6 +635,23 @@ function setCaptureShield(on) {
   shieldWin(subWin, "subtitle", captureShieldOn);
   shieldWin(borderWin, "border", captureShieldOn);
   log("[glassbg] 截图排除", captureShieldOn ? "已开启（录屏中）" : "已关闭");
+}
+/**
+ * 引用计数，不是布尔开关：cap-* 链路允许 3 个并发会话，原生链路又是独立一条。
+ * 布尔开关的话，先结束的那一路会把排除撤掉，仍在录的那一路成片里就出现 ORB 自己。
+ * 计数归零才真正恢复可截图。异常路径多调一次 false 只会让计数提前归零
+ * （钳在 0），不会把状态锁死 —— 宁可"少排除"，也不能"再也截不到自己的界面"。
+ */
+function setCaptureShield(on) {
+  captureShieldDepth = Math.max(0, captureShieldDepth + (on ? 1 : -1));
+  const next = captureShieldDepth > 0;
+  if (next === captureShieldOn) return;   // 状态没变就别挨个窗口刷一遍
+  setShieldState(next);
+}
+/** 强制复位（面板被强关 / 退出）：不管计数漂到哪儿，一律恢复可截图。 */
+function resetCaptureShield() {
+  captureShieldDepth = 0;
+  if (captureShieldOn) setShieldState(false);
 }
 
 /* ---- glassbg 抓底图那一瞬间的临时排除 ----
@@ -625,6 +720,7 @@ function createBall() {
   ball.on("closed", () => { ball = null; });
   ball.webContents.once("did-finish-load", () => {
     log("[ball-bounds]", JSON.stringify(ball.getBounds()));
+    pushThemeVars();               // 悬浮球的光晕/投影跟随主题交互色
   });
 }
 
@@ -764,6 +860,11 @@ function createPanel() {
     ...panelBounds(),
     frame: false, transparent: true, resizable: false,
     alwaysOnTop: true, skipTaskbar: true, show: false, hasShadow: false,
+    // 控制台不占任务栏：它是常驻悬浮面板，有托盘图标（左键切换、右键菜单里有
+    // 「打开面板 / 控制台页面 / 划词 / 退出」）+ 悬浮球 + 全局快捷键可以唤出。
+    // 之前进任务栏是怕"打开后没有应用身份"，但代价是常驻一个任务栏按钮，
+    // 而且面板隐藏时按钮还在（容易被误认为程序卡住），与悬浮助手的定位不符。
+    icon: path.join(__dirname, "orb-logo.ico"),
     backgroundColor: "#00000000",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -799,6 +900,12 @@ function createPanel() {
      * recordings 下会留下一个再也没人认领的 .part，越攒越多。 */
     try {
       if (recbarWin && !recbarWin.isDestroyed()) recbarWin.hide();
+      /* 窗口藏起来了，光标监视也得停：否则它会一直轮询一个看不见的条，
+         并在鼠标路过那块区域时给页面发"悬停进入"（页面看不到，但日志会乱）。 */
+      stopRecbarHoverWatch(); recbarPassthru = false;
+      /* 面板被强关时录制可能还挂着（cap-close 永远不来）—— 强制把"排除截图"
+         复位，否则用户此后截屏再也截不到 ORB 自己，只能重启应用。 */
+      resetCaptureShield();
       if (capSessions.size > 0) {
         log("[cap] 面板已关闭，正在录制，清理临时分片");
         purgeRecordingParts();
@@ -1173,13 +1280,40 @@ function createToolbar() {
 
 /* 把当前主题同步给划词工具栏（toolbar.html 是独立窗口、自己没有主题系统，
    靠这里给 <html> 打 data-theme 才能跟随面板换肤；面板没报过主题时退回浅色）。
-   换肤时面板会经 theme-changed 报新主题名，这里即时重打。 */
+   换肤时面板会经 theme-changed 报新主题名 + 算完的令牌族，这里即时重打/重推。
+   executeJavaScript 走 CDP 求值，不受页面 CSP script-src 约束（border.html 无脚本也推得动）。 */
+let panelThemeVars = {};
+function themeVarsScript() {
+  return "(() => { const v = " + JSON.stringify(panelThemeVars) +
+    "; for (const k in v) { try { document.documentElement.style.setProperty(k, v[k]); } catch {} } })()";
+}
 function applyToolbarTheme() {
   if (toolbar && toolbarReady && !toolbar.isDestroyed()) {
-    try { toolbar.webContents.executeJavaScript("document.documentElement.setAttribute('data-theme','" + panelTheme + "')"); } catch {}
+    try {
+      /* 用 JSON.stringify 传参而不是字符串拼接：主题名来自渲染层，
+         拼进可执行源码就是一个注入点（工具条共用面板那份全量 preload 白名单）。 */
+      toolbar.webContents.executeJavaScript(
+        "document.documentElement.setAttribute('data-theme'," + JSON.stringify(panelTheme) + ");" + themeVarsScript());
+    } catch {}
   }
 }
-ipcMain.on("theme-changed", (_e, name) => { if (name) panelTheme = name; applyToolbarTheme(); });
+/* 令牌族推给所有活着的小窗：悬浮球 / 录制边框 / 字幕窗 / 悬浮控制条。
+   这些窗口没有主题系统，只认推进来的 CSS 变量；推不了就保持各自默认（不致命）。 */
+function pushThemeVars() {
+  if (!Object.keys(panelThemeVars).length) return;
+  const js = themeVarsScript();
+  for (const w of [ball, borderWin, subWin, recbarWin]) {
+    if (w && !w.isDestroyed()) { try { w.webContents.executeJavaScript(js); } catch {} }
+  }
+}
+ipcMain.on("theme-changed", (_e, name, vars) => {
+  /* 主题名只认白名单：它会被拼进 executeJavaScript 推给小窗，
+     放任意字符串过去就是把渲染层的输入当成可执行源码。 */
+  if (name && THEME_IDS.includes(name)) panelTheme = name;
+  if (vars && typeof vars === "object") panelThemeVars = vars;
+  applyToolbarTheme();
+  pushThemeVars();
+});
 
 async function bridgeCall(tool, args, timeoutMs = 30000, retried = false) {
   const ctrl = new AbortController();
@@ -1508,8 +1642,9 @@ function createSubtitleWin() {
   // 窗口被关掉必须停表：原来只置 null，500ms 的轮询会一直打到字幕服务上。
   subWin.on("closed", () => { subWin = null; stopSubtitleStream(); });
   /* 皮肤 / 自选描边补推：字幕窗也是懒创建 + 反复开关的小窗，
-     偏好不在它本地存，就绪时由主进程推一次（与控制条同一套路）。 */
-  subWin.webContents.once("did-finish-load", sendSubCfg);
+     偏好不在它本地存，就绪时由主进程推一次（与控制条同一套路）。
+     主题令牌族一并推：字幕的高亮行/描边跟随交互色。 */
+  subWin.webContents.once("did-finish-load", () => { sendSubCfg(); pushThemeVars(); });
 }
 
 /* 字幕窗偏好（皮肤 + 描边色）。默认深纱：字幕压在视频上，深底不抢画面。 */
@@ -1974,6 +2109,8 @@ function createBorder() {
   borderWin.setAlwaysOnTop(true, "screen-saver");
   borderWin.setIgnoreMouseEvents(true, { forward: true });
   borderWin.on("closed", () => { borderWin = null; });
+  /* 边框无脚本无 preload：令牌族只能由主进程 executeJavaScript 推进来（CDP 求值不受 CSP 约束） */
+  borderWin.webContents.once("did-finish-load", () => { pushThemeVars(); log("[border] theme pushed"); });
   log("[border] window created");
 }
 
@@ -2527,6 +2664,11 @@ app.whenReady().then(async () => {
      npm 也拉不到包，所以改用这条"用户主动打点"的路子 —— 反而更可控，
      不会把误触和无关点击也录进去。录制没开时按了不做任何事。 */
   reg(hk.recordMark, () => sendToPanel("record-mark", Date.now()));
+}).catch((e) => {
+  /* 启动链是一整条 async：中间任何一步抛了（比如托盘图标缺失导致 new Tray 失败）
+     都会让后面全部不执行 —— 应用起来没球、没面板、没快捷键，而日志里只有一行
+     unhandledRejection。这里至少把栈打出来。 */
+  log("[boot] 启动链失败:", (e && e.stack) || String(e));
 });
 
 /* ---------------- 热键触发器 ----------------
@@ -2650,6 +2792,7 @@ app.on("will-quit", () => {
   try {
     for (const id of Array.from(capSessions.keys())) capDrop(id, true);
   } catch { /* 退出路径上的清理不允许再抛 */ }
+  resetCaptureShield();   // 退出前无条件恢复可截图（计数可能已经漂了）
   /* 控制条用 destroy 而不是 close：退出时不需要走它的 unload/closed 流程，
      close 会等渲染进程回一次消息，白拖慢退出。 */
   try { if (recbarWin && !recbarWin.isDestroyed()) recbarWin.destroy(); } catch { /* ignore */ }
@@ -2661,6 +2804,12 @@ app.on("will-quit", () => {
   clearTimeout(closeTimer); closeTimer = null;
   stopDragTimer(); drag = null;
   stopSelectionWatch();
+  /* 下面两个常驻子进程以前漏在了退出清单里：
+     · orb-foreground.exe（划词取类名用的常驻探针）—— 父进程退出 Windows 不会
+       自动带走它，反复启停会在后台越积越多；
+     · 截屏态轮询（600ms）—— 不停的话 tick 会一直查窗口类名，直到进程真的没了。 */
+  stopSnipPoll();
+  try { fgStop(); } catch { /* 退出路径上不允许再抛 */ }
   try { bridgeProc && bridgeProc.kill(); } catch {}
 });
 app.on("window-all-closed", () => {});
@@ -2714,7 +2863,22 @@ ipcMain.on("voice-start", () => {
 ipcMain.on("pin", (_e, v) => { saveState({ pinned: !!v }); if (!v) scheduleClose(300); });
 ipcMain.on("busy", (_e, v) => sendToBall("busy", !!v));
 ipcMain.on("observe", (_e, on) => (on ? startObserve() : stopObserve()));
-ipcMain.on("open-external", (_e, url) => shell.openExternal(url));
+ipcMain.on("open-external", (_e, url) => {
+  /* 只放行 http/https：任何拿到 preload 白名单的窗口（面板、划词工具条）都能调
+     这个通道，不设协议闸就等于允许拉起 file://、smb:// 或任意自定义协议。
+     本应用的外链只有官网 / GitHub / 文档三类，全是 https。 */
+  const u = String(url || "");
+  let ok = false;
+  try {
+    const p = new URL(u);
+    ok = p.protocol === "http:" || p.protocol === "https:";
+  } catch { /* 解析不了就是不合格 */ }
+  if (!ok) {
+    log("[open-external] 已拒绝非 http(s) 链接:", u.slice(0, 120));
+    return;
+  }
+  shell.openExternal(u);
+});
 
 /* 桌面模糊背景（磨砂玻璃）：渲染层按玻璃态申报要不要；主进程据此决定抓不抓。
    发送方 → 窗口 → glassbg 条目（每条各自记着回传通道，面板与录制条互不串图）。 */
@@ -3469,14 +3633,34 @@ function recStamp(d = new Date()) {
   return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
 }
 
+/**
+ * IPC 传来的名字不能信：既有可能是"我的录屏/2026"这种带分隔符的（拼进路径会
+ * 直接写到别的目录，即路径穿越），也可能带 Windows 非法字符（写盘直接 ENOENT）。
+ * 统一洗成安全文件名；洗完为空就用调用方给的兜底名。
+ */
+function safeFileName(name, fallback) {
+  const s = String(name == null ? "" : name)
+    .replace(/[\\/:*?"<>|\r\n\t]/g, "_")   // 分隔符与非法字符
+    .replace(/^\.+/, "")                    // 别以点开头（隐藏文件 / 纯 ".."）
+    .replace(/\s+$/, "")                    // 尾部空格在 Windows 上会被静默丢掉
+    .trim()
+    .slice(0, 80);
+  return s || fallback;
+}
 /** 同秒多次录制时不能互相覆盖 —— 宁可加序号，也不能让用户找不到一分钟前录的东西。 */
 function uniqueFile(dir, base, ext) {
-  let name = base + ext;
+  /* basename 兜一层（万一调用方没走 safeFileName），再把结果按 dir 归一化校验：
+     算出来的路径必须仍在 dir 里，否则按异常输入处理，落到默认名。 */
+  const stem = path.basename(safeFileName(base, "")) || "rec";
+  let name = stem + ext;
   for (let i = 2; i <= 999; i++) {
     if (!fs.existsSync(path.join(dir, name))) break;
-    name = `${base}-${i}${ext}`;
+    name = `${stem}-${i}${ext}`;
   }
-  return path.join(dir, name);
+  const out = path.join(dir, name);
+  const root = path.resolve(dir) + path.sep;
+  if (!path.resolve(out).startsWith(root)) return path.join(dir, "rec" + ext);
+  return out;
 }
 
 /**
@@ -3521,6 +3705,9 @@ function capSweepStale(now = Date.now()) {
     if (now - (s.startedAt || now) < CAP_STALE_MS) continue;
     log("[cap] 清理超时会话:", id);
     capDrop(id, true);
+    /* 这一路也要把"排除截图"撤回来：会话是被超时回收的，cap-close 永远不会来，
+       漏掉就等于用户此后用任何截屏工具都截不到 ORB 自己的界面。 */
+    setCaptureShield(false);
   }
 }
 
@@ -3593,17 +3780,21 @@ safeHandle("cap-open", (_e, opts) => {
   return { ok: true, sessionId: id, file, mime: o.mime || "" };
 }, () => ({ ok: false, sessionId: "", error: "开始录制失败（详见 .orbdata/orb.log）" }));
 
-safeHandle("cap-chunk", (_e, sessionId, data) => {
+safeHandle("cap-chunk", async (_e, sessionId, data) => {
   const s = capSessions.get(sessionId);
   if (!s) return { ok: false, bytes: 0, chunks: 0, error: "录制会话不存在或已结束" };
   const buf = toBuffer(data);
   if (!buf.length) return { ok: false, bytes: s.bytes, chunks: s.chunks, error: "分片为空" };
   try {
     let written = 0;
-    // writeSync 允许部分写入（磁盘满、信号中断都会），必须循环补齐，
-    // 否则一个分片少几个字节，整个 MP4 的 box 长度就全部错位了。
+    /* 异步写替代 writeSync：录屏时每个分片都同步卡一次主线程，表现为录制过程中
+       整个界面发滞。**顺序必须由 await 串行保证** —— 分片错一个字节，整个 MP4 的
+       box 长度就会全部错位，所以这里绝不能改成并发写。 */
     while (written < buf.length) {
-      written += fs.writeSync(s.fd, buf, written, buf.length - written, null);
+      written += await new Promise((res, rej) => {
+        // write 也允许部分写入（磁盘满、信号中断都会），必须循环补齐
+        fs.write(s.fd, buf, written, buf.length - written, null, (err, n) => (err ? rej(err) : res(n)));
+      });
     }
     s.bytes += written;
     s.chunks += 1;
@@ -3627,16 +3818,23 @@ safeHandle("cap-close", (_e, sessionId, opts) => {
 
   // 空文件 / 只有几十字节 → 不是有效录制，直接丢掉，别在目录里留垃圾
   if (!size || size < 1024) {
-    const dropped = capDrop(sessionId, true);
-    log("[cap] 内容过短已丢弃:", sessionId, "bytes =", size);
-    return { ok: false, path: "", bytes: size, error: "录制内容为空或过短，已丢弃" + (dropped.removed ? "" : "（临时文件清理失败）") };
+    /* 必须自己删：上面已经 capSessions.delete 过了，capDrop 再按 id 找只会拿到
+       undefined、一个字节都不删 —— 于是"录了一秒就停"会在 tmp 里留下一个永远
+       没人认领的 .part（只有 24 小时后的启动清理才带走它）。 */
+    let removed = false;
+    try { fs.unlinkSync(s.file); removed = true; } catch { /* 已经没了 */ }
+    log("[cap] 内容过短已丢弃:", sessionId, "bytes =", size, removed ? "" : "（临时文件清理失败）");
+    return { ok: false, path: "", bytes: size, error: "录制内容为空或过短，已丢弃" + (removed ? "" : "（临时文件清理失败）") };
   }
 
   const ms = Number.isFinite(Number(o.ms)) && Number(o.ms) > 0
     ? Number(o.ms)
     : Date.now() - s.startedAt;
   const ext = recExt(s.mime);
-  const baseName = typeof o.name === "string" && o.name.trim() ? o.name.trim() : "录屏-" + recStamp();
+  const baseName = safeFileName(
+    typeof o.name === "string" ? o.name : "",
+    "录屏-" + recStamp()
+  );
   const dir = storage.pathOf("recordings");
   const target = uniqueFile(dir, baseName, ext);
   let viaCopy = false;
@@ -3703,6 +3901,7 @@ safeHandle("cap-abort", (_e, sessionId) => {
   const s = capSessions.get(sessionId);
   if (!s) return { ok: true, removed: false, note: "会话不存在（可能已经结束）" };
   const dropped = capDrop(sessionId, true);
+  setCaptureShield(false);   // 放弃录制同样要恢复可截图（原来漏了这一句）
   log("[cap] 放弃录制:", sessionId);
   return { ok: true, removed: dropped.removed, note: dropped.removed ? "已删除临时文件" : "临时文件清理失败" };
 }, () => ({ ok: false, removed: false, error: "放弃录制失败（详见 .orbdata/orb.log）" }));
@@ -3751,7 +3950,9 @@ safeHandle("cap-native-start", async (_e, opts) => {
         display: o.display,
       });
     } catch (e) {
-      setCaptureShield(false);
+      /* 这里**不要**撤排除：setCaptureShield 现在是引用计数，内层减一次、
+         外层 catch 再减一次，会把并发中的另一路录制一起减掉（成片里就出现
+         ORB 自己）。撤排除统一交给外层那一次。 */
       throw e;
     }
     log("[cap-native] 开始录制:", target, r.w + "x" + r.h + "@" + r.fps);
@@ -3854,6 +4055,10 @@ ipcMain.on("rec-cmd-to-bar", (_e, payload) => {
       if (!recbarWin || recbarWin.isDestroyed()) return;
       emitRecEvent(payload);
     } else if (type === "stop") {
+      /* stop 也必须广播给控制条：页面靠这个事件停表 + clearEnergyTimers。
+         以前只 hide 不发事件 → 控制条的 tickTimer 250ms 一直走（它那个窗口是
+         backgroundThrottling:false，隐藏也不节流），直到窗口销毁都在烧 CPU。 */
+      emitRecEvent(payload);
       resetRecbarInteractive(recbarWin);
       try { if (recbarWin && !recbarWin.isDestroyed()) recbarWin.hide(); } catch { /* 已经没了 */ }
     } else {
@@ -3902,28 +4107,51 @@ ipcMain.on("rec-bar-cmd", (_e, cmd) => {
    现在改由**主进程**在穿透期间盯着光标：定时取 screen.getCursorScreenPoint()
    与控制条矩形比对，进/出各广播一次 `rec:hover`，页面据此展开或收回。
    这样"收起时不挡背后"与"悬停能展开、按钮能点"两头都成立，且不依赖
-   forward 的平台实现差异（页面里那条 mousemove 判定保留作 macOS 的快路径）。 */
+   forward 的平台实现差异（页面里那条 mousemove 判定保留作 macOS 的快路径）。
+
+   ⚠️ 2026-10-25 再修（用户报「悬停展开后，之后再也不缩起」）：
+   上一版把 `recbarPassthru` 当成了监视的开关 —— 悬停展开时页面会关掉穿透，
+   这一步把监视也一起停了，于是"鼠标移开了"这条 inside:false **再也发不出去**，
+   页面只剩自己那条 mouseleave（穿透刚关的那一下 Chromium 常常不补发
+   mouseover，没有 enter 就没有 leave）→ 条永远停在展开态。
+   现在监视的生命周期改由 `recbarHoverArmed` 单独管：只在控制条真正开始/结束时
+   起停，穿透的开与关不再影响它；inside 的连续性也因此保住了（收起→展开→移开
+   →再收起，全程同一个 inside 状态在跨边界时才广播）。 */
 const REC_HIT = { x0: 16, x1: 224, y0: 0, y1: 34 };   // 与 recbar.html 的 HIT 保持一致
 const REC_HOVER_PAD = 8;                              // 判定区外扩，别让人正正好好对准
 let recbarPassthru = false;
 let recbarHoverTimer = null;
 let recbarHoverInside = false;
+let recbarHoverArmed = false;      // 监视生命周期（≠穿透状态，见上）
+let recbarHoverLastSent = 0;       // 上次广播的时间戳（收起态的重复广播要节流）
 function stopRecbarHoverWatch() {
   if (recbarHoverTimer) { clearInterval(recbarHoverTimer); recbarHoverTimer = null; }
   recbarHoverInside = false;
+  recbarHoverArmed = false;
+  recbarHoverLastSent = 0;
 }
 function startRecbarHoverWatch() {
-  if (recbarHoverTimer) return;
+  recbarHoverArmed = true;
+  if (recbarHoverTimer) return;    // 已在跑：inside 保持连续，别重置成 false
   recbarHoverInside = false;
   recbarHoverTimer = setInterval(() => {
     try {
-      if (!recbarPassthru || !recbarWin || recbarWin.isDestroyed()) { stopRecbarHoverWatch(); return; }
+      if (!recbarHoverArmed || !recbarWin || recbarWin.isDestroyed()) { stopRecbarHoverWatch(); return; }
       const b = recbarWin.getBounds();
       const p = screen.getCursorScreenPoint();
       const inside = p.x >= b.x + REC_HIT.x0 - REC_HOVER_PAD && p.x <= b.x + REC_HIT.x1 + REC_HOVER_PAD
                   && p.y >= b.y + REC_HIT.y0 - REC_HOVER_PAD && p.y <= b.y + REC_HIT.y1 + REC_HOVER_PAD;
-      if (inside === recbarHoverInside) return;   // 只在跨越边界时广播一次
+      if (inside === recbarHoverInside) {
+        /* 收起态里允许对"在里面"重复广播（400ms 节流）：鼠标停在细条上微动时
+           坐标没跨边界，就永远等不到一次"进入"事件 —— 用户会觉得"放上去没反应"。
+           展开态不重复播（没有意义，页面 expand() 本来就是幂等的）。 */
+        if (!(recbarPassthru && inside && Date.now() - recbarHoverLastSent > 400)) return;
+        recbarHoverLastSent = Date.now();
+        sendToBar("rec:hover", { inside: true });
+        return;
+      }
       recbarHoverInside = inside;
+      recbarHoverLastSent = Date.now();
       /* 诊断日志：只在跨越边界时打一行（140ms 轮询的每帧分支里绝不打）。
          这行是"悬停能不能展开"的唯一证据 —— 如果用户报"收回细条后鼠标放上去不动"，
          看它有没有出现：没出现 = 光标判定区没命中（REC_HIT/REC_HOVER_PAD 与窗口位置对不上、
@@ -3958,9 +4186,11 @@ ipcMain.on("rec-bar-passthru", (_e, on) => {
       log(`[recbar] 穿透 ON（窗口已忽略鼠标）${b.x},${b.y} ${b.width}x${b.height}`);
     } else {
       recbarPassthru = false;
-      stopRecbarHoverWatch();
+      /* 监视**不停**：展开之后还要靠它把"鼠标移开了"送回页面 —— 停了的话
+         页面永远收不回去（这就是"悬停打开后再也不缩起"）。开销只是每 60ms
+         一次光标坐标查询，录制期间可以忽略。 */
       recbarWin.setIgnoreMouseEvents(false);
-      log(`[recbar] 穿透 OFF（窗口恢复可交互）${b.x},${b.y} ${b.width}x${b.height}`);
+      log(`[recbar] 穿透 OFF（窗口恢复可交互，悬停监视继续）${b.x},${b.y} ${b.width}x${b.height}`);
     }
   } catch (e) {
     log("[recbar] 切换点击穿透失败:", (e && e.message) || String(e));
@@ -4003,6 +4233,44 @@ safeHandle("set-sub-theme", (_e, patch) => {
   sendSubCfg();                       // 字幕窗开着就当场生效
   return { ok: true, sub: subCfg() };
 }, { ok: false, error: "保存字幕窗偏好失败" });
+
+/* ---------- 录屏音频来源（设置 › 录屏） ----------
+ * 与 set-rectheme 同模式：一处校验、一处落盘，渲染层不自己判断默认值。 */
+safeHandle("set-recaudio", (_e, patch) => {
+  const src = patch && ["none", "system", "mic", "mix"].includes(patch.source) ? patch.source : "none";
+  normalizeRecAudio();
+  state.recAudio = { source: src };
+  saveState({ recAudio: { source: src } });
+  return { ok: true, rec: { source: src } };
+}, { ok: false, error: "保存录屏音频来源失败" });
+
+/* ---------- 摄像头小框（设置 › 录屏） ----------
+ * 形状 / 比例 / 自定义比例 / 归一化摆位一次校验落盘。
+ * custom 档必须带合法 customRatio，否则退回 free（不锁比例）。 */
+safeHandle("set-reccam", (_e, patch) => {
+  const p = patch || {};
+  normalizeRecCam();
+  const shape = ["circle", "round", "square"].includes(p.shape) ? p.shape : state.recCam.shape;
+  let ratio = ["16:9", "4:3", "1:1", "custom", "free"].includes(p.ratio) ? p.ratio : state.recCam.ratio;
+  let customRatio = typeof p.customRatio === "string" ? p.customRatio.trim().slice(0, 12) : state.recCam.customRatio;
+  customRatio = validRatioStr(customRatio) || (ratio === "custom" ? state.recCam.customRatio : "");
+  if (ratio === "custom" && !customRatio) ratio = "free";
+  const f01 = (v, d) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(1, Number(v))) : d);
+  const fSize = (v, d) => (Number.isFinite(Number(v)) ? Math.max(0.05, Math.min(0.6, Number(v))) : d);
+  const next = {
+    enabled: typeof p.enabled === "boolean" ? p.enabled : state.recCam.enabled,
+    shape,
+    ratio,
+    customRatio,
+    bx: f01(p.bx, state.recCam.bx),
+    by: f01(p.by, state.recCam.by),
+    bw: fSize(p.bw, state.recCam.bw),
+    bh: fSize(p.bh, state.recCam.bh),
+  };
+  state.recCam = next;
+  saveState({ recCam: next });
+  return { ok: true, rec: { ...next } };
+}, { ok: false, error: "保存摄像头小框设置失败" });
 
 /* ---------- 主题自选：交互色 / 渐变搭配 / 自定义背景图 ----------
  * 一处校验、一处落盘。渲染层（设置 › 外观）只发 patch，默认值口径以这里为准，
@@ -4054,9 +4322,15 @@ ipcMain.handle("get-state", () => ({
   pinned: state.pinned,
   coordMode: state.coordMode,
   border: state.border,
-  avatar: avatarDataUrl(),
+  /* 这两个字段一个读磁盘（头像可能是几 MB 的图）、一个访问 screen ——
+     任一个抛了就会让整个 get-state reject，面板拿不到任何初始状态。
+     它们都不是关键字段，失败就给空值，别拖垮整帧状态。 */
+  avatar: (() => { try { return avatarDataUrl(); } catch { return ""; } })(),
   /* 悬浮控制条偏好：设置 › 录屏 里的皮肤 / 能量条 / 自选描边色 */
   rec: recCfg(),
+  /* 录屏音频来源与摄像头小框（设置 › 录屏）：none/system/mic/mix 与形状/比例/摆位 */
+  recAudio: { source: state.recAudio.source },
+  recCam: { ...state.recCam },
   /* 实时字幕窗偏好：皮肤 + 自选描边色（默认深纱） */
   sub: subCfg(),
   /* 主题自选：每套主题的交互色、极光渐变搭配 id、自定义渐变两端、自定义主题背景图 */
@@ -4086,8 +4360,10 @@ ipcMain.handle("get-state", () => ({
      和 envWizardDone 同一个套路：主进程落盘为准，localStorage 只是保底。 */
   snipGuideDone: !!state.snipGuideDone,
   display: (() => {
-    const d = screen.getPrimaryDisplay();
-    return { width: d.size.width * d.scaleFactor, height: d.size.height * d.scaleFactor, scale: d.scaleFactor };
+    try {
+      const d = screen.getPrimaryDisplay();
+      return { width: d.size.width * d.scaleFactor, height: d.size.height * d.scaleFactor, scale: d.scaleFactor };
+    } catch { return { width: 0, height: 0, scale: 1 }; }
   })(),
   workspace: path.join(__dirname, "..", ".."),
 }));
@@ -4202,6 +4478,17 @@ safeHandle("set-voice", (_e, patch) => {
  */
 ipcMain.handle("asr-transcribe", async (_e, { endpoint, apiKey, model, audioB64, mime } = {}) => {
   if (!endpoint) return { ok: false, error: "未配置语音识别端点" };
+  /* 端点要做协议闸：这个通道会把用户的 ASR Key 当 Bearer 发出去，
+     放行任意字符串就等于"谁拿到面板就能把音频和密钥投到任意地址"。
+     本地自建（127.0.0.1 / localhost）要留着 —— 自建 Whisper 服务端是主要用法之一。 */
+  try {
+    const u = new URL(String(endpoint));
+    if (u.protocol !== "https:" && u.protocol !== "http:") {
+      return { ok: false, error: "语音识别端点协议不支持（仅 http/https）" };
+    }
+  } catch {
+    return { ok: false, error: "语音识别端点不是合法 URL" };
+  }
   try {
     const buf = Buffer.from(audioB64 || "", "base64");
     if (!buf.length) return { ok: false, error: "音频数据为空" };

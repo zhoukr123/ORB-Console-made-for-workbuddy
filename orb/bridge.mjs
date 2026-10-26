@@ -12,6 +12,12 @@ import { randomUUID } from "node:crypto";
 import { resolvePython, windowsMcpArgs, windowsMcpEnv, matchProcKind, hasWindowsMcp } from "./runtime.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+/* 可写目录。**定义必须靠前**：confFlag / writeConfFlag 在模块顶层就会被调用
+   （第 300 行上下的 WB_DAEMON 等常量），如果 DATA_DIR 定义在文件中间，
+   那几处会撞上 const 的暂时性死区（TDZ）直接 ReferenceError。
+   ⚠️ HERE（装目录）在打包态是 Program Files 下的 resources/ —— **不可写**。
+   凡是运行时会写的东西（用户级配置、日志、临时文件）都必须落这里。 */
+const DATA_DIR = process.env.ORB_DATA_DIR || path.join(HERE, "..");
 const PORT = Number(process.env.ORB_PORT || 19387);
 
 /** 统一日志（桌面端从 bridge 的 stdout/stderr 抓取）。带标签的调用方把标签作为首参传入。 */
@@ -293,21 +299,47 @@ const WB_MAX_TURNS = (process.env.ORB_WB_MAX_TURNS || "").trim();
  *   1) 环境变量 ORB_WB_DAEMON=1（走 .cmd 启动时有效）
  *   2) bridge.conf 里 {"daemon": true}
  * 之所以还要看文件：桌面的 .lnk 直接拉起 electron，拿不到 .cmd 里 set 的环境变量。 */
+/** 用户级配置（DATA_DIR 下），没有就退回随包那份（HERE，只读）。 */
+function confFileForWrite() { return path.join(DATA_DIR, "bridge.conf"); }
 function confFlag(name, dflt = false) {
-  try {
-    const j = JSON.parse(fsSync.readFileSync(path.join(HERE, "bridge.conf"), "utf8"));
-    if (name in j) return !!j[name];
-  } catch { /* 没有配置文件就用默认值 */ }
+  /* 读的顺序反过来：用户级优先，随包的当默认值。
+     打包态装目录只读 —— 只认 HERE 的话，用户在设置里改的开关写不进去也读不回来。 */
+  for (const f of [confFileForWrite(), path.join(HERE, "bridge.conf")]) {
+    try {
+      const j = JSON.parse(fsSync.readFileSync(f, "utf8"));
+      if (j && name in j) return !!j[name];
+    } catch { /* 这一份没有/坏了，看下一份 */ }
+  }
   return dflt;
+}
+
+/**
+ * 原子写 JSON：先写 .tmp，再 rename 到目标。
+ * 直接写目标文件时，进程被强杀 / 断电会把文件截成半个 JSON —— 而所有读取点
+ * 都是 `try { JSON.parse } catch { 回默认值 }`，于是**危险工具清单、白名单、
+ * 触发器、积分累计（allTime）**会无声归零，用户还以为自己从来没设置过。
+ * 同一分区内的 rename 是原子的：要么拿到新文件，要么还是旧文件，不存在中间态。
+ */
+function writeJsonAtomic(file, obj, pretty = 2) {
+  const text = JSON.stringify(obj, null, pretty) + "\n";
+  const tmp = file + ".tmp";
+  try { fsSync.mkdirSync(path.dirname(file), { recursive: true }); } catch { /* 目录已存在 */ }
+  fsSync.writeFileSync(tmp, text, "utf8");
+  fsSync.renameSync(tmp, file);
 }
 
 /** 写回 bridge.conf 的某个布尔开关（保留其它字段与注释），供控制台 UI 切换。 */
 function writeConfFlag(name, value) {
-  const file = path.join(HERE, "bridge.conf");
+  /* 写到 DATA_DIR，不是装目录：打包态 HERE 在 Program Files 下不可写，
+     写那里会让「设置里切换开关」静默失败（release 版表现为开关永远不变）。 */
+  const file = confFileForWrite();
   let j = {};
-  try { j = JSON.parse(fsSync.readFileSync(file, "utf8")) || {}; } catch { /* 容忍缺失/损坏 */ }
+  try { j = JSON.parse(fsSync.readFileSync(file, "utf8")) || {}; } catch {
+    /* 用户级那份还没有：以随包那份为底，第一次写的时候顺手搬到可写目录 */
+    try { j = JSON.parse(fsSync.readFileSync(path.join(HERE, "bridge.conf"), "utf8")) || {}; } catch { /* 容忍缺失/损坏 */ }
+  }
   j[name] = !!value;
-  fsSync.writeFileSync(file, JSON.stringify(j, null, 2) + "\n", "utf8");
+  try { writeJsonAtomic(file, j); } catch (e) { log("[conf] 写配置失败:", e?.message ?? e); }
 }
 
 // 可变：控制台 UI 可在运行时切换（无需重启 ORB）。
@@ -363,6 +395,10 @@ async function ensureDaemon() {
         daemonProc = null;
       });
       daemonProc.on("exit", (c) => { log("[wb-daemon] 退出 code =", c); daemonProc = null; });
+      /* 必须进台账 + 活动进程表：漏登记的后果是"急停停不掉它"，而且 bridge 被强杀后
+         reapStaleChildren 按台账回收时也看不见它 —— 那就是一个永久孤儿。 */
+      try { if (daemonProc.pid) registerChild(daemonProc.pid, "daemon"); } catch {}
+      try { trackProc(daemonProc); } catch {}
     }
   } catch (err) {
     log("[wb-daemon] 启动失败:", err?.message ?? err);
@@ -588,22 +624,122 @@ const WORKBUDDY_TOOLS = {
  * 不需要任何 API key —— 与「视觉」槽那种要自己填 baseUrl + key 的路子是两回事。
  * 注意：WorkBuddy 云服务的免密钥通道（/.cloud/llm/chat/completions）**不能用**：
  * Origin 校验过不了，且明令禁止把它做成可被别的应用调用的代理。
+ *
+ * credit = 积分消耗倍率的**参考值**（2026-10-25 整理自 WorkBuddy 客户端模型菜单，
+ *   格式 "×N[ · 活动标签]"）。倍率随活动（限免/夜间折扣/订阅优先）漂移，
+ *   CLI 只吐模型 ID 不吐倍率，所以这里只能是带日期的参考 —— 面板上已注明
+ *   "以 WorkBuddy 客户端显示为准"。新模型先上线、倍率后公布的，credit 留空，
+ *   绝不编数。
+ *
+ * 运行时以 /api/wb-models 的**实时解析**为准（见 fetchLiveWbModels）：CLI 的
+ * --model 帮助文本永远列着当前真支持的清单；本表在 CLI 不可用时兜底，
+ * 并给实时清单补 label/credit 元数据。
  */
 const WB_MODEL_LIST = [
-  { id: "", label: "默认（跟随 CLI）" },
-  { id: "fast-model", label: "fast-model（最快）" },
-  { id: "balanced-model", label: "balanced-model（均衡）" },
-  { id: "deep-model", label: "deep-model（最强）" },
-  { id: "hy4-preview", label: "hy4-preview（当前默认）" },
-  { id: "hy3", label: "hy3" },
-  { id: "hy3-x", label: "hy3-x" },
-  { id: "deepseek-v4.1-flash", label: "deepseek-v4.1-flash" },
-  { id: "deepseek-v4-pro", label: "deepseek-v4-pro" },
-  { id: "glm-5.3", label: "glm-5.3" },
-  { id: "glm-5.3-flash", label: "glm-5.3-flash（快）" },
-  { id: "minimax-m3", label: "minimax-m3" },
-  { id: "kimi-k3-1", label: "kimi-k3-1" },
+  { id: "", label: "默认（跟随 CLI）", credit: "" },
+  /* 模式档：快速 / 均衡 / 极致 三个 CLI 别名，倍率为模式级参考值 */
+  { id: "fast-model", label: "fast-model", credit: "快速档 ×0.21" },
+  { id: "balanced-model", label: "balanced-model", credit: "均衡档 ×0.65" },
+  { id: "deep-model", label: "deep-model", credit: "极致档 ×1.20" },
+  { id: "hy4-preview", label: "hy4-preview", credit: "均衡默认 ×0.29 · 夜间免费" },
+  { id: "hy3", label: "hy3", credit: "限时免费 ×0.00" },
+  { id: "hy3-x", label: "hy3-x", credit: "" },
+  { id: "step-5-preview", label: "step-5-preview", credit: "独家限免 ×0.00" },
+  { id: "space-bunny", label: "space-bunny", credit: "×0.08" },
+  { id: "deepseek-v4.1-flash", label: "deepseek-v4.1-flash", credit: "×0.11 · 夜间折扣" },
+  { id: "deepseek-v4-pro", label: "deepseek-v4-pro", credit: "" },
+  { id: "glm-5.3", label: "glm-5.3", credit: "×0.69 · 订阅优先" },
+  { id: "glm-5.3-flash", label: "glm-5.3-flash", credit: "×0.08" },
+  { id: "glm-5.2", label: "glm-5.2", credit: "×0.79 · 夜间折扣" },
+  { id: "glm-5.1", label: "glm-5.1", credit: "×0.79" },
+  { id: "glm-5v-turbo", label: "glm-5v-turbo", credit: "×0.95" },
+  { id: "minimax-m3.1-flash", label: "minimax-m3.1-flash", credit: "" },
+  { id: "minimax-m3", label: "minimax-m3", credit: "×0.25" },
+  { id: "kimi-k3.1-pro", label: "kimi-k3.1-pro", credit: "" },
+  { id: "kimi-k3-1", label: "kimi-k3-1", credit: "×1.62" },
+  { id: "kimi-k2.8-preview", label: "kimi-k2.8-preview", credit: "" },
+  { id: "mimo-v2.6-pro", label: "mimo-v2.6-pro", credit: "" },
+  { id: "custom-local:Qwen3.5", label: "自定义 · Qwen3.5（本地）", credit: "自付额度" },
+  { id: "custom-local:glm-5.3", label: "自定义 · glm-5.3（本地）", credit: "自付额度" },
+  { id: "custom-local:GLM 5.3-flash", label: "自定义 · GLM 5.3-flash（本地）", credit: "自付额度" },
 ];
+
+/* 模型清单缓存：解析一次要 spawn CLI --help（约 1s），面板可能反复拉，缓存 5 分钟。
+   面板的「更新」钮带 ?refresh=1 强制重拉。 */
+const WB_MODELS_CACHE_MS = 5 * 60 * 1000;
+/* 强制刷新的最小间隔：面板那个「更新」钮可以连点，而 force 会绕过缓存 ——
+   不去重的话每点一次就 spawn 一个 ~147MB 的 codebuddy --help（各带 8s 超时），
+   连点几下就有好几个 CLI 在后台同时跑。 */
+const WB_MODELS_MIN_REFRESH_MS = 10 * 1000;
+/** @type {{at:number, value:{models:Array, source:string, at:number}|null}} */
+let wbModelsCache = { at: 0, value: null };
+let wbModelsInflight = null;   // 在途的强制刷新（连点复用同一个 Promise）
+
+/**
+ * 从 CodeBuddy CLI 的 --help 里解析**实时**模型清单。
+ * 真源：--model 选项说明里的 "Currently supported: (a, b, c...)"。
+ * 没装 / 超时 / 解析失败 → null（调用方回落静态表）。任何情况下不抛。
+ */
+function fetchLiveWbModels() {
+  return resolveWbCli(false).then((cli) => new Promise((resolve) => {
+    if (!cli.found) return resolve(null);
+    execFile(cli.path, ["--help"], { timeout: 8000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout) => {
+        const text = String(stdout || "");
+        const m = text.match(/Currently supported:\s*\(([^)]+)\)/);
+        if (!m) return resolve(null);
+        /* 按逗号切：id 里允许冒号与空格（custom-local:GLM 5.3-flash） */
+        const ids = m[1].split(",").map((s) => s.trim()).filter(Boolean);
+        resolve(ids.length ? ids : null);
+      });
+  }));
+}
+
+/**
+ * 合并实时 ID 与静态元数据（label / credit），产出下拉 payload。
+ * CLI 临时少列的内置项也会并上（标 source 仍为 cli，面板无所谓）。
+ * 全程不抛：任何一步失败都回落静态表。
+ */
+async function wbModelsPayload(force = false) {
+  const now = Date.now();
+  if (!force && wbModelsCache.value && now - wbModelsCache.at < WB_MODELS_CACHE_MS) {
+    return wbModelsCache.value;
+  }
+  if (force) {
+    if (wbModelsInflight) return wbModelsInflight;                       // 连点：复用在途的那次
+    if (wbModelsCache.value && now - wbModelsCache.at < WB_MODELS_MIN_REFRESH_MS) {
+      return wbModelsCache.value;                                        // 10 秒内重复点：直接给缓存
+    }
+    wbModelsInflight = wbModelsBuild(now).finally(() => { wbModelsInflight = null; });
+    return wbModelsInflight;
+  }
+  return wbModelsBuild(now);
+}
+async function wbModelsBuild(now) {
+  const meta = new Map(WB_MODEL_LIST.map((x) => [x.id, x]));
+  let models = null;
+  try {
+    const live = await fetchLiveWbModels();
+    if (live) {
+      const rows = live.map((id) => {
+        const k = meta.get(id);
+        return { id, label: k ? k.label : id, credit: k ? (k.credit || "") : "" };
+      });
+      const seen = new Set(live);
+      const extras = WB_MODEL_LIST.filter((x) => !seen.has(x.id)).map((x) => ({ ...x }));
+      /* ""（默认·跟随 CLI）是纯静态项：必须钉在首位。HTML select 默认选中
+         第一个选项，把它甩到末尾等于把用户的默认模型悄悄换成第一个真模型。 */
+      const di = extras.findIndex((x) => x.id === "");
+      const def = di >= 0 ? extras.splice(di, 1)[0] : null;
+      models = def ? [def, ...rows, ...extras] : [...rows, ...extras];
+    }
+  } catch { /* 回落静态 */ }
+  const value = models
+    ? { models, source: "cli", at: now }
+    : { models: WB_MODEL_LIST.map((x) => ({ ...x })), source: "static", at: now };
+  wbModelsCache = { at: now, value };
+  return value;
+}
 const WORKBUDDY_TOOL_LIST = Object.keys(WORKBUDDY_TOOLS);
 
 /**
@@ -720,6 +856,11 @@ async function spawnOnce(task, timeoutMs, model, cliPath = "") {
         cwd: process.env.ORB_WB_CWD || path.join(HERE, ".."),
       },
       (err, stdout, stderr) => {
+        /* execFile 的 timeout 只 TerminateProcess **父进程** —— CLI 拉起的孙进程会
+           变孤儿继续跑。所以在这里补一刀树杀。
+           ⚠️ 不能改用"超时 + 500ms 的定时器"：timeout 一到 exit 立刻就来了
+           （实测 timeoutMs+16ms），定时器会先被 exit 清掉，等于什么都没做。 */
+        if (err && (err.killed || err.signal)) killProcTree(child);
         // CLI 非零退出时也可能已在 stdout 里产出结果，优先取 stdout。
         const out = String(stdout || "").trim();
         if (!out) {
@@ -819,16 +960,24 @@ function disposeAllSessions() {
  *   实测这台机器上挂着 3 份 windows-mcp（每份 153MB）+ 1 份 dsh-mcp，全都没父进程。
  * 解法：拉起的每个子进程都记进台账；下次 bridge 启动时先按台账清一遍。
  *   台账按**端口**命名 —— 同机跑多个 bridge（离线单测就是）时互不误伤。 */
-const CHILD_REG = path.join(HERE, `.children-${PORT}.json`);
+/* 落 DATA_DIR：装目录在打包态可能不可写，台账写不进去 = 孤儿回收失效。
+   读时回退旧位置（HERE），老版本升级上来不会把已有台账当成没有。 */
+const CHILD_REG = path.join(DATA_DIR, `.children-${PORT}.json`);
+const CHILD_REG_OLD = path.join(HERE, `.children-${PORT}.json`);
 
 function readChildReg() {
-  try {
-    const a = JSON.parse(fsSync.readFileSync(CHILD_REG, "utf8"));
-    return Array.isArray(a) ? a : [];
-  } catch { return []; }
+  /* 先读 DATA_DIR 的新位置，再回退装目录的旧位置：老版本升级上来时
+     不能把已经存在的台账当成"没有"（那会让上一批孤儿无人回收）。 */
+  for (const f of [CHILD_REG, CHILD_REG_OLD]) {
+    try {
+      const a = JSON.parse(fsSync.readFileSync(f, "utf8"));
+      if (Array.isArray(a)) return a;
+    } catch { /* 这一份没有/坏了，看下一份 */ }
+  }
+  return [];
 }
 function writeChildReg(arr) {
-  try { fsSync.writeFileSync(CHILD_REG, JSON.stringify(arr.slice(-60)), "utf8"); } catch { /* ignore */ }
+  try { writeJsonAtomic(CHILD_REG, arr.slice(-60), 0); } catch { /* ignore */ }
 }
 function registerChild(pid, kind) {
   if (!pid) return;
@@ -1156,9 +1305,8 @@ function repairFront() {
  * 说明：只读工具（Snapshot/Screenshot）默认也录，但可按 skipRead 跳过，
  *      避免回放时因"多看一眼"把节奏拖慢。
  */
-/* 数据目录：开发态 HERE/.. = 项目根；打包态由 main.js 用 ORB_DATA_DIR 传 APPDATA 下来，
-   桥与面板共用同一处，避免「桥写包内、面板读 APPDATA」分叉。 */
-const DATA_DIR = process.env.ORB_DATA_DIR || path.join(HERE, "..");
+/* 工作流目录跟着 DATA_DIR 走：桥与面板共用同一处，
+   避免「桥写包内、面板读 APPDATA」分叉（DATA_DIR 的定义见文件头部）。 */
 const WORKFLOW_DIR = path.join(DATA_DIR, "workflows");
 const READ_TOOLS_FOR_REC = new Set(["Snapshot", "Screenshot", "DisplayInventory", "Process"]);
 
@@ -1262,6 +1410,14 @@ function trackProc(p) {
   return p;
 }
 
+/** 杀**进程树**：Windows 上只 kill 父进程，CLI 拉起的孙进程会变孤儿继续跑。 */
+function killProcTree(p) {
+  if (!p || !p.pid) return;
+  try {
+    if (process.platform === "win32") execFile("taskkill", ["/PID", String(p.pid), "/T", "/F"], () => {});
+    else p.kill("SIGKILL");
+  } catch { /* 已经退了 */ }
+}
 function killActiveProcs() {
   let n = 0;
   for (const p of activeProcs) {
@@ -1457,7 +1613,7 @@ function loadDanger() {
 }
 
 function saveDanger() {
-  try { fsSync.writeFileSync(DANGER_FILE, JSON.stringify(DANGER, null, 2), "utf8"); } catch {}
+  try { writeJsonAtomic(DANGER_FILE, DANGER); } catch {}
 }
 
 loadDanger();
@@ -1492,7 +1648,7 @@ function loadWhiteList() {
 }
 
 function saveWhiteList() {
-  try { fsSync.writeFileSync(WHITELIST_FILE, JSON.stringify(whiteList, null, 2), "utf8"); } catch {}
+  try { writeJsonAtomic(WHITELIST_FILE, whiteList); } catch {}
 }
 
 function cmdOf(args) {
@@ -1728,7 +1884,7 @@ function loadTriggers() {
 }
 
 function saveTriggers() {
-  try { fsSync.writeFileSync(TRIGGER_FILE, JSON.stringify(triggers, null, 2), "utf8"); } catch {}
+  try { writeJsonAtomic(TRIGGER_FILE, triggers); } catch {}
 }
 
 function disarmTriggers() {
@@ -2111,7 +2267,11 @@ $r.Text
 /** 对 PNG 缓冲做 OCR，返回识别到的文字。 */
 function ocrPng(buf, lang = "zh-Hans-CN") {
   return new Promise((resolve, reject) => {
-    const tmp = path.join(HERE, `.ocr-${Date.now()}-${process.pid}.png`);
+    /* 临时图必须落 DATA_DIR：HERE 在打包态是 Program Files 下的 resources/，
+       写不进去 —— 表现为 OCR 恒失败并只剩一句"写临时图片失败"。 */
+    const tmpDir = path.join(DATA_DIR, "tmp");
+    try { fsSync.mkdirSync(tmpDir, { recursive: true }); } catch { /* 已存在 */ }
+    const tmp = path.join(tmpDir, `.ocr-${Date.now()}-${process.pid}.png`);
     try {
       fsSync.writeFileSync(tmp, buf);
     } catch (e) {
@@ -2203,7 +2363,7 @@ function readAsrConf() {
 }
 function writeAsrConf(patch) {
   const next = { ...readAsrConf(), ...patch };
-  try { fsSync.writeFileSync(ASR_CONF, JSON.stringify(next, null, 2) + "\n", "utf8"); } catch (e) { log("[asr] 写配置失败:", e.message); }
+  try { writeJsonAtomic(ASR_CONF, next); } catch (e) { log("[asr] 写配置失败:", e.message); }
   return next;
 }
 async function asrHealth(timeoutMs = 2500) {
@@ -2396,7 +2556,8 @@ const WB_DB = process.env.ORB_WB_DB || (() => {
   return home ? path.join(home, ".workbuddy", "workbuddy.db") : "";
 })();
 // ORB_CREDITS_FILE 同样只给单测用（避免单测把真实累计值写脏）
-const CREDITS_FILE = process.env.ORB_CREDITS_FILE || path.join(HERE, "credits.json");
+const CREDITS_FILE = process.env.ORB_CREDITS_FILE || path.join(DATA_DIR, "credits.json");
+const CREDITS_FILE_OLD = path.join(HERE, "credits.json");
 
 /** 本次 ORB 运行期间，控制台自己花掉的积分（进程重启即归零，符合"这次"的语义）。 */
 const orbCredits = { total: 0, tasks: 0, last: 0, running: 0, since: Date.now() };
@@ -2404,11 +2565,18 @@ const orbCredits = { total: 0, tasks: 0, last: 0, running: 0, since: Date.now() 
 const orbSessions = new Set();
 /** 累计（跨 ORB 重启，落盘到 credits.json）。 */
 let creditsAllTime = 0;
-try { creditsAllTime = Number(JSON.parse(fsSync.readFileSync(CREDITS_FILE, "utf8")).allTime) || 0; } catch { /* 首次运行没有文件 */ }
+try {
+  for (const f of [CREDITS_FILE, CREDITS_FILE_OLD]) {
+    try {
+      const v = Number(JSON.parse(fsSync.readFileSync(f, "utf8")).allTime) || 0;
+      if (v) { creditsAllTime = v; break; }   // 累计值不可逆，旧位置有就接着用
+    } catch { /* 这一份没有/坏了 */ }
+  }
+} catch { /* 首次运行没有文件 */ }
 let creditsBase = null;   // 上一次快照：session_id -> 累计积分
 
 function saveCreditsAllTime() {
-  try { fsSync.writeFileSync(CREDITS_FILE, JSON.stringify({ allTime: Math.round(creditsAllTime * 100) / 100, updatedAt: Date.now() }, null, 1)); } catch { /* ignore */ }
+  try { writeJsonAtomic(CREDITS_FILE, { allTime: Math.round(creditsAllTime * 100) / 100, updatedAt: Date.now() }, 1); } catch { /* ignore */ }
 }
 
 /** 快照：读一次 session_usage，返回 Map<sessionId, 该会话累计积分>。 */
@@ -2602,9 +2770,13 @@ async function handle(req, res) {
     return;
   }
 
-  /* 后台可选模型清单（面板下拉用）。走 CLI 登录态，无需 API key。 */
+  /* 后台可选模型清单（面板下拉用）。默认走 CLI --help 实时解析（缓存 5 分钟）；
+     ?refresh=1 强制重拉（面板「更新」钮）。CLI 不可用才回落内置静态表。 */
   if (req.method === "GET" && url.pathname === "/api/wb-models") {
-    send(res, 200, { models: WB_MODEL_LIST });
+    const force = url.searchParams.get("refresh") === "1";
+    wbModelsPayload(force)
+      .then((p) => send(res, 200, p))
+      .catch(() => send(res, 200, { models: WB_MODEL_LIST, source: "static", at: Date.now() }));
     return;
   }
 
@@ -2714,12 +2886,9 @@ async function handle(req, res) {
             send(res, 200, { ok: false, error: "没有录到任何操作" });
             break;
           }
-          fsSync.mkdirSync(WORKFLOW_DIR, { recursive: true });
-          fsSync.writeFileSync(
-            wfFile(name),
-            JSON.stringify({ name, savedAt: Date.now(), gap: 700, steps }, null, 2),
-            "utf8"
-          );
+          /* 与 /api/wf 的 save 一致走原子写：录制产物正是最容易被强杀打断的
+             那类写入，写坏一半 = 用户录了半天的工作流打不开。 */
+          writeJsonAtomic(wfFile(name), { name, savedAt: Date.now(), gap: 700, steps });
           REC.steps = [];
           send(res, 200, { ok: true, name, steps: steps.length });
           break;
@@ -2749,7 +2918,7 @@ async function handle(req, res) {
           if (!wf.name) { send(res, 200, { ok: false, error: "缺少工作流名称" }); break; }
           try {
             fsSync.mkdirSync(WORKFLOW_DIR, { recursive: true });
-            fsSync.writeFileSync(wfFile(wf.name), JSON.stringify(wf, null, 2), "utf8");
+            writeJsonAtomic(wfFile(wf.name), wf);
             send(res, 200, { ok: true, name: wf.name, steps: (wf.steps || []).length });
           } catch (e) {
             send(res, 200, { ok: false, error: "保存失败：" + (e?.message ?? e) });
@@ -3073,10 +3242,18 @@ async function handle(req, res) {
   if (req.method === "POST" && url.pathname === "/api/wb-callback") {
     const body = await readBody(req);
     try {
-      fsSync.appendFileSync(
-        path.join(HERE, "wb-callback.log"),
-        JSON.stringify({ at: new Date().toISOString(), body }) + "\n",
-      );
+      /* ① 落 DATA_DIR（装目录不可写，写那里等于日志永远丢）；
+         ② 无上限追加会把磁盘慢慢吃掉（每次后台回调都存一份原始报文），
+            超过 1MB 就砍掉前半段，只留最近的。 */
+      const f = path.join(DATA_DIR, "wb-callback.log");
+      try {
+        const st = fsSync.statSync(f);
+        if (st.size > 1024 * 1024) {
+          const old = fsSync.readFileSync(f, "utf8");
+          fsSync.writeFileSync(f, old.slice(Math.floor(old.length / 2)));
+        }
+      } catch { /* 还没有这个文件，下面 append 会建出来 */ }
+      fsSync.appendFileSync(f, JSON.stringify({ at: new Date().toISOString(), body }) + "\n");
     } catch { /* 落盘失败不影响主流程 */ }
     const id = String(body?.runId || body?.id || body?.data?.runId || "");
     const entry = id && pendingRuns.get(id);
@@ -3432,6 +3609,12 @@ const server = http.createServer((req, res) => {
 
 server.on("error", (err) => {
   console.error("server error:", err.message);
+  /* 端口被占 = 已经有一个实例在服务。留在本进程只会拼出"端口通 + 令牌被我们
+     改过"这个最糟的组合（主进程全线 401），不如干脆退出让旧实例继续干。 */
+  if (err && err.code === "EADDRINUSE") {
+    console.error("端口", PORT, "已被占用：已有 bridge 实例在跑，本进程退出");
+    process.exit(1);
+  }
 });
 
 async function shutdown() {
@@ -3457,8 +3640,28 @@ process.on("SIGTERM", shutdown);
 
 // 令牌文件必须在 listen **之前**写好：主进程的策略是「等端口通 -> 读文件」，
 // 若端口先通而文件还是上一个实例的旧令牌，鉴权就会全线 401。
+//
+// 但这条规则有个副作用：第二个实例启动时会先把**新**令牌写进文件，然后才发现
+// 端口被旧实例占着 —— 主进程于是拿着新令牌去问旧实例，全线 401，而旧实例的
+// 令牌从此没人知道。所以写之前先探测：上一个实例还活着就什么都不写、直接退出。
+function existingBridgeAlive() {
+  try {
+    const j = JSON.parse(fsSync.readFileSync(TOKEN_FILE, "utf8"));
+    const pid = Number(j && j.pid);
+    if (!pid || pid === process.pid) return false;
+    try { process.kill(pid, 0); } catch { return false; }   // 信号 0：只探测存在性，不发信号
+    /* pid 存在还不够：pid 会被系统复用，一个"恰好拿到旧 pid"的无关进程会让我
+       们误判桥还活着而退出 —— 那结果是整个控制台无桥可用。所以再比对端口：
+       记录的端口不是当前这个，就说明那份令牌不是同一套配置留下的。 */
+    return Number(j.port) === PORT;
+  } catch { return false; }
+}
+if (existingBridgeAlive()) {
+  console.error(`已有 bridge 实例在跑（见 ${TOKEN_FILE}）：本进程退出，避免覆盖它的令牌`);
+  process.exit(0);
+}
 try {
-  fsSync.writeFileSync(TOKEN_FILE, JSON.stringify({ port: PORT, token: TOKEN, pid: process.pid }));
+  writeJsonAtomic(TOKEN_FILE, { port: PORT, token: TOKEN, pid: process.pid });
 } catch (e) {
   console.error("写入令牌文件失败:", e.message);
 }

@@ -15,7 +15,7 @@
          docs/DESIGN-开箱即用增量设计.md §5。 */
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 
 /* ROOT：默认按脚本自身位置反推（本文件在 <ROOT>/orb/pack.cjs），
    因此任何人克隆仓库后 `node orb/pack.cjs` 都能直接跑，不必改这一行。
@@ -23,7 +23,7 @@ const { execSync } = require('child_process');
 const ROOT = process.env.ORB_ROOT ? path.resolve(process.env.ORB_ROOT) : path.resolve(__dirname, '..');
 const APP = path.join(ROOT, 'orb', 'desktop');
 const ELECTRON = path.join(APP, 'node_modules', 'electron', 'dist');
-const VERSION = '1.3.0';
+const VERSION = '1.3.5';
 /* 输出目录带时间戳：不删旧构建。早先这里是 fs.rmSync(OUT) 一把清空，
    但批量删除会触发安全保护（3789 个文件远超阈值）而被拦截。
    版本化目录反而更好——每次构建都是可回溯的产物，旧的由用户自行清理。 */
@@ -95,11 +95,16 @@ const cp = (from, to) => { fs.mkdirSync(path.dirname(to), { recursive: true }); 
 /* fs.cpSync 在本机复制 Electron 运行时会触发 Node 段错误（Windows 长路径/junction），改用 robocopy。 */
 function cpr(from, to) {
   fs.mkdirSync(to, { recursive: true });
-  try { execSync('robocopy "' + from + '" "' + to + '" /E /NFL /NDL /NJH /NJS /NP', { stdio: 'ignore' }); }
-  catch (e) { /* robocopy 的退出码 1-7 都算成功，8 以上才是真失败 */
-    const code = e.status == null ? 99 : e.status;
-    if (code > 7) { console.error('robocopy 失败，退出码', code); process.exit(1); }
-  }
+  /* 传**参数数组**而不是拼命令字符串：项目路径含中文与空格（本机正是
+     `D:\WorkBuddy 附属文件夹\...`），拼进字符串再交给 cmd.exe 会按 ANSI 代码页
+     转码，路径可能失真 —— 表现为 robocopy「找不到源」甚至复制到错误目录。
+     spawnSync 走 CommandLineToArgv 的规则转义，中文路径安全。 */
+  const r = spawnSync('robocopy', [from, to, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'],
+    { stdio: 'ignore', windowsHide: true });
+  if (r.error) { console.error('robocopy 启动失败:', r.error.message); process.exit(1); }
+  /* robocopy 的退出码 1-7 都算成功，8 以上才是真失败 */
+  const code = r.status == null ? 99 : r.status;
+  if (code > 7) { console.error('robocopy 失败，退出码', code); process.exit(1); }
 }
 
 console.log('输出目录:', OUT_NAME, '（带时间戳，不覆盖旧构建）');
@@ -171,7 +176,14 @@ if (fs.existsSync(bcSrc)) cp(bcSrc, path.join(OUT, 'resources', 'bridge.conf'));
 else console.log('  （缺 bridge.conf，跳过）');
 for (const f of CONFIG_FILES) {
   const src = path.join(ROOT, f);
-  if (fs.existsSync(src)) cp(src, path.join(OUT, f));
+  if (fs.existsSync(src)) {
+    cp(src, path.join(OUT, f));
+    /* resources/extras/ 这一份才是发布版真正生效的那份：打包态 DATA_DIR 是
+       %APPDATA%\ORB 控制台（不再是包根），而 ensureBundledExtras 只从
+       resources/extras/ 往 DATA_ROOT 种子 —— 只放包根的话，发布版里这两份定制
+       配置会**静默**回落到桥内置默认（危险工具清单/白名单的随包定制全丢）。 */
+    cp(src, path.join(OUT, 'resources', 'extras', f));
+  }
   else console.log('  （缺', f, '，将使用内置默认）');
 }
 
@@ -333,7 +345,11 @@ const zipPath = path.join(ROOT, 'dist', ZIP_NAME);
 /* 用 Windows 系统自带的 bsdtar（支持 -a 压 zip）；
    Git Bash 里 PATH 上的 GNU tar 不认 -a，会报 128 */
 const SYSTAR = 'C:/Windows/System32/tar.exe';
-execSync(`"${SYSTAR}" -a -c -f "${zipPath}" -C "${path.join(ROOT, 'dist')}" "${OUT_NAME}"`, { stdio: 'inherit' });
+/* 同上：参数数组，避免中文/空格路径在 cmd 转码时失真 */
+const tar = spawnSync(SYSTAR, ['-a', '-c', '-f', zipPath, '-C', path.join(ROOT, 'dist'), OUT_NAME],
+  { stdio: 'inherit', windowsHide: true });
+if (tar.error) { console.error('tar 启动失败:', tar.error.message); process.exit(1); }
+if (tar.status !== 0) { console.error('tar 失败，退出码', tar.status); process.exit(1); }
 console.log('   压缩包:', zipPath);
 
 /* ------------------------------------------------------------------ *

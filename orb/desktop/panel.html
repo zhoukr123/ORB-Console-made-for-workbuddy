@@ -327,10 +327,10 @@
   [data-theme="t2"] .typing i ,[data-theme="t4"] .typing i { background: var(--energy-deep); }
   [data-theme="t2"] .pending ,[data-theme="t4"] .pending { color: var(--energy-deep); }
   [data-theme="t2"] .more-btn ,[data-theme="t4"] .more-btn { border-color: var(--energy-edge); color: var(--energy-deep); }
-  [data-theme="t2"] .more-btn:hover,,[data-theme="t4"] .more-btn:hover,
+  [data-theme="t2"] .more-btn:hover,[data-theme="t4"] .more-btn:hover,
   [data-theme="t2"] .more-btn.on ,[data-theme="t4"] .more-btn.on { border-color: var(--energy); color: var(--energy-deep); background: var(--energy-soft); }
   [data-theme="t2"] .more-sec::before ,[data-theme="t4"] .more-sec::before { background: var(--energy); opacity: .7; }
-  [data-theme="t2"] .pinned:hover,,[data-theme="t4"] .pinned:hover,
+  [data-theme="t2"] .pinned:hover,[data-theme="t4"] .pinned:hover,
   [data-theme="t2"] .mcell:hover ,[data-theme="t4"] .mcell:hover { background: var(--energy-soft); border-color: var(--energy); color: var(--energy-deep); }
   [data-theme="t2"] .compose ,[data-theme="t4"] .compose {
     background: radial-gradient(260px 80px at 50% 100%, var(--energy-soft), transparent 74%), var(--bg-soft);
@@ -348,10 +348,10 @@
   [data-theme="t2"] .slothead ,[data-theme="t4"] .slothead { color: var(--energy-deep); }
   [data-theme="t2"] .slotnote ,[data-theme="t4"] .slotnote { background: var(--energy-soft); border-color: var(--energy-edge); }
   [data-theme="t2"] .slotnote b ,[data-theme="t4"] .slotnote b { color: var(--energy-deep); }
-  [data-theme="t2"] .sheet .row2 button.pri,,[data-theme="t4"] .sheet .row2 button.pri,
+  [data-theme="t2"] .sheet .row2 button.pri,[data-theme="t4"] .sheet .row2 button.pri,
   [data-theme="t2"] .sheet .row2 button.pri:hover ,[data-theme="t4"] .sheet .row2 button.pri:hover { background: linear-gradient(180deg, var(--energy-bright), var(--energy)); border-color: var(--energy); color: var(--energy-ink); }
   [data-theme="t2"] .themecard.on ,[data-theme="t4"] .themecard.on { border-color: var(--energy); background: var(--energy-soft); }
-  [data-theme="t2"] .field input:focus,,[data-theme="t4"] .field input:focus,
+  [data-theme="t2"] .field input:focus,[data-theme="t4"] .field input:focus,
   [data-theme="t2"] .field select:focus ,[data-theme="t4"] .field select:focus { border-color: var(--energy); box-shadow: 0 0 0 3px var(--energy-ring); }
   [data-theme="t2"] .pfield-in:focus ,[data-theme="t4"] .pfield-in:focus { border-color: var(--energy); box-shadow: 0 0 0 3px var(--energy-ring); }
 
@@ -619,9 +619,9 @@
   [data-theme="t2"] .slotnote ,[data-theme="t4"] .slotnote { color: var(--fg-quiet); }
   [data-theme="t2"] .slothead .hint ,[data-theme="t4"] .slothead .hint { color: var(--fg-quiet); }
   /* 硬编码 #888780（on 白 3.61:1 ❌）不在 token 体系内，必须直接覆盖这两条规则 */
-  [data-theme="t2"] .slotnote .muted,,[data-theme="t4"] .slotnote .muted,
+  [data-theme="t2"] .slotnote .muted,[data-theme="t4"] .slotnote .muted,
   [data-theme="t3"] .slotnote .muted,
-  [data-theme="t2"] .sheet .note,,[data-theme="t4"] .sheet .note,
+  [data-theme="t2"] .sheet .note,[data-theme="t4"] .sheet .note,
   [data-theme="t3"] .sheet .note { color: var(--fg-quiet); }
 
   /* ==================================================================
@@ -932,18 +932,23 @@
   html.no-motion .msg,
   html.no-motion .mask.show .sheet,
   html.no-motion .mask.show .sheet > *,
+  html.no-motion .pv-mask.show,
+  html.no-motion .pv-mask.closing,
+  html.no-motion .pv-mask.show .pv-box,
   html.no-motion .slotnote,
   html.no-motion .iconbtn.mark,
   html.no-motion .step-kids,
   html.no-motion .gradedit,
   html.no-motion .hist-box,
+  html.no-motion .hist-mask.on,
   html.no-motion .hist-hd,
   html.no-motion .pedit,
   html.no-motion .front-state,
   html.no-motion .slot-actions .login-row,
   html.no-motion .pinned.cap,
   html.no-motion .pinned.cap-on .capdot,
-  html.no-motion .pinned.cap-on.cap-paused .capdot { animation: none !important; }
+  html.no-motion .pinned.cap-on.cap-paused .capdot,
+  html.no-motion #wbmodelRefresh.busy .rf-ico { animation: none !important; }
   html.no-motion .setnav-i:hover,
   html.no-motion .themecard:hover,
   html.no-motion .sheet .row2 button:hover,
@@ -967,7 +972,7 @@
     font-size: 0; transition: all .14s var(--ease);
   }
   .setnav-i svg { width: 16px; height: 16px; display: block; }
-  .setnav-i:hover { background: var(--bg-sunken); color: var(--fg-soft); }
+  .setnav-i:hover { background: var(--bg-sunken); color: var(--fg-soft); box-shadow: inset 0 0 0 1px var(--accent); }
   .setnav-i.on { background: var(--accent-soft); color: var(--accent-fg); }
   .setpanes { flex: 1 1 auto; min-width: 0; }
   .setpane { display: none; animation: panein .18s var(--ease) both; }
@@ -1121,6 +1126,86 @@
   .colorsw.on .ck { opacity: 1; transform: none; }
   /* "跟随皮肤"那一格：左半深纱右半灰白，一眼看出是两种皮肤的默认描边 */
   .colorsw.swdefault { background: linear-gradient(135deg, rgba(10,12,18,.88) 0 50%, rgba(243,244,248,.94) 50% 100%); }
+
+  /* ===== 设置 › 录屏：音频来源三选一 =====
+     卡片语言与 .recskin / .themecard 同源：选中态靠 2px 描边 + 勾，不靠位移。
+     图标放在 46×20 的 .recskin-pv 里（复用既有格子，不引新样式体系）。 */
+  .recskin-pv.au { display: flex; align-items: center; justify-content: center; background: var(--bg-sunken); border: 1px solid var(--border); }
+  .recskin-pv.au svg { width: 14px; height: 14px; }
+  /* 混音电平条：选中的源走 accent，未选中的压暗成中性灰 —— 一眼看出
+     "当前这个选择实际会录进哪几路" */
+  .audiometers { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .ameter { display: flex; align-items: center; gap: 8px; }
+  .ameter .am-lb { font-size: calc(10.5px * var(--fs-scale)); color: var(--fg-muted); width: 40px; flex: none; }
+  .ameter .am-tr { flex: 1; height: 6px; border-radius: 3px; background: var(--bg-sunken); overflow: hidden; }
+  .ameter .am-fl { display: block; height: 6px; border-radius: 3px; background: var(--border-strong); transition: background var(--dur-2) var(--ease); }
+  .ameter.on .am-fl { background: var(--accent); }
+
+  /* ===== 设置 › 录屏：摄像头小框 =====
+     形状卡复用 .recskin（预览块 + 标签 + 勾），只补三种形状的预览画法。 */
+  .recskin-pv.shpc { display: flex; align-items: center; justify-content: center; background: var(--bg-sunken); border: 1px solid var(--border); }
+  .recskin-pv.shpc i { display: block; width: 13px; height: 13px; border: 2px solid var(--accent); }
+  .shpc.circle i { border-radius: 50%; }
+  .shpc.round i { border-radius: 4px; }
+  .shpc.square i { border-radius: 1px; }
+  /* 比例 chip 直接复用 .chip / .chip.sel（选中四件套：底/字/描边/光晕） */
+  /* 摄像头小框关着时，下面一组字段整体压暗 + 禁交互（开关行本身不暗） */
+  .cambox.off .cam-body { opacity: .45; pointer-events: none; }
+  .cambox .cam-body { transition: opacity var(--dur-2) var(--ease); }
+
+  /* ===== 设置 › 录屏：摄像头小框 · 预览模式（面板内模拟桌面摆位） =====
+     形态与首跑向导同源：整窗遮罩 + 盒子上浮；压暗层用令牌色、刻意不加 blur
+     （软件渲染下 backdrop-filter 参与动画必卡，见 BUGFIX-渲染层）。
+     动效只动 transform / opacity，fill-mode 用 backwards，双重兜底见文末。 */
+  .pv-mask { position: absolute; inset: 0; z-index: 30; display: none; align-items: center; justify-content: center; }
+  .pv-mask::before { content: ''; position: absolute; inset: 0; z-index: 0; background: var(--fg); opacity: .3; pointer-events: none; }
+  [data-theme="t1"] .pv-mask::before { background: var(--bg-sunken); }
+  .pv-mask.show { display: flex; animation: wizfadein var(--dur-2) var(--ease) backwards; }
+  .pv-mask.closing { animation: wizfadeout var(--dur-2) var(--ease) forwards; }
+  .pv-mask.show .pv-box { animation: wizpop var(--dur-3) var(--ease) backwards; }
+  .pv-box {
+    position: relative; z-index: 1; width: 372px; max-width: calc(100% - 16px); max-height: 94%;
+    overflow-y: auto; background: var(--bg); border-radius: 14px; padding: 12px 14px 11px;
+    border: 0.5px solid var(--border-strong); box-shadow: var(--sh-lg);
+  }
+  .pv-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .pv-hd b { font-size: calc(13px * var(--fs-scale)); font-weight: 500; color: var(--fg); }
+  .pv-hd .pv-badge { font-size: calc(10.5px * var(--fs-scale)); color: var(--accent-fg); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px; }
+  .pv-x { border: none; background: none; cursor: pointer; color: var(--fg-muted); font-size: 13px; padding: 2px 6px; border-radius: 8px; transition: color var(--dur-2) var(--ease), background var(--dur-2) var(--ease), transform var(--dur-1) var(--ease); }
+  .pv-x:hover { color: var(--fg); background: var(--bg-sunken); transform: rotate(90deg); }
+  /* 模拟桌面：窗口 + 任务条，只作摆位参照 */
+  .pv-stage { position: relative; width: 100%; height: 216px; background: var(--bg-sunken); border: 0.5px solid var(--border); border-radius: 10px; overflow: hidden; touch-action: none; user-select: none; }
+  .pv-mwin { position: absolute; left: 14px; top: 14px; width: 52%; height: 62%; background: var(--bg); border: 0.5px solid var(--border); border-radius: 7px; }
+  .pv-mwin i { position: absolute; height: 5px; border-radius: 3px; background: var(--border); }
+  .pv-task { position: absolute; left: 0; right: 0; bottom: 0; height: 18px; background: var(--bg-soft); border-top: 0.5px solid var(--border); }
+  .pv-gv, .pv-gh { position: absolute; display: none; pointer-events: none; }
+  .pv-gv { top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--accent); }
+  .pv-gh { left: 0; right: 0; height: 0; border-top: 1px dashed var(--accent); }
+  /* 小框本体：边框 accent + 底 accent-soft（三套主题通用令牌） */
+  .pv-bubble { position: absolute; border: 3px solid var(--accent); background: var(--accent-soft); cursor: grab; }
+  .pv-bubble.drag { cursor: grabbing; }
+  .pv-face { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  .pv-face .pv-sil { color: var(--accent); opacity: .55; }
+  .pv-face .pv-tag { position: absolute; bottom: 5px; font-size: 10.5px; color: var(--fg-muted); }
+  /* 四边把手（圆角/方框）与右下角把手（圆形） */
+  .pv-eh { position: absolute; width: 16px; height: 16px; border-radius: 50%; background: var(--bg); border: 1.5px solid var(--accent); display: flex; align-items: center; justify-content: center; }
+  .pv-eh i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
+  .pv-corner { position: absolute; right: -7px; bottom: -7px; width: 16px; height: 16px; border-radius: 50%; background: var(--bg); border: 1.5px solid var(--accent); color: var(--accent); display: flex; align-items: center; justify-content: center; cursor: nwse-resize; }
+  /* 小框工具栏：两行（形状/尺寸/完成 + 比例），贴近顶部时翻到框下方 */
+  .pv-tb { position: absolute; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 3px; background: var(--bg); border: 0.5px solid var(--border-strong); border-radius: 10px; padding: 4px 5px; white-space: nowrap; }
+  .pv-tb .pv-tr { display: flex; align-items: center; gap: 2px; justify-content: center; }
+  .pv-tb button { border: none; background: none; cursor: pointer; font-family: inherit; color: var(--fg-soft); border-radius: 999px; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease); }
+  .pv-tb button:hover { background: var(--bg-sunken); }
+  .pv-tb button:active { transform: scale(.94); }
+  .pv-tb .pv-sh { width: 24px; height: 20px; display: flex; align-items: center; justify-content: center; }
+  .pv-tb .pv-sh.on, .pv-tb .pv-rb.on { background: var(--accent-soft); color: var(--accent-fg); }
+  .pv-tb .pv-rb { font-size: 11px; padding: 2px 8px; }
+  .pv-tb .pv-sep { width: 0.5px; height: 12px; background: var(--border); }
+  .pv-tb .pv-sz { font-size: 11px; color: var(--fg-muted); min-width: 62px; text-align: center; }
+  .pv-tb .pv-done { font-size: 11px; font-weight: 500; color: #fff; background: var(--accent); padding: 3px 10px; }
+  .pv-tb .pv-done:hover { background: var(--accent-fg); }
+  .pv-status { margin-top: 8px; font-size: calc(10.5px * var(--fs-scale)); color: var(--fg-soft); min-height: 15px; }
+  .pv-foot { margin-top: 6px; font-size: calc(10.5px * var(--fs-scale)); color: var(--fg-muted); line-height: 1.5; }
 
   /* ===== 路由四枚的 hover 动效 =====
      和顶栏同一套语言：只动图形内部，按钮尺寸位置不变。 */
@@ -1318,11 +1403,12 @@
     transition: transform .35s var(--ease), box-shadow .35s var(--ease);
   }
   header:hover img { transform: rotate(-6deg) scale(1.06); box-shadow: 0 2px 8px rgba(38,33,92,.18); }
-  /* 忙的时候头像外圈蓝色呼吸（和悬浮球同一语言），一眼知道后台还在跑 */
+  /* 忙的时候头像外圈呼吸（和悬浮球同一语言），一眼知道后台还在跑。
+     颜色跟随交互色：以前写死蓝，自选青柠/琥珀时这一圈永远是蓝的。 */
   #avatar.busy { animation: avBreathe 1.7s cubic-bezier(.45,0,.55,1) infinite; }
   @keyframes avBreathe {
-    0%, 100% { box-shadow: 0 0 0 1px rgba(8,94,200,.32), 0 0 0 3px rgba(8,94,200,.08); }
-    50%      { box-shadow: 0 0 0 2px rgba(8,94,200,.55), 0 0 0 7px rgba(8,94,200,.13); }
+    0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent), 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent); }
+    50%      { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent), 0 0 0 7px color-mix(in srgb, var(--accent) 13%, transparent); }
   }
   /* 标题宁可省略号也不要折行：面板只有 400px 宽，
      "Orb 控制台"一折行 header 就从 45px 涨到 77px，整块布局跟着塌。 */
@@ -1496,7 +1582,9 @@
     position: absolute; top: 2px; left: 2px; height: calc(100% - 4px);
     border-radius: 999px; background: var(--bg);
     box-shadow: 0 1px 2px rgba(38,33,92,.16);
-    transition: transform .22s cubic-bezier(.34,1.4,.5,1), width .22s var(--ease);
+    /* 去掉 width 过渡：档位切换时宽度才会变（极低频），而过渡它会让每一次
+       切换都连续重排。位移（transform）那条保留 —— 那才是跟手的部分。 */
+    transition: transform .22s cubic-bezier(.34,1.4,.5,1);
     pointer-events: none;
   }
   .slider .sitem {
@@ -1531,7 +1619,10 @@
     padding: 3px 10px; font-size:calc(11.5px * var(--fs-scale)); cursor: pointer; color: var(--fg-soft);
     font-family: inherit; transition: all .12s var(--ease);
   }
-  .chip:hover { border-color: var(--fg-muted); transform: translateY(-1px); }
+  /* 悬停反馈加主题色描边：chip 是面板里数量最多的交互件（路由/设置/热启动/更新），
+     以前悬停只描一中灰边，主题是青柠时这一下完全是"外来色"。
+     文字同步提为 accent-fg，整颗钮的悬停态统一走交互色。 */
+  .chip:hover { border-color: var(--accent); color: var(--accent-fg); transform: translateY(-1px); }
   .chip:active { transform: scale(.96); }
   /* 选中 chip：底/字/描边/光晕四件套全部走主题令牌。
      以前描边写死 #b9b2ee、光晕写死 rgba(83,74,183,.08)（品牌紫），
@@ -1550,6 +1641,12 @@
     padding: 3px 8px 3px 7px;
   }
   .chip.withico svg { width: 14px; height: 14px; display: block; flex: 0 0 auto; }
+  /* 模型更新钮：拉取中刷新图标转动（只动 transform，与全套图标动效同语言）；
+     no-motion / prefers-reduced-motion 双兜底见下方对应区块 */
+  #wbmodelRefresh .rf-ico { transform-origin: 12px 12px; transform-box: view-box; }
+  #wbmodelRefresh.busy .rf-ico { animation: rfspin .8s linear infinite; }
+  @keyframes rfspin { from { transform: rotate(0) } to { transform: rotate(360deg) } }
+  #wbmodelRefresh:disabled { opacity: .7; cursor: default; }
 
   /* ===== 滑轨内的 chip 要「卸掉」chip 自己的皮 =====
      滑轨底槽已经提供了边框/背景/选中感，里面的 .sitem 若还保留
@@ -1598,12 +1695,12 @@
   .msg.me { text-align: right; }
   .msg.me .body {
     display: inline-block; text-align: left;
-    background: linear-gradient(180deg,#5d54c4,#4a41a8); color: #fff;
+    background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 78%, #000)); color: #fff;
     padding: 8px 12px; border-radius: 13px 13px 3px 13px; max-width: 92%;
-    box-shadow: 0 1px 3px rgba(83,74,183,.22);
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 22%, transparent);
     transition: transform .18s var(--ease), box-shadow .18s var(--ease);
   }
-  .msg.me .body:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(83,74,183,.28); }
+  .msg.me .body:hover { transform: translateY(-1px); box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 28%, transparent); }
   /* Orb 的消息左侧加一条细强调条：连着几条 Orb 回复时，
      靠这条线能一眼看出"这一整段都是它在说"，比逐条气泡更好扫读。
      2px + 35% 透明度是刻意压低的 —— 强调条是导航线索，不是装饰，
@@ -1784,7 +1881,7 @@
     resize: none; height: 56px; background: var(--bg); color: var(--fg);
     transition: all .14s var(--ease);
   }
-  textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(83,74,183,.10); }
+  textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
   /* 加模型下拉后一行放不下就换行，绝不能把末尾的按钮挤出可视区。
      gap 收到 6px：发送栏从「四枚文字 chip + 坐标」变成
      「四枚带图标 chip」后，横向只余 6px 弹性，7px 会触发亚像素换行。 */
@@ -1798,23 +1895,27 @@
   .send {
     position: relative; overflow: hidden;
     font-family: inherit; font-size:calc(13px * var(--fs-scale)); font-weight: 500; padding: 7px 11px; border: none;
-    background: linear-gradient(180deg, #5d54c4 0%, #4a41a8 100%); color: #fff;
+    background: linear-gradient(180deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 78%, #000) 100%); color: #fff;
     border-radius: 9px; cursor: pointer;
     flex: 0 0 auto; transition: all .14s var(--ease);
-    box-shadow: 0 1px 3px rgba(83,74,183,.28);
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 28%, transparent);
     display: inline-flex; align-items: center; gap: 5px;
   }
   /* 发送键的纸飞机：16px，与顶栏图标同一套规范（24×24 网格 / currentColor） */
   .send svg { width: 16px; height: 16px; display: block; flex: 0 0 auto; }
   /* 悬停时一道高光扫过，按下去有"陷落"手感 */
   .send::after {
-    content: ''; position: absolute; top: 0; left: -130%; width: 55%; height: 100%;
+    content: ''; position: absolute; top: 0; left: 0; width: 55%; height: 100%;
+    /* 原来是过渡 left —— 布局属性，扫过的 .55s 里每帧都要重排一次。
+       改走 transform：translateX 的百分比按**自身**宽度算（自身 = 父宽的 55%），
+       所以 -236% ↔ 245% 与原来的 left -130% ↔ 135% 是同一段位移，视觉不变。 */
+    transform: translateX(-236%);
     background: linear-gradient(100deg, transparent, rgba(255,255,255,.40), transparent);
-    transition: left .55s var(--ease); pointer-events: none;
+    transition: transform .55s var(--ease); pointer-events: none;
   }
-  .send:hover::after { left: 135%; }
-  .send:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(83,74,183,.34); }
-  .send:active { transform: translateY(0) scale(.97); box-shadow: 0 1px 2px rgba(83,74,183,.28); }
+  .send:hover::after { transform: translateX(245%); }
+  .send:hover { transform: translateY(-1px); box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 34%, transparent); }
+  .send:active { transform: translateY(0) scale(.97); box-shadow: 0 1px 2px color-mix(in srgb, var(--accent) 28%, transparent); }
   .send:disabled { background: #c9c6bc; cursor: default; box-shadow: none; transform: none; }
   .send:disabled::after { display: none; }
 
@@ -1829,20 +1930,22 @@
     flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
     font-family: inherit; font-size:calc(13px * var(--fs-scale)); line-height: 0;
     padding: 7px; border: none; border-radius: 9px; cursor: pointer;
-    background: linear-gradient(180deg, #5d54c4 0%, #4a41a8 100%); color: #fff;
+    background: linear-gradient(180deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 78%, #000) 100%); color: #fff;
     transition: all .14s var(--ease);
-    box-shadow: 0 1px 3px rgba(83,74,183,.28);
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 28%, transparent);
   }
   .attach svg { width: 15px; height: 15px; display: block; flex: 0 0 auto; }
   /* 悬停高光：一道斜向白光自左扫到右（.send::after 同款） */
   .attach::after {
-    content: ''; position: absolute; top: 0; left: -130%; width: 55%; height: 100%;
+    content: ''; position: absolute; top: 0; left: 0; width: 55%; height: 100%;
+    /* 与 .send::after 同款：left → transform，避免每帧重排 */
+    transform: translateX(-236%);
     background: linear-gradient(100deg, transparent, rgba(255,255,255,.40), transparent);
-    transition: left .55s var(--ease); pointer-events: none;
+    transition: transform .55s var(--ease); pointer-events: none;
   }
-  .attach:hover::after { left: 135%; }
-  .attach:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(83,74,183,.34); }
-  .attach:active { transform: translateY(0) scale(.97); box-shadow: 0 1px 2px rgba(83,74,183,.28); }
+  .attach:hover::after { transform: translateX(245%); }
+  .attach:hover { transform: translateY(-1px); box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 34%, transparent); }
+  .attach:active { transform: translateY(0) scale(.97); box-shadow: 0 1px 2px color-mix(in srgb, var(--accent) 28%, transparent); }
   /* 已装载（.has）：附件挂着时的「有东西」信号。填充键不便改色（四主题各一套
      渐变），用提亮 7% 表达 —— 不动 box-shadow，避免跟各主题的阴影规则打架 */
   .attach.has { filter: brightness(1.07); }
@@ -2089,7 +2192,9 @@
   @media (prefers-reduced-motion: reduce) {
     .wiz-mask.show, .wiz-mask.closing,
     .wiz-mask.show .wiz-box, .wiz-mask.closing .wiz-box,
-    .wiz-mask.show .wiz-card, .wiz-mask.show .wiz-extras { animation: none; }
+    .wiz-mask.show .wiz-card, .wiz-mask.show .wiz-extras,
+    .pv-mask.show, .pv-mask.closing,
+    .pv-mask.show .pv-box { animation: none; }
     .wiz-x:hover, .wiz-x:active, .wiz-btn:hover, .wiz-btn:active { transform: none; }
   }
 
@@ -2150,10 +2255,10 @@
     transition: background .14s var(--ease), border-color .14s var(--ease),
                 color .14s var(--ease), transform .14s var(--ease), box-shadow .14s var(--ease);
   }
-  .sheet button:hover { transform: translateY(-1px); box-shadow: var(--sh-sm); }
+  .sheet button:hover { transform: translateY(-1px); box-shadow: var(--sh-sm); border-color: var(--accent); }
   .sheet button:active { transform: scale(.97); box-shadow: none; }
   .sheet .row2 button.pri {
-    background: linear-gradient(180deg, #5d54c4, #4a41a8); color: #fff; border-color: #4a41a8;
+    background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 80%, #000)); color: #fff; border-color: color-mix(in srgb, var(--accent) 80%, #000);
   }
   .sheet .slotbox { transition: border-color .16s var(--ease), box-shadow .16s var(--ease); }
   .sheet .row2 { display: flex; gap: 6px; justify-content: flex-end; margin-top: 14px; }
@@ -2161,7 +2266,7 @@
     font-family: inherit; font-size:calc(12.5px * var(--fs-scale)); padding: 6px 14px; border-radius: 8px;
     border: 0.5px solid #d3d1c7; background: #faf9f6; cursor: pointer; color: #2c2c2a;
   }
-  .sheet .row2 button.pri { background: #534ab7; border-color: #534ab7; color: #fff; }
+  .sheet .row2 button.pri { background: var(--accent); border-color: var(--accent); color: #fff; }
   .sheet .note { font-size:calc(11.5px * var(--fs-scale)); color: #888780; line-height: 1.6; margin-top: 10px; }
   .shot { max-width: 190px; border-radius: 8px; border: 0.5px solid #d3d1c7; margin-top: 6px; display: block; }
   .slotbox { border: 0.5px solid #e8e6df; border-radius: 10px; padding: 10px 12px 4px; margin-bottom: 10px; background: #fdfdfc; }
@@ -2213,8 +2318,10 @@
   /* 危险清单勾选：chip 多选，选中=拦截 */
   .danger-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   .danger-grid .chip { display: inline-flex; align-items: center; gap: 4px; }
+  /* 写死的浅底红在深空主题（t1）下是暗红压深底，对比度只有 2.4:1 —— 全走令牌，
+     让各主题自己保证"选中=危险"这件事看得清。 */
   .danger-grid .chip.on {
-    background: var(--danger-soft); border-color: #f0d3d2; color: #a32d2d; font-weight: 500;
+    background: var(--danger-soft); border-color: var(--danger); color: var(--danger); font-weight: 500;
   }
   /* 槽位内的操作行：比底部那排矮一点、左对齐，视觉上跟着自己那一栏 */
   .slot-actions { margin-top: 8px; margin-bottom: 8px; justify-content: flex-start; }
@@ -2239,6 +2346,21 @@
   }
   @keyframes ghbtnin { from { opacity: 0; transform: translateY(-3px) } to { opacity: 1; transform: none } }
   html.no-motion .gh-actions button { animation: none !important; }
+  /* WorkBuddy 个人中心直达链：CSP 禁面板外链 <a>，与 GitHub 两连同宗旨走
+     window.orb.openExternal。文本链形态（不是次级按钮），配色走 accent 一族；
+     悬停只动 transform（外链图标向右上微移 1.5px），不动宽高不引布局抖动；
+     .sheet button:hover 的通用上浮/投影/描边在此显式压掉（特异性 0-3-0 取胜）。 */
+  .wblink {
+    display: inline-flex; align-items: center; gap: 5px;
+    border: none; background: none; padding: 3px 2px; cursor: pointer;
+    font-family: inherit; font-size: calc(11.5px * var(--fs-scale));
+    color: var(--accent-fg); border-radius: 8px;
+    transition: color var(--dur-2) var(--ease);
+  }
+  .sheet .wblink:hover { transform: none; box-shadow: none; color: var(--accent); }
+  .wblink .wblico { width: 12px; height: 12px; display: block; flex: 0 0 auto; transition: transform var(--dur-1) var(--ease); }
+  .wblink:hover .wblico { transform: translate(1.5px, -1.5px); }
+  .wblink:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   /* 测试结果：贴着按钮，结果一出来就出现在眼睛正看着的地方 */
   .slotmsg {
     font-size:calc(11.5px * var(--fs-scale)); line-height: 1.6; color: var(--fg-soft);
@@ -2531,7 +2653,7 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
 }
 .pfield-in:focus {
   outline: none; border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(83,74,183,.13);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 .pfield-in.bad { border-color: var(--danger); background: var(--danger-soft); }
 .pfield-unit { flex: 0 0 auto; font-size:calc(10.5px * var(--fs-scale)); color: var(--fg-muted); }
@@ -2725,6 +2847,7 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
       <button class="setnav-i on" data-pane="look" title="外观" aria-label="外观"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><circle cx="9.4" cy="9.6" r="1.5" fill="currentColor" stroke="none"/><circle cx="14.6" cy="9.6" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="15" r="1.5" fill="currentColor" stroke="none"/></svg></button>
       <button class="setnav-i" data-pane="vision" title="视觉模型" aria-label="视觉模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 12s3.4-5.4 9.4-5.4S21.4 12 21.4 12s-3.4 5.4-9.4 5.4S2.6 12 2.6 12Z"/><circle cx="12" cy="12" r="2.4"/></svg></button>
       <button class="setnav-i" data-pane="voice" title="语音" aria-label="语音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2.6" width="6" height="11" rx="3"/><path d="M5.4 11.4a6.6 6.6 0 0 0 13.2 0M12 18v3.4M8.6 21.4h6.8"/></svg></button>
+      <button class="setnav-i" data-pane="rec" title="录屏" aria-label="录屏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="12.5" rx="2.2"/><path d="M9 20.5h6M12 17v3.5"/><circle cx="12" cy="10.7" r="2" fill="currentColor" stroke="none"/></svg></button>
       <button class="setnav-i" data-pane="safe" title="安全" aria-label="安全"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8 20 6v6c0 4.6-3.2 8-8 9.2-4.8-1.2-8-4.6-8-9.2V6Z"/><path d="M9 12l2.2 2.2L15.4 10"/></svg></button>
       <button class="setnav-i" data-pane="chan" title="通道" aria-label="通道"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 9.4h12l-3-3M19.4 14.6h-12l3 3"/></svg></button>
       <button class="setnav-i" data-pane="storage" title="存储" aria-label="存储"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.4 6.4A1.8 1.8 0 0 1 5.2 4.6h3.6l2 2.4h8a1.8 1.8 0 0 1 1.8 1.8v8.8a1.8 1.8 0 0 1-1.8 1.8H5.2a1.8 1.8 0 0 1-1.8-1.8Z"/><path d="M3.4 10h17.2"/></svg></button>
@@ -2812,39 +2935,8 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
           <div class="slotmsg" id="glassMsg"></div>
         </div>
 
-        <!-- 录屏相关的这几项本质上都是"外观"：悬浮控制条与实时字幕窗的皮肤、行为、描边。
-             已从独立的「录屏」页合并进来，不再单独开一屏；JS 绑定与 IPC 契约原样不动。 -->
-        <div class="slotbox">
-          <div class="slothead">悬浮控制条皮肤</div>
-          <div class="recskin-row" id="recSkinPick">
-            <button class="recskin on" type="button" data-skin="light" title="灰白纱（默认）" aria-label="灰白纱">
-              <span class="recskin-pv pv-light" aria-hidden="true"><i class="pv-dot"></i><i class="pv-line l1"></i><i class="pv-line l2"></i></span>
-              <span class="recskin-tx"><b>灰白纱</b></span>
-              <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
-            </button>
-            <button class="recskin" type="button" data-skin="dark" title="深纱" aria-label="深纱">
-              <span class="recskin-pv pv-dark" aria-hidden="true"><i class="pv-dot"></i><i class="pv-line l1"></i><i class="pv-line l2"></i></span>
-              <span class="recskin-tx"><b>深纱</b></span>
-              <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
-            </button>
-          </div>
-          <div class="slotmsg" id="recSkinMsg"></div>
-        </div>
-
-        <div class="slotbox">
-          <div class="slothead">悬浮控制条</div>
-          <div class="field"><label>自动收起成能量条 <span class="muted" id="recEnergyState"></span></label>
-            <button class="chip" id="recEnergyToggle">自动收起 开</button>
-          </div>
-          <div class="slotmsg" id="recEnergyMsg"></div>
-        </div>
-
-        <div class="slotbox">
-          <div class="slothead">悬浮控制条描边</div>
-          <div class="colorgrid" id="recColorGrid"></div>
-          <div class="slotmsg" id="recColorMsg"></div>
-        </div>
-
+        <!-- 实时字幕窗：独立功能（压字幕用的浮窗），外观设置留在本页，
+             不随录屏设置迁走。皮肤/描边经 set-sub-theme 落盘，绑定原样不动。 -->
         <div class="slotbox">
           <div class="slothead">实时字幕窗</div>
           <div class="recskin-row" id="subSkinPick">
@@ -2982,6 +3074,128 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
       </div>
       </div>
 
+      <div class="setpane" data-pane="rec">
+        <!-- 音频来源：系统音 / 麦克风 / 混合。不选 = 不录音频（默认）。
+             卡片语言与悬浮条皮肤同源；混音电平条随选择亮/暗，直观显示
+             "这个选择实际会录进哪几路"。 -->
+        <div class="slotbox">
+          <div class="slothead">音频来源 <span class="hint">再次点击已选卡片可关闭音频</span></div>
+          <div class="recskin-row" id="audioSrcPick">
+            <button class="recskin" type="button" data-src="system" title="只录入系统声音（电脑里的音乐、视频、提示音）" aria-label="系统音">
+              <span class="recskin-pv au" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v4h3.2L12 17.5v-11L7.2 10H4Z"/><path d="M15.2 9.4a3.8 3.8 0 0 1 0 5.2"/></svg></span>
+              <span class="recskin-tx"><b>系统音</b><span class="hint">只录电脑里的声音：音乐、视频、提示音</span></span>
+              <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+            </button>
+            <button class="recskin" type="button" data-src="mic" title="只录入麦克风（你的人声）" aria-label="麦克风">
+              <span class="recskin-pv au" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7"/></svg></span>
+              <span class="recskin-tx"><b>麦克风</b><span class="hint">只录麦克风输入：你的人声</span></span>
+              <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+            </button>
+            <button class="recskin" type="button" data-src="mix" title="系统音与麦克风同时录入，自动混音限幅" aria-label="混合">
+              <span class="recskin-pv au" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4v5M5 13v7M12 4v9M12 17v3M19 4v3M19 11v9"/><circle cx="5" cy="11" r="1.9"/><circle cx="12" cy="15" r="1.9"/><circle cx="19" cy="9" r="1.9"/></svg></span>
+              <span class="recskin-tx"><b>混合</b><span class="hint">系统音与麦克风同时录入，自动混音限幅</span></span>
+              <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+            </button>
+          </div>
+          <div class="audiometers" aria-hidden="true">
+            <div class="ameter" id="amSys"><span class="am-lb">系统音</span><span class="am-tr"><i class="am-fl" style="width:68%"></i></span></div>
+            <div class="ameter" id="amMic"><span class="am-lb">麦克风</span><span class="am-tr"><i class="am-fl" style="width:46%"></i></span></div>
+          </div>
+          <div class="slotmsg" id="audioSrcMsg"></div>
+        </div>
+
+        <!-- 摄像头小框：开关 / 设备 / 三形状 / 比例预设（含自定义）/ 预览模式入口。
+             大小与位置不做滑杆和九宫格 —— 统一在「预览模式」里拖出来。 -->
+        <div class="slotbox cambox" id="camBox">
+          <div class="slothead">摄像头小框</div>
+          <div class="field"><label>摄像头小框 <span class="muted" id="camState"></span></label>
+            <button class="chip" id="camToggle" type="button" title="开启后录屏时在画面上叠加摄像头小框">摄像头小框 关</button>
+          </div>
+          <div class="cam-body">
+            <div class="field"><label>摄像头</label>
+              <button class="chip" id="camDevice" type="button" title="暂用系统默认摄像头；多设备选择将在摄像头采集接入后提供">默认摄像头</button>
+            </div>
+            <div class="field"><label>形状 <span class="muted">圆形为等比缩放；圆角与方框可拖边调宽高</span></label>
+              <div class="recskin-row" id="camShapePick">
+                <button class="recskin" type="button" data-shape="circle" title="圆形（等比缩放）" aria-label="圆形">
+                  <span class="recskin-pv shpc circle" aria-hidden="true"><i></i></span>
+                  <span class="recskin-tx"><b>圆形</b></span>
+                  <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+                </button>
+                <button class="recskin on" type="button" data-shape="round" title="圆角矩形（可拖边调宽高）" aria-label="圆角">
+                  <span class="recskin-pv shpc round" aria-hidden="true"><i></i></span>
+                  <span class="recskin-tx"><b>圆角</b></span>
+                  <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+                </button>
+                <button class="recskin" type="button" data-shape="square" title="方框（可拖边调宽高）" aria-label="方框">
+                  <span class="recskin-pv shpc square" aria-hidden="true"><i></i></span>
+                  <span class="recskin-tx"><b>方框</b></span>
+                  <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+                </button>
+              </div>
+            </div>
+            <div class="field" id="camRatioField">
+              <label>预设比例 <span class="muted" id="camRatioHint"></span></label>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button class="chip" type="button" data-ratio="16:9" title="锁定 16:9，拖边时宽高联动">16:9</button>
+                <button class="chip sel" type="button" data-ratio="4:3" title="锁定 4:3，拖边时宽高联动">4:3</button>
+                <button class="chip" type="button" data-ratio="1:1" title="锁定 1:1，拖边时宽高联动">1:1</button>
+                <button class="chip" type="button" data-ratio="free" title="不约束比例，宽高各自独立；也可在下面输入自定义比例">自由</button>
+              </div>
+            </div>
+            <div class="field" id="camCustomField" hidden>
+              <label>自定义长宽比 <span class="muted">如 16:9 或 1.78</span></label>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <input id="camRatioInput" type="text" placeholder="16:9 或 1.78" style="width:118px" spellcheck="false" autocomplete="off" aria-label="自定义长宽比">
+                <button class="chip" id="camRatioApply" type="button" title="按输入的比例锁定">应用</button>
+              </div>
+              <div class="slotmsg" id="camRatioMsg"></div>
+            </div>
+            <div class="row2 slot-actions" style="justify-content:flex-start;margin-top:2px">
+              <button class="chip withico" id="camPreviewBtn" type="button" title="在模拟画面里拖动摆位、拖边缩放，切形状与比例">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.6v18.8M2.6 12h18.8M12 2.6 9.4 5.2M12 2.6l2.6 2.6M12 21.4l-2.6-2.6M12 21.4l2.6-2.6M2.6 12l2.6-2.6M2.6 12l2.6 2.6M21.4 12l-2.6-2.6M21.4 12l-2.6 2.6"/></svg>
+                进入预览模式
+              </button>
+            </div>
+          </div>
+          <div class="slotmsg" id="camMsg"></div>
+        </div>
+
+        <!-- 以下三组自「外观」迁入：悬浮控制条是录制时挂在屏幕上的控制条，
+             属录屏本体设置，统一收在本页。实时字幕窗是独立功能，外观留在「外观」页。
+             ID 与原绑定一一对应，JS 绑定与 IPC 契约原样不动。 -->
+        <div class="slotbox">
+          <div class="slothead">悬浮控制条皮肤</div>
+          <div class="recskin-row" id="recSkinPick">
+            <button class="recskin on" type="button" data-skin="light" title="灰白纱（默认）" aria-label="灰白纱">
+              <span class="recskin-pv pv-light" aria-hidden="true"><i class="pv-dot"></i><i class="pv-line l1"></i><i class="pv-line l2"></i></span>
+              <span class="recskin-tx"><b>灰白纱</b></span>
+              <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+            </button>
+            <button class="recskin" type="button" data-skin="dark" title="深纱" aria-label="深纱">
+              <span class="recskin-pv pv-dark" aria-hidden="true"><i class="pv-dot"></i><i class="pv-line l1"></i><i class="pv-line l2"></i></span>
+              <span class="recskin-tx"><b>深纱</b></span>
+              <span class="recskin-ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12.5l4.2 4.2 8.8-9.4"/></svg></span>
+            </button>
+          </div>
+          <div class="slotmsg" id="recSkinMsg"></div>
+        </div>
+
+        <div class="slotbox">
+          <div class="slothead">悬浮控制条</div>
+          <div class="field"><label>自动收起成能量条 <span class="muted" id="recEnergyState"></span></label>
+            <button class="chip" id="recEnergyToggle">自动收起 开</button>
+          </div>
+          <div class="slotmsg" id="recEnergyMsg"></div>
+        </div>
+
+        <div class="slotbox">
+          <div class="slothead">悬浮控制条描边</div>
+          <div class="colorgrid" id="recColorGrid"></div>
+          <div class="slotmsg" id="recColorMsg"></div>
+        </div>
+      </div>
+
       <div class="setpane" data-pane="safe">
       <div class="slotbox">
         <div class="slothead">危险操作拦截 <span class="hint">命中就挂起等你点确认，60 秒不点自动拒绝</span></div>
@@ -3003,7 +3217,22 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
 
       <div class="slotbox">
         <div class="slothead">后台 Agent（WorkBuddy CLI）<span class="hint">免 key，走 CLI 登录态</span></div>
-        <div class="field"><label>模型</label><select id="wbmodel" title="后台模型"></select></div>
+        <div class="field"><label>模型 <span class="hint">点「更新」从 CLI 拉最新清单</span></label>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <select id="wbmodel" title="后台模型（积分倍率以 WorkBuddy 客户端显示为准）" style="flex:1;min-width:0;max-width:236px"></select>
+            <button class="chip withico" id="wbmodelRefresh" type="button" title="从 CodeBuddy CLI 重新拉取最新模型列表">
+              <svg class="rf-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 3.5V8h-4.5"/></svg>
+              <span class="rf-tx">更新</span>
+            </button>
+          </div>
+        </div>
+        <div class="slotmsg" id="wbmodelMsg"></div>
+        <div class="row2 slot-actions" style="justify-content:flex-start;margin-top:0">
+          <button type="button" class="wblink" id="wbCenter" title="在系统默认浏览器中打开 WorkBuddy 个人中心：套餐与积分、积分消耗明细">
+            <svg class="wblico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 4.5H19V10"/><path d="M19 4.5 10.5 13"/><path d="M17.5 14.5V18a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 18V8A1.5 1.5 0 0 1 6 6.5h3.5"/></svg>
+            WorkBuddy 个人中心
+          </button>
+        </div>
         <div class="field"><label>热启动 <span class="hint">常驻服务消冷启动；失败自动回落 -p</span></label>
           <button class="chip" id="daemon" title="热启动：后台优先走常驻 codebuddy 服务">热启动 关</button>
         </div>
@@ -3215,6 +3444,60 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
   </div>
 </div>
 
+<!-- 摄像头小框 · 预览模式：面板内模拟桌面摆位层。
+     与首跑向导同级的整窗遮罩；遮罩层用令牌压暗色、不加 blur（软件渲染约束）。
+     位置/大小按比例保存（主进程 recCam.bx/by/bw/bh），供日后真实悬浮窗复用。 -->
+<div class="pv-mask" id="pvMask" role="dialog" aria-modal="true" aria-labelledby="pvTitle" aria-hidden="true">
+  <div class="pv-box">
+    <div class="pv-hd">
+      <b id="pvTitle">摄像头小框 · 预览模式</b>
+      <span style="display:flex;align-items:center;gap:8px">
+        <span class="pv-badge">摆位不会进入成片</span>
+        <button class="pv-x" id="pvClose" type="button" title="关闭预览（不保存改动）" aria-label="关闭预览">✕</button>
+      </span>
+    </div>
+    <div class="pv-stage" id="pvStage">
+      <div class="pv-mwin" aria-hidden="true">
+        <i style="left:10px;top:10px;width:56%"></i><i style="left:10px;top:22px;width:78%"></i><i style="left:10px;top:34px;width:68%"></i><i style="left:10px;top:46px;width:44%"></i>
+      </div>
+      <div class="pv-task" aria-hidden="true"></div>
+      <div class="pv-gv" id="pvGV" aria-hidden="true"></div>
+      <div class="pv-gh" id="pvGH" aria-hidden="true"></div>
+      <div class="pv-bubble" id="pvBubble" tabindex="0" role="application" aria-label="摄像头小框摆位：拖动移动，方向键微调">
+        <div class="pv-face">
+          <svg class="pv-sil" width="30" height="30" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="7.6" r="3.3"/><path d="M4.6 20.6c0-3.5 3.3-5.8 7.4-5.8s7.4 2.3 7.4 5.8v.4H4.6Z"/></svg>
+          <span class="pv-tag">摄像头预览</span>
+        </div>
+        <div class="pv-tb" id="pvTb">
+          <div class="pv-tr">
+            <button class="pv-sh" type="button" data-shape="circle" title="圆形（等比缩放）" aria-label="圆形"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="8.5"/></svg></button>
+            <button class="pv-sh on" type="button" data-shape="round" title="圆角（可拖边调宽高）" aria-label="圆角"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/></svg></button>
+            <button class="pv-sh" type="button" data-shape="square" title="方框（可拖边调宽高）" aria-label="方框"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.5" y="3.5" width="17" height="17" rx="1"/></svg></button>
+            <span class="pv-sep"></span>
+            <span class="pv-sz" id="pvSizeTx">220×165 px</span>
+            <span class="pv-sep"></span>
+            <button class="pv-done" id="pvDone" type="button" title="保存摆位并关闭">完成</button>
+          </div>
+          <div class="pv-tr" id="pvRatioRow">
+            <button class="pv-rb" type="button" data-r="16:9">16:9</button>
+            <button class="pv-rb on" type="button" data-r="4:3">4:3</button>
+            <button class="pv-rb" type="button" data-r="1:1">1:1</button>
+            <button class="pv-rb" type="button" data-r="free">自由</button>
+            <button class="pv-rb" type="button" data-r="custom" id="pvRbCustom" hidden>自定义</button>
+          </div>
+        </div>
+        <div class="pv-eh" data-e="l" title="拖动调宽" style="left:-8px;top:50%;transform:translateY(-50%);cursor:ew-resize"><i></i></div>
+        <div class="pv-eh" data-e="r" title="拖动调宽" style="right:-8px;top:50%;transform:translateY(-50%);cursor:ew-resize"><i></i></div>
+        <div class="pv-eh" data-e="t" title="拖动调高" style="top:-8px;left:50%;transform:translateX(-50%);cursor:ns-resize"><i></i></div>
+        <div class="pv-eh" data-e="b" title="拖动调高" style="bottom:-8px;left:50%;transform:translateX(-50%);cursor:ns-resize"><i></i></div>
+        <div class="pv-corner" id="pvCorner" title="拖动等比缩放" hidden><svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 19 19 5M5 13l6 6M13 5l6 6"/></svg></div>
+      </div>
+    </div>
+    <div class="pv-status" id="pvStatus"></div>
+    <div class="pv-foot">拖动移位 · 圆角/方框拖四边调宽高 · 选定比例后宽高联动 · 靠边或居中自动吸附 · 聚焦后方向键微调。<br>小框为放大示意，尺寸按 1920×1080 画面折算；位置与大小按比例保存，录制时按此呈现。</div>
+  </div>
+</div>
+
 <script>
 window.onerror = (m, s, l) => console.error('JS ERROR: ' + m + ' @line ' + l);
 window.addEventListener('unhandledrejection', (e) => console.error('JS REJECT: ' + (e.reason && e.reason.message)));
@@ -3281,8 +3564,29 @@ function save() {
   const cache = convs.slice(-20);          // 仅给 localStorage 用
   try { store.setItem('orb.convs', JSON.stringify(cache)); } catch {}
   if (!historyReady) return;               // 闸门：磁盘没读回来前不许写盘
-  try { window.orb?.historySave?.(convs.slice()); } catch {}   // 磁盘：全量
+  scheduleHistorySave();
 }
+/* 磁盘存档是全量写整份会话列表（最多 20 个会话 × 每条约 4KB）。
+   原来每调一次 save() 就同步过 IPC 全量写一遍，而 updateMsg（后台任务进度、
+   流式结果）每 2 秒、长回复每片都可能触发 —— 一次几十上百 KB、频率还高，
+   热路径被反复序列化 + IPC 拖慢。这里把磁盘写入合并：400ms 内的多次 save()
+   只落一次盘，既不丢数据，又避免卡顿。localStorage 那条仍即时写（便宜、且是保底）。 */
+let historySaveTimer = null;
+function scheduleHistorySave() {
+  if (historySaveTimer) return;
+  historySaveTimer = setTimeout(() => {
+    historySaveTimer = null;
+    try { window.orb?.historySave?.(convs.slice()); } catch {}
+  }, 400);
+}
+/* 页面卸载/隐藏前强制落盘：把 400ms 窗口里还没写的改动一次写进去，
+   避免「刚聊完就关窗口」漏掉最后几条。 */
+function flushSave() {
+  if (historySaveTimer) { clearTimeout(historySaveTimer); historySaveTimer = null; }
+  try { window.orb?.historySave?.(convs.slice()); } catch {}
+}
+window.addEventListener('pagehide', flushSave);
+window.addEventListener('beforeunload', flushSave);
 
 /* 把「当前会话」挪到 convs 末尾。
    localStorage 只留最后 20 条，若用户从历史里切回很早的会话继续聊，
@@ -3473,6 +3777,12 @@ function buildFontPick() {
 }
 function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 
+/* 视图是否贴着底部（80px 容差）。后台任务每 2 秒刷一次气泡，视觉循环每步还带
+   一张截图 —— 不判贴底就无条件 scrollTop = scrollHeight 的话，用户往上翻历史会
+   被反复拽回底部，想回头看上一步的图根本停不住。 */
+function nearBottom() {
+  return msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 80;
+}
 function addMsg(who, html, cls, silent) {
   if (!cur) cur = newConv();   // 兜底：任何路径都不该因 cur 为空而崩
   const d = document.createElement('div');
@@ -3490,7 +3800,10 @@ function addMsg(who, html, cls, silent) {
     d.__msg = rec;      // 关联记录，供后续原地更新（后台任务进度/结果）
     save();
   }
-  msgs.scrollTop = msgs.scrollHeight;
+  /* silent = 历史重建（render 里一次挂 200 条）。这里必须跳过滚动：每滚一次都要
+     读 scrollHeight，等于 200 次强制同步布局 —— 切会话卡顿就是这么来的。
+     重建完由 render() 末尾统一滚一次。 */
+  if (!silent) msgs.scrollTop = msgs.scrollHeight;
   return d;
 }
 
@@ -3509,7 +3822,8 @@ function updateMsg(node, html, cls) {
     if (cls) node.__msg.cls = cls;
     save();
   }
-  if (msgs.lastChild === node) msgs.scrollTop = msgs.scrollHeight;
+  /* 双重条件：确实在最后一条 **且** 视图本来就贴着底部，才跟到底。 */
+  if (msgs.lastChild === node && nearBottom()) msgs.scrollTop = msgs.scrollHeight;
 }
 function render() {
   if (!cur) cur = newConv();   // 兜底
@@ -3536,9 +3850,22 @@ const OBSERVE_HOLD_LOOP_MS = 1200;
    第一次那个定时器会到点就把第二次还在用的观察状态提前关掉。
    这里只保留一个句柄，新的一来先把旧的掐了。 */
 let observeTimer = null;
+let observingOn = false;
+/* 主进程那边的 observing 是**引用计数**（startObserve +1 / stopObserve -1，
+   归零才真正停掉观察边框与前台轮询）。这一侧如果每个动作都直接发一次 true，
+   而各自结束时又都排一次 false：两次 true 只换回一次 false（stopObservingSoon
+   只有一个定时器句柄，第二次调用会把第一次的待关清掉）→ 计数永远归不了零 →
+   边框定时器与前台轮询**永久空转**。所以本地做 0→1 / 1→0 去重：已经开着时再
+   请求"开"，只把待关的定时器取消掉（等于续期），不再加一次计数。 */
+function setObservingOn(on) {
+  if (on && observeTimer) { clearTimeout(observeTimer); observeTimer = null; }
+  if (on === observingOn) return;
+  observingOn = on;
+  window.orb.setObserving(on);
+}
 function stopObservingSoon(ms) {
   if (observeTimer) clearTimeout(observeTimer);
-  observeTimer = setTimeout(() => { observeTimer = null; window.orb.setObserving(false); }, ms);
+  observeTimer = setTimeout(() => { observeTimer = null; setObservingOn(false); }, ms);
 }
 
 let bridgeToken = '';
@@ -4677,15 +5004,47 @@ async function runBack(text) {
       args: Object.assign({ task: text }, m ? { model: m } : {}),
     });
     if (!r.ok) {
-      updateMsg(node, '<span style="color:#a32d2d">派发失败：' + esc(r.error) + '</span>', 'err');
+      updateMsg(node, '<span style="color:var(--danger)">派发失败：' + esc(r.error) + '</span>', 'err');
       setRunning(-1);
       return;
     }
     poll(r.jobId, node);
   } catch (e) {
-    updateMsg(node, '<span style="color:#a32d2d">派发失败：' + esc(e.message) + '</span>', 'err');
+    updateMsg(node, '<span style="color:var(--danger)">派发失败：' + esc(e.message) + '</span>', 'err');
     setRunning(-1);
   }
+}
+
+/* ---------- 后台模型下拉：拉清单 / 渲染 / 手动更新 ----------
+ * 桥返回 { models:[{id,label,credit}], source:'cli'|'static', at }：
+ *   cli    = 从 CodeBuddy CLI --help 实时解析（模型 ID 永远最新，缓存 5 分钟）
+ *   static = CLI 不可用时的内置清单
+ * credit 是积分倍率参考值（随活动变动，以 WorkBuddy 客户端显示为准），
+ * 拼进选项文本；没公布倍率的新模型不编数，只显示名字。 */
+function renderWbModels(p, keepSel) {
+  const sel = document.getElementById('wbmodel');
+  if (!sel || !p || !Array.isArray(p.models)) return;
+  const prev = keepSel ? sel.value : '';
+  sel.innerHTML = '';
+  for (const mm of p.models) {
+    const o = document.createElement('option');
+    o.value = mm.id;
+    o.textContent = mm.label + (mm.credit ? '（' + mm.credit + '）' : '');
+    sel.appendChild(o);
+  }
+  /* 刷新后尽量保住当前选择（模型被下线了才不得不丢） */
+  if (prev && Array.prototype.some.call(sel.options, (o) => o.value === prev)) sel.value = prev;
+  const msg = document.getElementById('wbmodelMsg');
+  if (msg) {
+    const src = p.source === 'cli' ? '已从 CodeBuddy CLI 同步' : 'CLI 暂不可用，显示内置清单';
+    const t = p.at ? ' · ' + new Date(p.at).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+    msg.textContent = src + '（' + p.models.length + ' 个模型' + t + '）。积分倍率随活动变动，以 WorkBuddy 客户端显示为准。';
+  }
+}
+function loadWbModels(force) {
+  return api('/api/wb-models' + (force ? '?refresh=1' : ''))
+    .then((p) => { renderWbModels(p, true); return p; })
+    .catch(() => null);   /* 桥不在就留空下拉，不影响其它 */
 }
 
 function poll(id, node) {
@@ -4718,7 +5077,7 @@ function poll(id, node) {
       if (++fails >= JOB_FAIL_MAX) {
         clearInterval(timer);
         setRunning(-1);
-        updateMsg(node, '<span style="color:#a32d2d">后台任务状态失联，已停止跟踪。</span>', 'err');
+        updateMsg(node, '<span style="color:var(--danger)">后台任务状态失联，已停止跟踪。</span>', 'err');
       }
       return;
     }
@@ -4730,7 +5089,7 @@ function poll(id, node) {
     if (!r.ok) {
       clearInterval(timer);
       setRunning(-1);
-      updateMsg(node, '<span style="color:#a32d2d">后台任务状态已丢失：'
+      updateMsg(node, '<span style="color:var(--danger)">后台任务状态已丢失：'
         + esc(r.error || '未知原因') + '</span>', 'err');
       return;
     }
@@ -4742,7 +5101,7 @@ function poll(id, node) {
     clearInterval(timer);
     setRunning(-1);
     if (j.status === 'error') {
-      updateMsg(node, '<span style="color:#a32d2d">后台出错：' + esc(j.error) + '</span>', 'err');
+      updateMsg(node, '<span style="color:var(--danger)">后台出错：' + esc(j.error) + '</span>', 'err');
       return;
     }
     const parts = (j.result?.content || []).map((c) => (c.type === 'text' ? c.text : '[' + c.type + ']'));
@@ -4794,19 +5153,19 @@ async function execute(act) {
   if (act.text !== undefined) args.text = act.text;
 
   setFrontBusy(true);
-  window.orb.setObserving(true);
+  setObservingOn(true);
   const node = addMsg('Orb', '<span class="pending">前台执行：' + esc(act.note || act.tool) + ' …</span>', 'orb');
   try {
     const r = await post('/api/call', { server: act.server || 'windows', tool: act.tool, args });
     if (!r.ok) {
-      updateMsg(node, '<span style="color:#a32d2d">失败：' + esc(r.error) + '</span>', 'err');
+      updateMsg(node, '<span style="color:var(--danger)">失败：' + esc(r.error) + '</span>', 'err');
       return;
     }
     const parts = (r.result?.content || []).map((c) => (c.type === 'text' ? c.text : '[' + c.type + ']'));
     const txt = parts.join('\n') || '(无文本返回)';
     updateMsg(node, esc(txt.length > 1200 ? txt.slice(0, 1200) + ' …' : txt));
   } catch (e) {
-    updateMsg(node, '<span style="color:#a32d2d">请求失败：' + esc(e.message) + '</span>', 'err');
+    updateMsg(node, '<span style="color:var(--danger)">请求失败：' + esc(e.message) + '</span>', 'err');
   } finally {
     setFrontBusy(false);
     stopObservingSoon(OBSERVE_HOLD_ACTION_MS);
@@ -6752,10 +7111,10 @@ function addStep(head, step, title, detail, viewUrl) {
     head.querySelector('.body').appendChild(box);
   }
   const item = document.createElement('div');
-  item.style.cssText = 'font-size:12px;line-height:1.6;padding:5px 0;border-top:0.5px dashed #e8e6df';
+  item.style.cssText = 'font-size:12px;line-height:1.6;padding:5px 0;border-top:0.5px dashed var(--border-strong)';
   item.innerHTML =
     '<b style="font-weight:500">第 ' + step + ' 步</b> · ' + esc(title) +
-    (detail ? '<div style="color:#5f5e5a;white-space:pre-wrap">' + esc(detail) + '</div>' : '');
+    (detail ? '<div style="color:var(--fg-soft);white-space:pre-wrap">' + esc(detail) + '</div>' : '');
   if (viewUrl) {
     const im = document.createElement('img');
     im.className = 'shot';
@@ -6789,13 +7148,16 @@ async function runVision(task) {
   visionAbort = false;
   setFrontBusy(true);
   holdPanel();   // 视觉循环全程锁住面板（多步截图+模型往返，中途折叠会让过程看不见）
-  window.orb.setObserving(true);
+  setObservingOn(true);
 
   const head = addMsg('Orb', '<span class="pending">视觉循环启动…</span>', 'orb');
   const stopBtn = document.createElement('button');
   stopBtn.textContent = '中断';
   stopBtn.style.cssText = 'margin-top:6px;font-family:inherit;font-size:12px;padding:4px 10px;'
-    + 'border:0.5px solid #d3d1c7;border-radius:7px;background:#faf9f6;cursor:pointer';
+        /* 底色与字色必须成对给：只给浅底不写字色，深空主题下会继承 --fg（浅色），
+       变成浅字压浅底。三个值全走令牌。 */
+    + 'border:0.5px solid var(--border-strong);border-radius:7px;'
+    + 'background:var(--bg-soft);color:var(--fg);cursor:pointer';
   stopBtn.addEventListener('click', () => { visionAbort = true; stopBtn.disabled = true; stopBtn.textContent = '正在中断…'; });
   head.querySelector('.body').appendChild(stopBtn);
 
@@ -7041,7 +7403,7 @@ function bindSlot(slot) {
     try {
       const r = await post('/api/vlm/models', { baseUrl, apiKey });
       if (!r.ok) {
-        box.innerHTML = '<span style="color:#a32d2d">失败 ' + (r.status || '') + '：'
+        box.innerHTML = '<span style="color:var(--danger)">失败 ' + (r.status || '') + '：'
           + esc(String(r.error || r.body || '').slice(0, 180)) + '</span>';
         return;
       }
@@ -7054,7 +7416,7 @@ function bindSlot(slot) {
         box.appendChild(b);
       }
     } catch (e) {
-      box.innerHTML = '<span style="color:#a32d2d">' + esc(e.message) + '</span>';
+      box.innerHTML = '<span style="color:var(--danger)">' + esc(e.message) + '</span>';
     }
   });
 
@@ -7272,7 +7634,8 @@ function bindGlassBg() {
 function applyTheme(name) {
   const t = THEME_IDS.includes(name) ? name : 't2';
   document.documentElement.setAttribute('data-theme', t);
-  try { window.orb.reportTheme(t); } catch {}   // 同步给划词工具栏等独立窗口
+  /* 上报（含令牌族）挪到 applyThemeAccent 末尾：那里才是令牌算完的时刻，
+     早报会让独立窗口拿到上一茬的色值。 */
   document.querySelectorAll('.themecard').forEach((c) => {
     c.classList.toggle('on', c.dataset.tc === t);
   });
@@ -7698,6 +8061,382 @@ function bindRecSettings() {
   recSettingsBound = true;
 }
 
+/* ---------- 设置 › 录屏：音频来源 / 摄像头小框 / 预览模式 ----------
+ * 与 recPrefs 同一模式：主进程落盘（set-recaudio / set-reccam），渲染层只发
+ * patch，默认口径以主进程 normalizeRecAudio / normalizeRecCam 为准 —— 
+ * 面板不自己判断默认值，否则会出现"面板显示开、实际存的是关"。
+ * 预览模式是面板内的模拟桌面摆位层：位置/大小按比例（bx/by/bw/bh）保存，
+ * 与日后的真实悬浮窗口同一份口径；内部运算用绘制像素，折算基准 1920×1080。 */
+const CAM_SHAPE_NAME = { circle: "圆形", round: "圆角", square: "方框" };
+const PV_REF_W = 1920, PV_REF_H = 1080, PV_MAG = 2.6;
+let audioPrefs = { source: "none" };
+let camPrefs = { enabled: false, shape: "round", ratio: "4:3", customRatio: "", bx: 0.76, by: 0.72, bw: 0.115, bh: 0.15 };
+let recScreenBound = false;
+let pvOpen = false, pvBound = false, pvMode = null, pvStart = null;
+let pv = { x: 0, y: 0, w: 100, h: 75, shape: "round", ratio: "4:3", snap: "自由位置" };
+
+const pvCl = (v, a, b) => Math.max(a, Math.min(b, v));
+
+function renderAudioSettings(a) {
+  audioPrefs = Object.assign({ source: "none" }, a || {});
+  document.querySelectorAll("#audioSrcPick .recskin").forEach((b) => b.classList.toggle("on", b.dataset.src === audioPrefs.source));
+  const on = (s) => audioPrefs.source === s || audioPrefs.source === "mix";
+  const ms = document.getElementById("amSys"), mm = document.getElementById("amMic");
+  if (ms) ms.classList.toggle("on", on("system"));
+  if (mm) mm.classList.toggle("on", on("mic"));
+}
+
+async function patchAudio(patch, msgId, okText) {
+  const msg = document.getElementById(msgId);
+  try {
+    const r = await window.orb.setRecAudio(Object.assign({}, audioPrefs, patch));
+    if (r && r.ok === false) throw new Error(r.error || "保存失败");
+    renderAudioSettings((r && r.rec) || patch);
+    if (msg) msg.textContent = okText;
+  } catch (error) {
+    if (msg) msg.textContent = "保存失败：" + String((error && error.message) || error);
+  }
+}
+
+function renderCamSettings(c) {
+  camPrefs = Object.assign({ enabled: false, shape: "round", ratio: "4:3", customRatio: "", bx: 0.76, by: 0.72, bw: 0.115, bh: 0.15 }, c || {});
+  const tg = document.getElementById("camToggle");
+  if (tg) { tg.textContent = "摄像头小框 " + (camPrefs.enabled ? "开" : "关"); tg.classList.toggle("sel", camPrefs.enabled); }
+  const st = document.getElementById("camState");
+  if (st) st.textContent = camPrefs.enabled ? "" : "（已关闭）";
+  const box = document.getElementById("camBox");
+  if (box) box.classList.toggle("off", !camPrefs.enabled);
+  document.querySelectorAll("#camShapePick .recskin").forEach((b) => b.classList.toggle("on", b.dataset.shape === camPrefs.shape));
+  document.querySelectorAll("#camRatioField .chip").forEach((b) => b.classList.toggle("sel", b.dataset.ratio === camPrefs.ratio));
+  /* 圆形没有比例可言：比例行整体隐藏；自定义行只在自由/自定义档出现 */
+  const rf = document.getElementById("camRatioField");
+  if (rf) rf.hidden = camPrefs.shape === "circle";
+  const cf = document.getElementById("camCustomField");
+  if (cf) cf.hidden = !(camPrefs.ratio === "free" || camPrefs.ratio === "custom");
+  const ri = document.getElementById("camRatioInput");
+  if (ri && camPrefs.ratio === "custom" && document.activeElement !== ri) ri.value = camPrefs.customRatio;
+  const rh = document.getElementById("camRatioHint");
+  if (rh) rh.textContent = camPrefs.ratio === "custom" && camPrefs.customRatio ? ("已锁定自定义 " + camPrefs.customRatio) : "";
+}
+
+async function patchCam(patch, msgId, okText) {
+  const msg = document.getElementById(msgId);
+  try {
+    const r = await window.orb.setRecCam(Object.assign({}, camPrefs, patch));
+    if (r && r.ok === false) throw new Error(r.error || "保存失败");
+    renderCamSettings((r && r.rec) || patch);
+    if (msg) msg.textContent = okText;
+  } catch (error) {
+    if (msg) msg.textContent = "保存失败：" + String((error && error.message) || error);
+  }
+}
+
+/* 长宽比原文 → 数值："16:9" → 1.778，"1.78" → 1.78；不合法返回 0（不约束） */
+function ratioValue(str) {
+  const t = String(str || "").trim();
+  const m = t.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+  if (m) { const a = Number(m[1]), b = Number(m[2]); return a > 0 && b > 0 ? a / b : 0; }
+  if (/^\d+(?:\.\d+)?$/.test(t)) { const v = Number(t); return v > 0 ? v : 0; }
+  return 0;
+}
+
+/* ================= 预览模式（面板内模拟桌面） ================= */
+function pvK() {
+  const st = document.getElementById("pvStage");
+  const sw = st.clientWidth, sh = st.clientHeight;
+  return { sw, sh, kx: (sw / PV_REF_W) * PV_MAG, ky: (sh / PV_REF_H) * PV_MAG };
+}
+function pvRatioNum() {
+  if (pv.shape === "circle") return 1;
+  if (pv.ratio === "16:9") return 16 / 9;
+  if (pv.ratio === "4:3") return 4 / 3;
+  if (pv.ratio === "1:1") return 1;
+  if (pv.ratio === "custom") return ratioValue(camPrefs.customRatio);
+  return 0;
+}
+function pvSyncUI() {
+  const isC = pv.shape === "circle";
+  document.querySelectorAll("#pvTb .pv-sh").forEach((b) => b.classList.toggle("on", b.dataset.shape === pv.shape));
+  const corner = document.getElementById("pvCorner");
+  if (corner) corner.hidden = !isC;
+  document.querySelectorAll("#pvBubble .pv-eh").forEach((el) => { el.style.display = isC ? "none" : "flex"; });
+  const rr = document.getElementById("pvRatioRow");
+  if (rr) rr.style.display = isC ? "none" : "flex";
+  document.querySelectorAll("#pvRatioRow .pv-rb").forEach((b) => b.classList.toggle("on", b.dataset.r === pv.ratio));
+  const cc = document.getElementById("pvRbCustom");
+  if (cc) {
+    cc.hidden = !(camPrefs.customRatio && (pv.ratio === "custom" || pv.ratio === "free"));
+    cc.textContent = "自定义 " + (camPrefs.customRatio || "");
+  }
+}
+function pvRender() {
+  const b = document.getElementById("pvBubble"), tb = document.getElementById("pvTb");
+  const gv = document.getElementById("pvGV"), gh = document.getElementById("pvGH");
+  const sz = document.getElementById("pvSizeTx"), stt = document.getElementById("pvStatus");
+  const { sw, sh, kx, ky } = pvK();
+  b.style.left = pv.x + "px"; b.style.top = pv.y + "px";
+  b.style.width = pv.w + "px"; b.style.height = pv.h + "px";
+  b.style.borderRadius = pv.shape === "circle" ? "50%" : (pv.shape === "round" ? "22px" : "4px");
+  /* 工具栏贴近顶部时翻到框下方，避免被舞台裁掉 */
+  tb.style.top = (pv.y < 74 ? pv.h + 9 : -74) + "px";
+  const rw = Math.round(pv.w / kx), rh = Math.round(pv.h / ky);
+  sz.textContent = pv.shape === "circle" ? (rw + " px") : (rw + "×" + rh + " px");
+  const rl = pv.shape === "circle" ? "1:1" : (pv.ratio === "free" ? "自由" : (pv.ratio === "custom" ? ("自定义 " + camPrefs.customRatio) : pv.ratio));
+  stt.textContent = "位置 " + Math.round(pv.x) + ", " + Math.round(pv.y) + " · " + rw + "×" + rh + " px · " + CAM_SHAPE_NAME[pv.shape] + " · " + rl + " · " + pv.snap;
+}
+function pvSetShape(s) {
+  if (s === "circle") { const m = Math.min(pv.w, pv.h); pv.w = m; pv.h = m; }
+  pv.shape = s;
+  pvSyncUI();
+  const { sw, sh } = pvK();
+  pv.x = pvCl(pv.x, 0, sw - pv.w); pv.y = pvCl(pv.y, 0, sh - pv.h);
+  pvRender();
+}
+function pvSetRatio(r) {
+  pv.ratio = r;
+  const v = pvRatioNum();
+  if (v) {
+    const { sw, sh } = pvK();
+    let nw = pv.w, nh = pv.w / v;
+    if (nh > sh - 4) { nh = sh - 4; nw = nh * v; }
+    if (nh < 40) { nh = 40; nw = 40 * v; }
+    if (nw > sw - 4) { nw = sw - 4; nh = nw / v; }
+    const cx = pv.x + pv.w / 2, cy = pv.y + pv.h / 2;
+    pv.w = nw; pv.h = nh;
+    pv.x = pvCl(cx - nw / 2, 0, sw - nw);
+    pv.y = pvCl(cy - nh / 2, 0, sh - nh);
+  }
+  pvSyncUI();
+  pvRender();
+}
+function pvOpenPreview() {
+  if (!camPrefs.enabled) {
+    const msg = document.getElementById("camMsg");
+    if (msg) msg.textContent = "先打开上面的「摄像头小框」开关，再进入预览模式。";
+    return;
+  }
+  const mask = document.getElementById("pvMask");
+  if (!mask || pvOpen) return;
+  pvOpen = true;
+  mask.setAttribute("aria-hidden", "false");
+  mask.classList.add("show");
+  const { sw, sh, kx, ky } = pvK();
+  pv.w = pvCl(camPrefs.bw * PV_REF_W * kx, 40, sw - 10);
+  pv.h = pvCl(camPrefs.bh * PV_REF_H * ky, 40, sh - 10);
+  pv.x = pvCl(camPrefs.bx * sw - pv.w / 2, 0, sw - pv.w);
+  pv.y = pvCl(camPrefs.by * sh - pv.h / 2, 0, sh - pv.h);
+  pv.shape = camPrefs.shape;
+  pv.ratio = camPrefs.ratio;
+  pv.snap = "自由位置";
+  pvSyncUI();
+  pvRender();
+  const b = document.getElementById("pvBubble");
+  if (b) b.focus();
+}
+async function pvClosePreview(save) {
+  const mask = document.getElementById("pvMask");
+  if (!mask || !pvOpen) return;
+  pvOpen = false;
+  pvMode = null;
+  mask.setAttribute("aria-hidden", "true");
+  mask.classList.add("closing");
+  setTimeout(() => { mask.classList.remove("show"); mask.classList.remove("closing"); }, 220);
+  if (save) {
+    const { sw, sh, kx, ky } = pvK();
+    const rw = pv.w / kx, rh = pv.h / ky;
+    await patchCam({
+      shape: pv.shape,
+      ratio: pv.ratio,
+      bx: (pv.x + pv.w / 2) / sw,
+      by: (pv.y + pv.h / 2) / sh,
+      bw: pvCl(rw / PV_REF_W, 0.05, 0.6),
+      bh: pvCl(rh / PV_REF_H, 0.05, 0.6),
+    }, "camMsg", "已摆位：" + Math.round(rw) + "×" + Math.round(rh) + " px（按 1920×1080 折算），下次录屏按此呈现。");
+  }
+}
+function pvBindPreview() {
+  if (pvBound) return;
+  pvBound = true;
+  const bubble = document.getElementById("pvBubble");
+  const corner = document.getElementById("pvCorner");
+  const tb = document.getElementById("pvTb");
+  const gv = document.getElementById("pvGV"), gh = document.getElementById("pvGH");
+  const mask = document.getElementById("pvMask");
+  const edges = Array.prototype.slice.call(bubble.querySelectorAll(".pv-eh"));
+  /* 拖拽期间舞台尺寸是**不变**的：原来每个 pointermove 都调一次 pvK()（读
+     clientWidth/clientHeight = 强制同步布局），紧接着 pvRender() 又写一串 style，
+     读-写在同一个事件里交替，就是拖小框发滞的原因。改成一次拖拽只算一次，
+     并把渲染合并进下一帧。 */
+  let pvGeom = null;
+  const pvGeomNow = () => (pvGeom || (pvGeom = pvK()));
+  let pvRaf = 0;
+  function pvRenderNextFrame() {
+    if (pvRaf) return;                 // 这一帧已经排过了，丢掉这次
+    pvRaf = requestAnimationFrame(() => { pvRaf = 0; pvRender(); });
+  }
+  bubble.addEventListener("pointerdown", (e) => {
+    if (e.target === corner || corner.contains(e.target) || tb.contains(e.target)) return;
+    if (e.target.closest && e.target.closest(".pv-eh")) return;
+    pvMode = "move"; pvStart = { mx: e.clientX, my: e.clientY, x: pv.x, y: pv.y };
+    bubble.classList.add("drag"); e.preventDefault();
+  });
+  corner.addEventListener("pointerdown", (e) => {
+    pvMode = "size"; pvStart = { mx: e.clientX, my: e.clientY, s: pv.w };
+    e.preventDefault(); e.stopPropagation();
+  });
+  edges.forEach((el) => {
+    el.addEventListener("pointerdown", (e) => {
+      pvMode = "edge";
+      pvStart = { mx: e.clientX, my: e.clientY, x: pv.x, y: pv.y, w: pv.w, h: pv.h, e: el.getAttribute("data-e") };
+      e.preventDefault(); e.stopPropagation();
+    });
+  });
+  window.addEventListener("pointermove", (e) => {
+    if (!pvMode || !pvOpen) return;
+    const { sw, sh, kx, ky } = pvGeomNow();
+    if (pvMode === "move") {
+      const MARGIN = 16, SNAP = 12;
+      const nx = pvStart.x + (e.clientX - pvStart.mx), ny = pvStart.y + (e.clientY - pvStart.my);
+      let lx = null, ly = null; const parts = [];
+      if (Math.abs(nx - MARGIN) < SNAP) { pv.x = MARGIN; lx = MARGIN; parts.push("左边缘"); }
+      else if (Math.abs(nx - (sw - pv.w - MARGIN)) < SNAP) { pv.x = sw - pv.w - MARGIN; lx = sw - MARGIN; parts.push("右边缘"); }
+      else if (Math.abs(nx - (sw - pv.w) / 2) < SNAP) { pv.x = (sw - pv.w) / 2; lx = sw / 2; parts.push("水平居中"); }
+      else pv.x = nx;
+      if (Math.abs(ny - MARGIN) < SNAP) { pv.y = MARGIN; ly = MARGIN; parts.push("上边缘"); }
+      else if (Math.abs(ny - (sh - pv.h - MARGIN)) < SNAP) { pv.y = sh - pv.h - MARGIN; ly = sh - MARGIN; parts.push("下边缘"); }
+      else if (Math.abs(ny - (sh - pv.h) / 2) < SNAP) { pv.y = (sh - pv.h) / 2; ly = sh / 2; parts.push("垂直居中"); }
+      else pv.y = ny;
+      pv.x = pvCl(pv.x, 0, sw - pv.w); pv.y = pvCl(pv.y, 0, sh - pv.h);
+      pv.snap = parts.length ? ("吸附：" + parts.join(" + ")) : "自由位置";
+      if (lx !== null) { gv.style.display = "block"; gv.style.left = lx + "px"; } else gv.style.display = "none";
+      if (ly !== null) { gh.style.display = "block"; gh.style.top = ly + "px"; } else gh.style.display = "none";
+      pvRenderNextFrame();
+    } else if (pvMode === "edge") {
+      const dx = e.clientX - pvStart.mx, dy = e.clientY - pvStart.my, ed = pvStart.e, r = pvRatioNum();
+      const minW = 90 * kx, maxW = Math.min(560 * kx, sw - 4), minH = 90 * ky, maxH = Math.min(420 * ky, sh - 4);
+      if (ed === "l" || ed === "r") {
+        const sign = ed === "l" ? -1 : 1;
+        let nw = pvCl(pvStart.w + sign * dx, minW, maxW), nh;
+        if (r) { nh = pvCl(nw / r, minH, maxH); nw = nh * r; } else nh = pvStart.h;
+        nw = pvCl(nw, minW, maxW); nh = pvCl(nh, minH, maxH);
+        pv.x = ed === "l" ? (pvStart.x + pvStart.w - nw) : pvStart.x;
+        pv.y = pvStart.y + pvStart.h / 2 - nh / 2;
+        pv.w = nw; pv.h = nh;
+      } else {
+        const sign2 = ed === "t" ? -1 : 1;
+        let nh2 = pvCl(pvStart.h + sign2 * dy, minH, maxH), nw2;
+        if (r) { nw2 = pvCl(nh2 * r, minW, maxW); nh2 = nw2 / r; } else nw2 = pvStart.w;
+        nw2 = pvCl(nw2, minW, maxW); nh2 = pvCl(nh2, minH, maxH);
+        pv.y = ed === "t" ? (pvStart.y + pvStart.h - nh2) : pvStart.y;
+        pv.x = pvStart.x + pvStart.w / 2 - nw2 / 2;
+        pv.w = nw2; pv.h = nh2;
+      }
+      pv.x = pvCl(pv.x, 0, sw - pv.w); pv.y = pvCl(pv.y, 0, sh - pv.h);
+      pvRenderNextFrame();
+    } else if (pvMode === "size") {
+      const d = Math.max(e.clientX - pvStart.mx, e.clientY - pvStart.my);
+      const ns = pvCl(pvStart.s + d, 90, Math.min(sw - 4, sh - 4));
+      pv.w = ns; pv.h = ns;
+      pv.x = pvCl(pv.x, 0, sw - pv.w); pv.y = pvCl(pv.y, 0, sh - pv.h);
+      pvRenderNextFrame();
+    }
+  });
+  window.addEventListener("pointerup", () => {
+    if (!pvMode) return;
+    pvMode = null;
+    pvGeom = null;               // 舞台尺寸缓存只在一次拖拽内有效
+    bubble.classList.remove("drag");
+    gv.style.display = "none"; gh.style.display = "none";
+  });
+  bubble.addEventListener("keydown", (e) => {
+    if (!pvOpen) return;
+    const step = e.shiftKey ? 18 : 6;
+    const { sw, sh } = pvK();
+    let moved = true;
+    if (e.key === "ArrowLeft") pv.x -= step;
+    else if (e.key === "ArrowRight") pv.x += step;
+    else if (e.key === "ArrowUp") pv.y -= step;
+    else if (e.key === "ArrowDown") pv.y += step;
+    else if (e.key === "+" || e.key === "=") { pv.w = pvCl(pv.w + step, 40, sw - 4); pv.h = pvCl(pv.h + step, 40, sh - 4); }
+    else if (e.key === "-") { pv.w = pvCl(pv.w - step, 40, sw - 4); pv.h = pvCl(pv.h - step, 40, sh - 4); }
+    else moved = false;
+    if (moved) {
+      e.preventDefault();
+      pv.snap = "自由位置";
+      pv.x = pvCl(pv.x, 0, sw - pv.w); pv.y = pvCl(pv.y, 0, sh - pv.h);
+      pvRenderNextFrame();
+    }
+  });
+  document.querySelectorAll("#pvTb .pv-sh").forEach((b) => b.addEventListener("click", () => pvSetShape(b.dataset.shape)));
+  document.querySelectorAll("#pvRatioRow .pv-rb").forEach((b) => b.addEventListener("click", () => pvSetRatio(b.dataset.r)));
+  document.getElementById("pvDone").addEventListener("click", () => pvClosePreview(true));
+  document.getElementById("pvClose").addEventListener("click", () => pvClosePreview(false));
+  mask.addEventListener("mousedown", (e) => { if (e.target === mask) pvClosePreview(false); });
+  /* Esc 关卡：捕获阶段拦下，避免同一次按键落到面板的全局关闭上 */
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !pvOpen) return;
+    e.preventDefault(); e.stopPropagation();
+    pvClosePreview(false);
+  }, true);
+}
+
+function bindRecScreenSettings() {
+  if (recScreenBound) return;
+  recScreenBound = true;
+  pvBindPreview();
+  /* 音频来源：点选；再点一次已选的卡片 = 关闭音频 */
+  document.querySelectorAll("#audioSrcPick .recskin").forEach((b) => {
+    b.addEventListener("click", () => {
+      const v = b.dataset.src;
+      const next = audioPrefs.source === v ? "none" : v;
+      patchAudio({ source: next }, "audioSrcMsg",
+        next === "none" ? "已关闭录屏音频。"
+          : next === "system" ? "已设为系统音：只录电脑里的声音。"
+            : next === "mic" ? "已设为麦克风：只录你的人声。"
+              : "已设为混合：系统音 + 麦克风同时录入，自动限幅。");
+    });
+  });
+  /* 摄像头小框：开关 / 设备 / 形状 / 比例 / 自定义比例 / 预览模式 */
+  const tg = document.getElementById("camToggle");
+  if (tg) tg.addEventListener("click", () => {
+    const next = !camPrefs.enabled;
+    patchCam({ enabled: next }, "camMsg",
+      next ? "摄像头小框已开启：进「预览模式」摆好位置大小，录屏时按此呈现。" : "摄像头小框已关闭，录屏不再叠加。");
+  });
+  const dv = document.getElementById("camDevice");
+  if (dv) dv.addEventListener("click", () => {
+    const msg = document.getElementById("camMsg");
+    if (msg) msg.textContent = "暂用系统默认摄像头；多设备选择将在摄像头采集接入后提供。";
+  });
+  document.querySelectorAll("#camShapePick .recskin").forEach((b) => {
+    b.addEventListener("click", () => patchCam({ shape: b.dataset.shape }, "camMsg",
+      "形状已切换为" + CAM_SHAPE_NAME[b.dataset.shape] + (b.dataset.shape === "circle" ? "（等比缩放）。" : "（可拖边调宽高）。")));
+  });
+  document.querySelectorAll("#camRatioField .chip").forEach((b) => {
+    b.addEventListener("click", () => {
+      const r = b.dataset.ratio;
+      patchCam({ ratio: r }, "camMsg",
+        r === "free" ? "比例已放开：宽高各自独立，也可在下面输入自定义比例。" : ("比例已锁定 " + r + "，拖边时宽高联动。"));
+    });
+  });
+  const input = document.getElementById("camRatioInput");
+  const applyCustom = () => {
+    const raw = String((input && input.value) || "").trim();
+    const v = ratioValue(raw);
+    const msg = document.getElementById("camRatioMsg");
+    if (!v) {
+      if (msg) msg.textContent = "格式不对：写 16:9 或 1.78 这样（两端都要大于 0）。";
+      return;
+    }
+    patchCam({ ratio: "custom", customRatio: raw }, "camMsg", "已锁定自定义比例 " + raw + "，拖边时宽高联动。");
+  };
+  const apply = document.getElementById("camRatioApply");
+  if (apply) apply.addEventListener("click", applyCustom);
+  if (input) input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); applyCustom(); } });
+  const pvBtn = document.getElementById("camPreviewBtn");
+  if (pvBtn) pvBtn.addEventListener("click", () => pvOpenPreview());
+}
+
 /* ---------- 主题色数学：hex ↔ HSL ↔ 派生令牌 ----------
    一套主题的"交互族"由十几个令牌组成（基色 / 亮档 / 深档 / 软底 / 描边 /
     wash / 光晕 / 反色字）。手写映射既容易错也没法随用户颜色缩放，
@@ -7809,6 +8548,14 @@ function tcFamily(theme, hex) {
     vars['--amber-bar-deep'] = tcMix(hex, '#12162b', .16);
     vars['--run'] = hex;
     vars['--warn'] = hex;
+    /* --accent 一族（交互色）：深底配方 —— 亮 tint 做字/图标（压在 accent-soft 暗底上），
+       暗 tint 做选中底，accent 本身压到白字可用的亮度（主行动键白字 ≥4.5）。
+       以前这里只派生 amber/energy 家族，--accent* 被 applyThemeAccent 清掉后
+       掉回主题块的品牌紫 —— 自选青柠/琥珀只换了能量色，交互色全是紫的（老问题）。 */
+    vars['--accent'] = tcFloorLum(hex, .20);
+    vars['--accent-fg'] = tcCeilLum(tcShade(hex, .14, .04), .62);
+    vars['--accent-soft'] = tcMix(hex, '#12162b', .18);
+    vars['--accent-ring'] = tcAlpha(hex, .14);
   } else {                           // 浅底：能量家族（t2 青柠 / t4 自定义）
     vars['--energy'] = hex;
     /* 反色字：深 ink 的约束在渐变最暗端（--energy 本身），白 ink 的约束在最亮端。
@@ -7832,6 +8579,13 @@ function tcFamily(theme, hex) {
     vars['--energy-key'] = tcAlpha(hex, .40);
     vars['--energy-bar-deep'] = tcMix(hex, '#ffffff', .40);
     vars['--run'] = hex;
+    /* --accent 一族（交互色）：浅底配方 —— 与极光的 tcIrisFamily 同口径
+       （accent 压到白字可用、accent-fg 深到能当文字、accent-soft 是 10% 淡底），
+       四套主题自此全部跟随自选色。 */
+    vars['--accent'] = tcFloorLum(hex, .18);
+    vars['--accent-fg'] = tcFloorLum(hex, .15);
+    vars['--accent-soft'] = tcAlpha(hex, .10);
+    vars['--accent-ring'] = tcAlpha(hex, .12);
   }
   return vars;
 }
@@ -7896,6 +8650,26 @@ function applyThemeAccent() {
     }
   }
   syncAccentBoxes();
+  reportThemeVars();
+}
+/** 把当前主题名 + 算完的令牌族上报主进程，由它推给划词工具栏/悬浮球/录制边框/字幕窗
+ * （那些窗口没有主题系统，只认 executeJavaScript 推进来的 CSS 变量）。
+ * 读取用 getComputedStyle：内联/主题块/继承三层合并后的最终值，缺了哪层都能看出来。 */
+const THEME_REPORT_VARS = [
+  '--accent', '--accent-soft', '--accent-fg', '--accent-ring',
+  '--bg', '--bg-soft', '--bg-sunken', '--fg', '--fg-soft', '--fg-muted',
+  '--border', '--border-strong', '--ok', '--warn', '--danger', '--danger-soft', '--run',
+];
+function reportThemeVars() {
+  try {
+    const cs = getComputedStyle(document.documentElement);
+    const vars = {};
+    for (const k of THEME_REPORT_VARS) {
+      const v = cs.getPropertyValue(k).trim();
+      if (v) vars[k] = v;
+    }
+    window.orb.reportTheme(document.documentElement.getAttribute('data-theme') || 't2', vars);
+  } catch { /* 桥没起来：主进程会用自己的默认值，不影响面板 */ }
 }
 /** 色块排 / 渐变排显隐：只有极光有渐变预设；其余主题出纯色块排 */
 function syncAccentBoxes() {
@@ -7998,7 +8772,11 @@ function buildGradRow() {
   cb.title = '自定义渐变：在色带上选取起点和终点';
   cb.setAttribute('aria-label', '自定义渐变');
   cb.innerHTML = '<i id="gradSwCustomI"></i><em>自定义</em><span class="ck">' + TCK_SVG + '</span>';
-  cb.addEventListener('click', () => { if (GE.open) geClose(); else geOpen(); });
+  /* 收起时必须走 geCancelEdit（= 先 applyThemeAccent 回滚到已保存的渐变，
+     再 geClose）：直接 geClose() 会把未保存的 --iris-* 留在 <html> 上，
+     于是整面板还是那套没保存的渐变，色卡却显示回旧值 —— 界面在说谎。
+     这条只在"编辑器开着时点自定义卡"生效，选具体搭配（上面那行）仍走 geClose。 */
+  cb.addEventListener('click', () => { if (GE.open) geCancelEdit(); else geOpen(); });
   row.appendChild(cb);
 }
 
@@ -8072,20 +8850,42 @@ function geSyncHandles() {
     if (hi && document.activeElement !== hi) hi.value = p.hex;
   }
 }
-/** 取色落地后的统一收尾：把手/读数/预览条/色卡/整页令牌 */
-function geAfterSet() {
+/** 取色落地后的统一收尾：把手/读数/预览条/色卡/整页令牌。
+    live=true 用于**拖动中**（见 gePreviewLive）：整页令牌改节流，不然拖色带会卡。 */
+function geAfterSet(live) {
   geSyncHandles();
-  gePreview();
+  if (live) gePreviewLive(); else gePreview();
   geRefreshSwatch();
+}
+/** 预览条：只改一条渐变背景，很便宜，每帧都能更 */
+function gePreviewBar(g) {
+  const gg = g || (GE.p1 && GE.p2 ? gradFromPicks(GE.p1.hex, GE.p2.hex) : null);
+  if (!gg) return;
+  const pv = document.getElementById('gePreview');
+  if (pv) pv.style.background = 'linear-gradient(105deg,' + gg.c.join(',') + ')';
+}
+/** 整页令牌：**贵** —— 20 个 --iris-* / --accent-* 写到 <html> 上会触发整篇文档的
+    样式重算，面板上每个元素都跟着重绘。拖动色带时每帧来一次就会明显发滞。 */
+function gePreviewTokens() {
+  if (!GE.p1 || !GE.p2) return;
+  const g = gradFromPicks(GE.p1.hex, GE.p2.hex);
+  Object.entries(tcIrisFamily(g)).forEach(([k, v]) => document.documentElement.style.setProperty(k, v));
 }
 /** 实时预览：把生成结果直接套到 <html>，整个面板（含真实发送键）当场变样；
     顺带把四色渐变写进预览条（它是"所见"的直接证据，不能空着）。 */
 function gePreview() {
-  if (!GE.p1 || !GE.p2) return;
-  const g = gradFromPicks(GE.p1.hex, GE.p2.hex);
-  Object.entries(tcIrisFamily(g)).forEach(([k, v]) => document.documentElement.style.setProperty(k, v));
-  const pv = document.getElementById('gePreview');
-  if (pv) pv.style.background = 'linear-gradient(105deg,' + g.c.join(',') + ')';
+  gePreviewTokens();
+  gePreviewBar();
+}
+/* 拖动中的预览：预览条每帧更新（跟手），整页令牌 60ms 一次（不卡）。
+   节流窗口内没触发的话，排一帧补一次，保证最后一帧一定落到整页。 */
+let geTokLast = 0, geTokRaf = 0;
+function gePreviewLive() {
+  gePreviewBar();
+  const now = Date.now();
+  if (now - geTokLast >= 60) { geTokLast = now; gePreviewTokens(); return; }
+  if (geTokRaf) return;
+  geTokRaf = requestAnimationFrame(() => { geTokRaf = 0; gePreviewLive(); });
 }
 /** 「自定义」色卡的预览：编辑器开着显示半成品，关了显示已应用态 */
 function geRefreshSwatch() {
@@ -8146,7 +8946,7 @@ function geSet(idx, h, l) {
   p.h = ((h % 360) + 360) % 360;
   p.l = geClamp(l, GE.LBOT, GE.LTOP);
   p.hex = tcHsl2hex(p.h, GE.S, p.l);
-  geAfterSet();
+  geAfterSet(GE.dragging);   // 拖动中：整页令牌走 60ms 节流，别每帧重算整篇样式
 }
 /** 手输 hex：原样采纳（连 '#' 都可省），位置按它的色相/明度落；
      明度超出色带范围时把手贴边，但 hex 不被改写 */
@@ -8204,6 +9004,9 @@ function geBindBand() {
     GE.dragging = false;
     GE.active = 0;
     geMarkActive();
+    /* 松手时补一次**完整**预览：拖动中整页令牌是节流的，最后那一帧可能还没落到
+       <html> 上 —— 不补的话停下来的颜色和面板实际配色会对不上。 */
+    gePreview();
   };
   wrap.addEventListener('pointerup', end);
   wrap.addEventListener('pointercancel', end);
@@ -8297,6 +9100,11 @@ function renderThemePrefs(p) {
    而且 Electron 里外链会在面板自身窗口内尝试打开 —— 表现为「点了不动」，甚至把面板顶掉。 */
 const ORB_REPO_URL = 'https://github.com/zhoukr123/ORB-Console-made-for-workbuddy';
 const ORB_RELEASE_URL = 'https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases';
+/* WorkBuddy 个人中心（套餐与积分 / 消耗明细）：/profile 才是页面，网关会
+   301 到 /profile/ 再返回 usercenter 这个 SPA（未登录先落登录页）。
+   ⚠️ 别再用 /console/account —— 它在 WorkBuddy 客户端里是 webRequest 的
+   URL 匹配模式（给请求注入登录令牌用的接口），直接打开只会拿到一段 JSON。 */
+const WB_CENTER_URL = 'https://www.workbuddy.cn/profile';
 
 /* open-external 是 fire-and-forget（ipcRenderer.send，没有返回值），
    所以这里只在"根本没唤起"时给个兜底提示，成功不打扰 —— 浏览器自己会弹到前台。 */
@@ -8330,6 +9138,7 @@ function bindVisionSheet() {
   bindThemeUI();
   bindStorageUI();
   bindRecSettings();
+  bindRecScreenSettings();
   buildAccentRow();
   buildGradRow();
   bindGradEditor();
@@ -8587,7 +9396,9 @@ function renderCreditDetail() {
   // 派发过但一分没花 → 几乎必然是 CLI 未登录，把"怎么修"直接说出来，别让用户对着 0 猜
   const warn = (d.tasks > 0 && d.credits === 0)
     ? '<div style="margin-top:10px;padding:8px 10px;border-radius:var(--r-sm);' +
-      'background:var(--danger-soft);border:1px solid #f0d3d2;color:#a32d2d;font-size:11.5px;line-height:1.6">' +
+      /* 别写死浅底配色：深空主题下 --danger-soft 是深底，暗红字压上去几乎看不见。
+         三个值全走令牌，由主题自己保证对比度。 */
+      'background:var(--danger-soft);border:1px solid var(--danger);color:var(--danger);font-size:11.5px;line-height:1.6">' +
       '派发过 ' + d.tasks + ' 次却没产生消耗 —— 后台走的 CodeBuddy CLI 大概率<b>未登录</b>。' +
       '双击桌面的 <b>codebuddy-login.cmd</b> 登录一次即可。</div>'
     : '';
@@ -8595,7 +9406,7 @@ function renderCreditDetail() {
     '<div class="cr-grid">' +
       '<div class="cr-cell"><div class="k">本次运行消耗</div><div class="v">' + fmtCredit(d.credits) +
         '<small>积分</small></div></div>' +
-      '<div class="cr-cell"><div class="k">最近一次任务</div><div class="v">' + d.last +
+      '<div class="cr-cell"><div class="k">最近一次任务</div><div class="v">' + esc(d.last) +
         '<small>积分</small></div></div>' +
       '<div class="cr-cell"><div class="k">后台派发次数</div><div class="v">' + d.tasks +
         '<small>次</small></div></div>' +
@@ -8603,7 +9414,7 @@ function renderCreditDetail() {
         '<small>积分</small></div></div>' +
     '</div>' +
     '<div class="cr-note">' +
-      (d.running ? '<b style="color:var(--accent-fg)">有 ' + d.running + ' 个后台任务正在跑…</b><br>' : '') +
+      (d.running ? '<b style="color:var(--accent-fg)">有 ' + esc(d.running) + ' 个后台任务正在跑…</b><br>' : '') +
       '<b>统计口径</b> 只算控制台自己派发出去的后台任务（前台自动化不耗积分）<br>' +
       '<b>后台模型</b> ' + esc(d.model || '默认（跟随 CLI）') + ' · 已归集 ' + d.sessions + ' 个会话<br>' +
       '<b>起始</b> ' + new Date(d.since).toLocaleString('zh-CN') + '（重启 ORB 归零）<br>' +
@@ -8750,7 +9561,10 @@ function openCmd() {
 }
 function closeCmd() { cmdMask.classList.remove('on'); }
 
-cmdInput.addEventListener('input', renderCmd);
+/* 必须包一层：直接把 renderCmd 当监听器，Event 会作为第一个实参传进去，
+   而 renderCmd 的第一个形参是 keepSel —— Event 恒为 truthy，于是每次打字都
+   走"保留上一次选中项"的分支，过滤后高亮停在第 N 项、回车执行的不是最佳匹配。 */
+cmdInput.addEventListener('input', () => renderCmd());
 cmdInput.addEventListener('keydown', (e) => {
   e.stopPropagation();   // 别让面板的全局快捷键吃掉按键
   // 但 Ctrl+K 本身就是这个面板的开关：因为上面 stopPropagation 了，
@@ -9332,7 +10146,9 @@ function applyLive(L) {
   const toolTxt = L.lastTool ? ('· ' + L.lastTool) : '';
   const secs = L.startedAt ? Math.floor((Date.now() - L.startedAt) / 1000) : 0;
   bar.textContent = '▶ ' + kindLabel + '「' + (L.name || '') + '」 ' + stepTxt + ' ' + toolTxt + '　' + secs + 's';
-  bar.style.display = '';
+  /* 必须是 'block'：CSS 里 #liveBar 就是 display:none 打底的，写 '' 只是删掉内联
+     声明、随即回落到样式表 —— 那样这条运行条永远不会出现（只有头像在转）。 */
+  bar.style.display = 'block';
 }
 
 /* ---------------- 审计日志查看器 ---------------- */
@@ -10349,6 +11165,9 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
     /* 悬浮条偏好（皮肤 / 能量条 / 描边颜色）：主进程落盘的那份是唯一真源，
        桥没起来时 s 为空 → renderRecSettings 用默认值（灰白纱 + 开 + 跟随皮肤）。 */
     renderRecSettings(s.rec);
+    /* 录屏音频来源与摄像头小框：主进程落盘的那份是唯一真源（同上） */
+    renderAudioSettings(s.recAudio);
+    renderCamSettings(s.recCam);
     renderSubSettings(s.sub);
     /* 主题自选色 / 渐变 / 自定义图：主进程落盘，随 get-state 一起回来。
        注意顺序：renderThemePrefs 里会调 applyThemeAccent，必须在 loadTheme()
@@ -10381,17 +11200,7 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
      ⚠️ 这里**不能 await**：桥没起来时这个请求会一直挂着，而它原本排在
      buildTools()/套主题/渲染之前 —— 于是一旦桥慢或没起，整个界面都是空的。
      改成发后即忘：请求回来再填下拉，启动路径完全不被网络拖住。 */
-  api('/api/wb-models').then((mr) => {
-    const sel = document.getElementById('wbmodel');
-    if (mr && mr.models && sel) {
-      sel.innerHTML = '';
-      for (const mm of mr.models) {
-        const o = document.createElement('option');
-        o.value = mm.id; o.textContent = mm.label;
-        sel.appendChild(o);
-      }
-    }
-  }).catch(() => { /* 桥不在就留空下拉，不影响其它 */ });
+  loadWbModels(false);
   loadToolGroups();
   buildTools();
   /* 主题要在 buildTools 之后、渲染对话之前套上，
@@ -10444,6 +11253,24 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
   document.getElementById('vis').classList.toggle('on', visionReady());
   document.getElementById('daemon').addEventListener('click', toggleDaemon);
   loadDaemon();
+  /* 模型清单手动更新：强制桥重拉 CLI --help，转动反馈 + 保住当前选择 */
+  const wbRefresh = document.getElementById('wbmodelRefresh');
+  if (wbRefresh) wbRefresh.addEventListener('click', async () => {
+    const tx = wbRefresh.querySelector('.rf-tx');
+    const msg = document.getElementById('wbmodelMsg');
+    wbRefresh.classList.add('busy');
+    wbRefresh.disabled = true;
+    if (tx) tx.textContent = '更新中';
+    try {
+      const p = await loadWbModels(true);
+      if (!p) throw new Error('桥没有响应');
+    } catch (e) {
+      if (msg) msg.textContent = '更新失败：' + String((e && e.message) || e) + '。可确认 CodeBuddy CLI 已安装并登录后重试。';
+    }
+    wbRefresh.classList.remove('busy');
+    wbRefresh.disabled = false;
+    if (tx) tx.textContent = '更新';
+  });
   loadDanger();
   document.getElementById('asr-apply').addEventListener('click', applyAsr);
   const asrInstallBtn = document.getElementById('asr-install');
@@ -10463,6 +11290,12 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
         : '❌ 没能打开登录脚本。\n请手动在命令行执行 codebuddy，按提示选择登录方式并在浏览器完成认证'
           + '（会话内输入 /login 可重新登录）；若 CLI 不在 PATH 中，先设置环境变量 ORB_WB_CLI 或在 orb/local.conf 里写 wbCli。';
     }
+  });
+  /* WorkBuddy 个人中心直达：查套餐 / 积分 / 用量明细。
+     浏览器自己弹出就是反馈，不占 slotmsg（与「去官网」类按钮一致）。 */
+  const wbCenter = document.getElementById('wbCenter');
+  if (wbCenter) wbCenter.addEventListener('click', () => {
+    try { window.orb.openExternal(WB_CENTER_URL); } catch { /* 老版主进程没这条通道：静默失败 */ }
   });
   // 语音模块遇到「浏览器引擎不可用」时派发此事件，直接为用户打开设置。
   // 提示写的是「打开语音设置」，所以这里要顺手把左侧页签切到「语音」——

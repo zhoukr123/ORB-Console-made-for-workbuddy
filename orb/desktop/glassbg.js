@@ -96,9 +96,17 @@ const MAX_THUMB = 1920;   // 整屏缩略图**宽度**上限（高度等比压�
 const watched = new Map();   // win.id -> entry
 let pollTimer = null;
 
+let pollBusy = false;
 function ensurePoll() {
   if (pollTimer) return;
-  pollTimer = setInterval(() => {
+  pollTimer = setInterval(async () => {
+    /* 串行化：一次 getSources 固定 ~370ms 的 CPU（软捕获，与尺寸无关），
+       面板与录制条同时申报时，并行跑就是同一刻两次全屏捕获 —— 那个瞬间会顿一下。
+       await 逐条来，并且上一轮没跑完就直接跳过这一轮（轮询是补新鲜度，
+       漏一轮无所谓的，叠起来才会卡）。 */
+    if (pollBusy) return;
+    pollBusy = true;
+    try {
     for (const entry of watched.values()) {
       if (!entry.want) continue;
       const w = entry.win;
@@ -107,7 +115,10 @@ function ensurePoll() {
          这条老限制可以撤掉了 —— 撤掉之后桌面换了壁纸/内容，底图 15s 内自愈。
          成本只剩 getSources 的 ~370ms CPU（软捕获，与尺寸无关），15s 一次、
          窗口上完全看不出来。若哪天在低端机上感到卡顿，把 POLL_MS 提到 20000 即可。 */
-      refresh(entry);
+      await refresh(entry);
+    }
+    } finally {
+      pollBusy = false;
     }
   }, POLL_MS);
   if (typeof pollTimer.unref === "function") pollTimer.unref();

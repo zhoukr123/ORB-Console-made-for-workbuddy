@@ -278,6 +278,12 @@ function setRoot(dir) {
   if (noWrite) return fail("该目录不可写入：" + noWrite);
   // 选到旧根内部会导致 recordings/recordings 这种自我嵌套，搬迁时还会自己拷自己
   if (isInside(cur, target) && cur !== target) return fail("新目录不能位于当前存储目录内部");
+  /* 反方向同样要禁：把新根选成当前根的**上级**（比如当前在 D:\ORB\data、新选
+     D:\ORB）时，上面那条拦不住（target 不包含在 cur 里），于是 setRoot 成功、
+     storageRootPrev 也记下了 —— 但 migrate() 里"旧目录位于新目录内部"的检查会
+     把它挡回来，搬迁永远做不成，设置面板从此一直提示"有旧数据待搬迁"。
+     两个方向的嵌套校验必须对称，否则就是个死结。 */
+  if (isInside(target, cur) && cur !== target) return fail("新目录不能是当前存储目录的上级（搬迁会造成自我嵌套）");
 
   const prev = cur;
   if (prev === target) {

@@ -228,7 +228,11 @@ function inspectFile(file) {
     fd = fs.openSync(file, "r");
     const size = fs.fstatSync(fd).size;
     if (size < 8) {
+      /* 关完必须把 fd 置 null：finally 里还会再 close 一次，重复关同一个 fd
+         会抛 EBADF，而 EBADF 是从 finally 里冒出来的 —— 函数内的 catch 兜不住，
+         调用方拿到的是"源码里没见过的异常"，而不是这份摘要。 */
       fs.closeSync(fd);
+      fd = null;
       return summarize([], false, null, { size, complete: false, error: "文件不足 8 字节" });
     }
     const read = fdReader(fd);

@@ -194,6 +194,15 @@
     setActive(true, "录音中…说完点击停止");
 
     navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+      /* 竞态：点下按钮 setActive(true) 立刻生效，但 getUserMedia 往往几百毫秒后才
+         resolve（首次还会弹权限框，更久）。这段窗口里用户再点一次"停止"，
+         recognizer 还是 null，stop() 什么也停不掉 —— 而这个 then 照常执行
+         mr.start()，麦克风就一直开着采集、chunks 无上限地涨，UI 却显示"已停止"。
+         所以进来先确认仍在录音态，不是就立刻把轨道关掉再退出。 */
+      if (!active) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
       const mr = new MediaRecorder(stream);
       const chunks = [];
       mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
