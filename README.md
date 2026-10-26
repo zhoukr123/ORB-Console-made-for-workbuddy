@@ -19,7 +19,7 @@
 
 </div>
 
-![ORB 控制台](docs/banner.svg)
+![ORB 控制台](docs/icon/icon-256.png)
 
 ---
 
