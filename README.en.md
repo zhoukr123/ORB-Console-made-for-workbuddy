@@ -16,7 +16,7 @@ then reports the whole run back to the chat panel. A floating orb stays on your 
 
 </div>
 
-![ORB Console: the main panel](ORB界面预览.png)
+![ORB Console: the main panel](docs/hero.gif)
 
 ---
 
