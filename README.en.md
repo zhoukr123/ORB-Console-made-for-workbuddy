@@ -90,6 +90,8 @@ npm install --prefix orb/desktop
 | Vision loop | Per-mille coordinates + active zoom + automatic model fallback |
 | Screen recording | Native MP4 output (1080p / 30fps) with a floating control bar: pause / resume / cancel / finish (v1.2.0) |
 | Screenshot | Invokes your local Snipaste for selection and annotation, archives into your storage folder (v1.2.0) |
+| Workflow recording | Record a sequence from the top bar; while recording that button turns into a red square (finish). Replay and edit it under Settings › Screenshot & Recording › Workflow (v1.3.6) |
+| Feature lookup | `Ctrl + K` now searches features only — workflows and chat history have their own homes instead of sharing one search box (v1.3.6) |
 | Four themes | Deep Space / Daylight / Aurora / Custom gradient; frosted glass available on Deep Space and Custom |
 
 ---

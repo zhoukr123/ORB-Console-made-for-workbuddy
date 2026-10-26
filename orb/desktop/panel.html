@@ -977,6 +977,29 @@
   .setpanes { flex: 1 1 auto; min-width: 0; }
   .setpane { display: none; animation: panein .18s var(--ease) both; }
   .setpane.on { display: block; }
+
+  /* 设置页板块：一页里的三组内容（录屏 / 截屏 / 工作流）各占一个带框区块，
+     免得十几张卡片糊成一坨。令牌一律用通用族，主题切换自动跟随。
+     ⚠️ 圆角只有 --r-sm(8px) 与 --r-lg(16px) 两档，没有 --r-md。 */
+  .setsec { border: 1px solid var(--border); border-radius: var(--r-lg); padding: 10px 12px 12px; background: var(--bg-sunken); margin-bottom: 10px; }
+  .setsec:last-child { margin-bottom: 0; }
+  .setsec-hd { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+  .setsec-tt { flex: 0 0 auto; font-size: 13px; font-weight: 500; color: var(--fg); letter-spacing: .02em; }
+  /* 交关线：静态只画左侧半截，板块 hover 时向右延展并染上主题色。
+     transform-origin 必须常驻基础规则（同 recbar .skin 的教训）：只写在 :hover
+     里的话，非 hover 态会按 50% 50% 计算，线条从中间炸开而不是从左展开。 */
+  .setsec-line { flex: 1 1 auto; height: 1px; background: var(--border-strong); transform: scaleX(.5); transform-origin: left center; transition: transform .22s var(--ease), background-color .22s var(--ease); }
+  .setsec:hover .setsec-line { transform: scaleX(1); background: var(--accent); }
+  .setsec-bd { display: flex; flex-direction: column; gap: 10px; }
+  /* 工作流列表（设置 › 截屏与录屏 › 工作流） */
+  .wf-list { display: flex; flex-direction: column; gap: 6px; }
+  .wf-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-soft); }
+  .wf-row .wf-nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--fg); }
+  .wf-row .wf-st { flex: 0 0 auto; font-size: 11px; color: var(--fg-muted); }
+  .wf-row.wf-empty { justify-content: center; color: var(--fg-muted); font-size: 12px; background: transparent; }
+  /* 双兜底必须紧贴基类之后写：等特异性的基础规则若写在后面会把它盖成死代码。 */
+  html.no-motion .setsec-line { transition: none; }
+  @media (prefers-reduced-motion: reduce) { .setsec-line { transition: none; transform: scaleX(1); } }
   @keyframes panein { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
 
   /* 主题卡片：三档色卡，选中态用 2px 描边而非位移，避免卡片推挤 */
@@ -1360,6 +1383,7 @@
   html.no-motion .iconbtn.ico:hover { transform: none; }
   html.no-motion .iconbtn.ico.hist:hover svg .hand,
   html.no-motion .iconbtn.ico.rec:hover svg .arrow,
+  html.no-motion .iconbtn.ico.rec.on svg .stop,
   html.no-motion .iconbtn.ico.stop:hover svg .slash,
   html.no-motion .iconbtn.ico.gear:hover svg .teeth,
   html.no-motion .iconbtn.ico.pin:hover svg .needle,
@@ -1472,9 +1496,15 @@
     45%  { transform: translateX(4.4px) }
     100% { transform: translateX(0) }
   }
-  /* 录制中：整枚反色红底白箭头，箭尖持续轻推表示「还在录」 */
+  /* 停止方块：未录制时藏起来，录制中顶替三角出场。
+     之前「点了开始录制却找不到停止键」—— 就是因为没有这枚方块，
+     录制中顶栏还是一枚在动的三角，看不出它已经变成停止键了。 */
+  .iconbtn.ico.rec svg .stop { display: none; }
+  .iconbtn.ico.rec.on svg .arrow { display: none; }
+  /* 录制中：整枚反色红底白方块，方块以 1.3s 明暗呼吸表示「还在录」 */
   .iconbtn.ico.rec.on { background: var(--danger); color: #fff; }
-  .iconbtn.ico.rec.on svg .arrow { animation: recdash 1.3s var(--ease) infinite; }
+  .iconbtn.ico.rec.on svg .stop { display: block; animation: recbeat 1.3s var(--ease) infinite; }
+  @keyframes recbeat { 0%, 100% { opacity: 1 } 50% { opacity: .5 } }
 
   /* 3. 急停：圆圈里的斜杠顺时针转 90° */
   .iconbtn.ico.stop svg .slash { transform-origin: 12px 12px; transform-box: view-box; }
@@ -1511,7 +1541,7 @@
   @media (prefers-reduced-motion: reduce) {
     .iconbtn.ico:hover, .iconbtn.ico:active { transform: none; }
     .iconbtn.ico.hist:hover svg .hand,
-    .iconbtn.ico.rec:hover svg .arrow, .iconbtn.ico.rec.on svg .arrow,
+    .iconbtn.ico.rec:hover svg .arrow, .iconbtn.ico.rec.on svg .stop,
     .iconbtn.ico.stop:hover svg .slash,
     .iconbtn.ico.gear:hover svg .teeth,
     .iconbtn.ico.pin:hover svg .needle,
@@ -2433,6 +2463,17 @@
 .hist-box::-webkit-scrollbar-thumb { background: #dcd9d0; border-radius: 8px; }
 .hist-box::-webkit-scrollbar-track { background: transparent; }
 @keyframes pop { from { opacity: 0; transform: translateY(-8px) scale(.985) } to { opacity: 1; transform: none } }
+/* 工作流两个弹窗（列表 / 步骤编辑器）用主题色描边：
+   走 ID 选择器是为了压过 .hist-box 基础规则与 t1/t3/t4 的主题覆盖（它们只改背景，
+   但选择器位置在后面，不用 ID 会被"后写的同特异性规则"吃掉）。
+   描边色跟 --accent 走，切主题时与底色一起做 .22s 交叉淡入，不会"啪"一下换色。 */
+#wfMask .hist-box,
+#wfEditMask .hist-box {
+  border-color: var(--accent);
+  transition: background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
+}
+html.no-motion #wfMask .hist-box,
+html.no-motion #wfEditMask .hist-box { transition: none; }
 .hist-hd {
   padding: 9px 12px 10px; color: var(--fg-muted); font-size:calc(12px * var(--fs-scale));
   font-weight: 500; border-bottom: 1px solid var(--border);
@@ -2726,7 +2767,7 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
   <div class="hist-box">
     <div class="cmd-hd">
       <span style="color:#6b7280;font-size:13px">⌘</span>
-      <input id="cmdInput" placeholder="搜索命令…（↑↓ 选择，Enter 执行，Esc 关闭）" autocomplete="off">
+      <input id="cmdInput" placeholder="搜索功能…（↑↓ 选择，Enter 执行，Esc 关闭）" autocomplete="off">
     </div>
     <div id="cmdList"></div>
   </div>
@@ -2767,7 +2808,10 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
     <!-- 时钟：外圈 + 指针。指针单独成 path，hover 时它自己转一圈 -->
     <button class="iconbtn ico hist" id="hist" title="会话历史" aria-label="会话历史"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path class="hand" d="M12 7.2V12l3.4 2"/></svg></button>
     <!-- 录操作：工作流录制，红色实心箭头（三角）；与工具栏「录屏」区分 -->
-    <button class="iconbtn ico rec" id="rec" title="录操作：录一遍操作，以后一键重放" aria-label="录操作"><svg viewBox="0 0 24 24" fill="none" stroke="none"><path class="arrow" d="M9 6.2 18.4 12 9 17.8Z" fill="currentColor"/></svg></button>
+    <!-- 录制中这枚键就是停止键：CSS 在 .on 时把三角(.arrow)换成方块(.stop)，
+         再点一次即停止并保存。两个图形同在一个 svg 里，靠 display 切换 ——
+         不写 textContent（一写整个 svg 图标就没了）。 -->
+    <button class="iconbtn ico rec" id="rec" title="录操作：录一遍操作，以后一键重放" aria-label="录操作"><svg viewBox="0 0 24 24" fill="none" stroke="none"><path class="arrow" d="M9 6.2 18.4 12 9 17.8Z" fill="currentColor"/><rect class="stop" x="8.2" y="8.2" width="7.6" height="7.6" rx="1.3" fill="currentColor"/></svg></button>
     <!-- 急停：红圈 + 斜杠。斜杠单独成 path，hover 时顺时针转 90° -->
     <button class="iconbtn ico danger stop" id="stopBtn" title="急停：立即停止所有自动化（不是停录制）｜热键 Ctrl+Alt+Backspace｜急停用于中断当前前台执行与录制，不影响已派发的后台任务" aria-label="急停，立即停止所有自动化；用于中断当前前台执行与录制，不影响已派发的后台任务"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="8.6"/><path class="slash" d="M6.1 6.1 17.9 17.9"/></svg></button>
     <!-- 设置：同心圆 + 放射线（齿）。同心圆不动，齿转 90° -->
@@ -2831,7 +2875,7 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
       </span>
       <span class="spacer"></span>
       <!-- 坐标显示已移除（用户要求）。coordMode / askPoint 的内部逻辑保留不动，
-           只摘掉这个显示元素，见 coordText() 里的空值保护。 -->
+           只摘掉显示元素；coordText() 也随之删除（它只写这个元素，无其它作用）。 -->
       <!-- 附件（加号）：引用语义，不拷贝文件。有附件时加 .has 视为「已装载」态 -->
       <button class="attach" id="attach" title="添加附件：图片 / 视频 / 音频 / PDF / 文档（点击从文件夹选择）" aria-label="添加附件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path class="plus" d="M12 5v14M5 12h14"/></svg></button>
       <button class="send" id="send">
@@ -2847,7 +2891,7 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
       <button class="setnav-i on" data-pane="look" title="外观" aria-label="外观"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><circle cx="9.4" cy="9.6" r="1.5" fill="currentColor" stroke="none"/><circle cx="14.6" cy="9.6" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="15" r="1.5" fill="currentColor" stroke="none"/></svg></button>
       <button class="setnav-i" data-pane="vision" title="视觉模型" aria-label="视觉模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 12s3.4-5.4 9.4-5.4S21.4 12 21.4 12s-3.4 5.4-9.4 5.4S2.6 12 2.6 12Z"/><circle cx="12" cy="12" r="2.4"/></svg></button>
       <button class="setnav-i" data-pane="voice" title="语音" aria-label="语音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2.6" width="6" height="11" rx="3"/><path d="M5.4 11.4a6.6 6.6 0 0 0 13.2 0M12 18v3.4M8.6 21.4h6.8"/></svg></button>
-      <button class="setnav-i" data-pane="rec" title="录屏" aria-label="录屏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="12.5" rx="2.2"/><path d="M9 20.5h6M12 17v3.5"/><circle cx="12" cy="10.7" r="2" fill="currentColor" stroke="none"/></svg></button>
+      <button class="setnav-i" data-pane="rec" title="截屏与录屏" aria-label="截屏与录屏"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.6" y="6" width="18.8" height="13.4" rx="2.6"/><path d="M8.4 6 9.6 3.6h4.8L15.6 6"/><circle cx="12" cy="12.6" r="3.2" fill="currentColor" stroke="none"/></svg></button>
       <button class="setnav-i" data-pane="safe" title="安全" aria-label="安全"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8 20 6v6c0 4.6-3.2 8-8 9.2-4.8-1.2-8-4.6-8-9.2V6Z"/><path d="M9 12l2.2 2.2L15.4 10"/></svg></button>
       <button class="setnav-i" data-pane="chan" title="通道" aria-label="通道"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 9.4h12l-3-3M19.4 14.6h-12l3 3"/></svg></button>
       <button class="setnav-i" data-pane="storage" title="存储" aria-label="存储"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.4 6.4A1.8 1.8 0 0 1 5.2 4.6h3.6l2 2.4h8a1.8 1.8 0 0 1 1.8 1.8v8.8a1.8 1.8 0 0 1-1.8 1.8H5.2a1.8 1.8 0 0 1-1.8-1.8Z"/><path d="M3.4 10h17.2"/></svg></button>
@@ -3075,6 +3119,11 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
       </div>
 
       <div class="setpane" data-pane="rec">
+        <!-- 本页分三个板块：录屏（录制本体）/ 截屏（Snipaste，自「存储」迁入）
+             / 工作流（录制产物的回放与编辑，自 Ctrl+K 迁入）。 -->
+        <div class="setsec">
+          <div class="setsec-hd"><span class="setsec-tt">录屏</span><i class="setsec-line"></i></div>
+          <div class="setsec-bd">
         <!-- 音频来源：系统音 / 麦克风 / 混合。不选 = 不录音频（默认）。
              卡片语言与悬浮条皮肤同源；混音电平条随选择亮/暗，直观显示
              "这个选择实际会录进哪几路"。 -->
@@ -3194,6 +3243,39 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
           <div class="colorgrid" id="recColorGrid"></div>
           <div class="slotmsg" id="recColorMsg"></div>
         </div>
+          </div>
+        </div>
+
+        <div class="setsec">
+          <div class="setsec-hd"><span class="setsec-tt">截屏</span><i class="setsec-line"></i></div>
+          <div class="setsec-bd">
+            <div class="snip-box">
+              <div class="slothead">Snipaste <span class="hint">免费个人版</span></div>
+              <div class="slotnote">工具栏<b>「截屏」键</b>调用本机 <b>Snipaste</b>：框选后可用它的标注栏<b>改选区 / 划线 / 二次裁剪</b>，点保存后截图存入<b>「设置 › 存储」里的「截屏」目录</b>（snip_日期_时分秒.png，同秒多张自动加序号）。没装 Snipaste 时该键不可用。</div>
+              <div class="row2 slot-actions">
+                <span class="hint" id="snipState">检测中…</span>
+                <button id="snipRedetect" title="装好 Snipaste 后点它刷新状态（不用重启控制台）">重新检测</button>
+                <button id="snipSite" title="打开 Snipaste 官网（免费个人版；推荐 Microsoft Store 版，无 SmartScreen 拦截）">去官网</button>
+              </div>
+              <div class="snip-path" id="snipPath" hidden></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="setsec">
+          <div class="setsec-hd"><span class="setsec-tt">工作流</span><i class="setsec-line"></i></div>
+          <div class="setsec-bd">
+            <div class="slotbox">
+              <div class="slothead">已录好的工作流 <span class="hint">点名称回放，点「编辑」改步骤</span></div>
+              <div class="wf-list" id="wfSetList"></div>
+              <div class="row2 slot-actions" style="justify-content:flex-start">
+                <button id="wfSetSample" title="生成一个含循环 / 判断 / 变量的样板工作流">生成编排示例</button>
+                <button id="wfSetAi" title="说一句话，让 AI 写出工作流">用 AI 生成</button>
+              </div>
+              <div class="slotmsg" id="wfSetMsg"></div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="setpane" data-pane="safe">
@@ -3270,16 +3352,9 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
               <span class="storage-name"><b>截屏</b><span class="storage-path" id="storagePathScreenshots">screenshots</span></span><span class="storage-count" id="storageCountScreenshots">—</span>
             </div>
           </div>
-          <div class="snip-box">
-            <div class="slothead">截屏 <span class="hint">Snipaste（免费个人版）</span></div>
-            <div class="slotnote">工具栏<b>「截屏」键</b>调用本机 <b>Snipaste</b>：框选后可用它的标注栏<b>改选区 / 划线 / 二次裁剪</b>，点保存后截图<b>存入上方「截屏」目录</b>（snip_日期_时分秒.png，同秒多张自动加序号）。没装 Snipaste 时该键不可用。</div>
-            <div class="row2 slot-actions">
-              <span class="hint" id="snipState">检测中…</span>
-              <button id="snipRedetect" title="装好 Snipaste 后点它刷新状态（不用重启控制台）">重新检测</button>
-              <button id="snipSite" title="打开 Snipaste 官网（免费个人版；推荐 Microsoft Store 版，无 SmartScreen 拦截）">去官网</button>
-            </div>
-            <div class="snip-path" id="snipPath" hidden></div>
-          </div>
+          <!-- Snipaste 的截屏设置（检测 / 重新检测 / 去官网）已迁到
+               「设置 › 截屏与录屏」的「截屏」板块。这里只保留截屏目录本身 ——
+               存储地址属于存储页，搬走反而让路径与用量分开。 -->
           <div class="storage-space" id="storageSpace">可用空间：读取中…</div>
           <div class="row2 slot-actions storage-actions">
             <button class="pri" id="storageChange">更改</button>
@@ -4904,14 +4979,9 @@ function fromPixel(x, y) {
   if (coordMode !== 'permille') return [x, y];
   return [Math.round((x / display.width) * 1000), Math.round((y / display.height) * 1000)];
 }
-function coordText() {
-  /* 发送栏里的坐标显示元素已按用户要求移除。
-     这里保留空值保护：coordMode 仍被 toPixel/fromPixel/askPoint 依赖，
-     但它们都读的是变量本身，不读这个 DOM 元素，所以摘掉元素不影响功能。 */
-  const c = document.getElementById('coord');
-  if (!c) return;
-  c.textContent = coordMode === 'permille' ? '千分比' : '像素';
-}
+/* 注：发送栏里的「像素 / 千分比」坐标显示元素已按用户要求移除，
+   coordMode 变量本身仍被 toPixel / fromPixel / askPoint 依赖（读的是变量，
+   不读 DOM），所以删掉显示元素与 coordText() 不影响任何功能。 */
 
 /* ---------- 滑轨滑块定位 ----------
    滑块位移一律用「格宽 × 索引」算，绝不读 offsetWidth 去猜 ——
@@ -4950,7 +5020,9 @@ function parseFront(text) {
   let m;
   if ((m = t.match(/^(?:打开|启动|运行)网页\s*(.+)$/))) return { tool: 'OPEN_URL', value: m[1].trim(), note: '打开网页' };
   if ((m = t.match(/^(?:打开|启动|运行)文件夹\s*(.*)$/))) return { tool: 'OPEN_DIR', value: (m[1] || '').trim(), note: '打开文件夹' };
-  if ((m = t.match(/^(?:打开|启动|运行)\s*(.+)$/))) return { tool: 'App', args: { name: m[1].trim() }, note: '打开应用 ' + m[1].trim() };
+  /* 关键：应用名不能把整句吞进去。遇到逗号/分号等分隔符就停，且整句必须到此为止；
+     复合句（如「打开记事本，写一句Hello」）应交给视觉/后台按多步执行，见 autoRoute 的复合判定。 */
+  if ((m = t.match(/^(?:打开|启动|运行)\s*([^，,。；;、]+?)\s*$/))) return { tool: 'App', args: { name: m[1].trim() }, note: '打开应用 ' + m[1].trim() };
   if ((m = t.match(/^(?:输入|键入|打字)\s*(.+)$/))) return { tool: 'Type', args: { text: m[1].trim() }, note: '输入文字' };
   if ((m = t.match(/^(?:双击)\s*(\d+)\s*[,，\s]\s*(\d+)$/))) return { tool: 'Click', args: { loc: null, clicks: 2 }, pos: [+m[1], +m[2]], note: '双击' };
   if ((m = t.match(/^(?:右键)\s*(\d+)\s*[,，\s]\s*(\d+)$/))) return { tool: 'Click', args: { loc: null, button: 'right' }, pos: [+m[1], +m[2]], note: '右键点击' };
@@ -5369,9 +5441,18 @@ async function send() {
  */
 const VISIONISH = /(点击|点一下|选[中择]|勾选|填[入写]|下拉|菜单|按钮|图标|界面|弹窗|对话框|登录|注册|截图|屏幕上|画面里|窗口里|帮我操作|自动操作|把.{0,6}拖)/;
 
+/* 复合指令判定：一句话里出现分隔符/连接词、且其后还跟着另一个动作动词，
+   说明这是多步任务（如「打开记事本，写一句Hello」）。朴素前台解析会把整句吞成应用名，
+   必须交给视觉循环或后台 Agent 按多步执行。 */
+function isCompoundCmd(text) {
+  return /[，,。;；、]\s*(打开|启动|运行|输入|键入|打字|写|录入|记录|发送|保存|关闭|切换|选择|查找|搜索|截图|截屏|滚动|按住|拖动|拖拽|长按|点击|单击|双击|右键|按|快捷键|复制|粘贴|打开网页|打开文件夹)/.test(text)
+      || /(然后|再|并且|并|接着|之后|随后|顺便|顺手)/.test(text);
+}
+
 function autoRoute(text) {
-  if (parseFront(text)) return 'front';
-  if (visionReady() && VISIONISH.test(text)) return 'vision';
+  /* 朴素前台解析只认单步原子指令；复合句跳过前台，按多步执行 */
+  if (parseFront(text) && !isCompoundCmd(text)) return 'front';
+  if (visionReady() && (VISIONISH.test(text) || isCompoundCmd(text))) return 'vision';
   return 'back';
 }
 
@@ -7852,6 +7933,8 @@ function bindThemeUI() {
           p.classList.toggle('on', p.dataset.pane === b.dataset.pane);
         });
         if (b.dataset.pane === 'storage') loadStorageSettings();
+        // 切到「截屏与录屏」时刷新工作流列表：刚录完那条要能在这页直接看到
+        else if (b.dataset.pane === 'rec') renderWfSetList();
       });
     });
   }
@@ -9459,49 +9542,16 @@ function cmdSources() {
     hint: stopOn ? '解除急停，恢复触发器' : '立即中断一切正在跑的动作',
     run: toggleStop,
   });
-  for (const t of TOOLS) out.push({ key: '工具', name: t.label, hint: t.id, run: () => runTool(t.id) });
-  convs.slice(-8).reverse().forEach((c) => {
-    out.push({
-      key: '会话', name: c.title || '会话',
-      hint: ((c.messages || []).length) + ' 条',
-      run: () => {
-        cur = c;
-        touchCurrent();      // 同上：切回旧会话要挪到末尾
-        access = c.access || 'full';
-        syncAccessUi();
-        render();
-      },
-    });
-  });
-  out.push({ key: '面板', name: '会话历史', hint: '打开历史列表', run: openHistory });
-  out.push({
-    key: '面板', name: '新建会话', hint: '开一个新的对话',
-    run: () => {
-      cur = newConv();
-      touchCurrent();
-      access = cur.access || 'full';
-      syncAccessUi();
-      render();
-    },
-  });
-  // 工作流：回放 or 进编辑器改步骤
-  for (const w of wfCache) {
-    out.push({ key: '工作流', name: '▶ ' + w.name, hint: w.steps + ' 步 · 回放', run: () => playWorkflow(w.name) });
-    out.push({ key: '工作流', name: '编辑 ' + w.name, hint: '打开步骤编辑器', run: () => openWorkflowEditor(w.name) });
-  }
-  out.push({ key: '工作流', name: '工作流列表', hint: '管理已录制的动作', run: openWorkflows });
-  out.push({
-    key: '工作流', name: wfRecording ? '停止录制' : '开始录制',
-    hint: '录一遍操作，之后一键重放', run: toggleRecord,
-  });
+  /* Ctrl+K 现在只做「功能查看」：一个输入框搜出全部可用能力。
+     工作流（回放 / 编辑 / 列表 / 录制）已迁到设置 › 工作流，
+     会话与历史由顶栏 #hist 承担 —— 三者混在一个搜索框时，搜一个字会同时
+     跳出工具、工作流、会话三类结果，命中越多反而越难一眼挑到想要的。 */
+  for (const t of TOOLS) out.push({ key: '功能', name: t.label, hint: t.id, run: () => runTool(t.id) });
   // 触发器：让工作流按时间 / 文件 / 热键自己跑
   out.push({ key: '触发', name: '触发器列表', hint: '管理已配置的触发器', run: openTriggers });
   out.push({ key: '触发', name: '新建定时触发器', hint: '每隔 N 分钟跑一次', run: () => addTrigger('interval') });
   out.push({ key: '触发', name: '新建文件触发器', hint: '文件变化时跑', run: () => addTrigger('file') });
   out.push({ key: '触发', name: '新建热键触发器', hint: '按下热键就跑', run: () => addTrigger('hotkey') });
-  // 任务编排：生成一个含 loop/if 的可运行示例
-  out.push({ key: '编排', name: '生成编排示例', hint: '含循环/判断/变量的样板工作流', run: createSampleWorkflow });
-  out.push({ key: '编排', name: '用 AI 生成工作流', hint: '说一句话，让 AI 写出工作流', run: aiMakeWorkflow });
   // 审计：谁在何时做了什么
   out.push({ key: '审计', name: '执行审计日志', hint: '查看最近的操作记录', run: openAudit });
   return out;
@@ -9516,13 +9566,10 @@ function fuzzy(needle, hay) {
   return false;
 }
 
-/* keepSel：工作流列表是异步刷回来的，刷到时会补渲染一次。
-   那次渲染若把选中项重置回第 0 项，用户正在用 ↑↓ 挑的条目就会被打回顶部。 */
-function renderCmd(keepSel) {
+function renderCmd() {
   const q = cmdInput.value.trim();
-  const prevSel = cmdSel;
   cmdItems = cmdSources().filter((it) => fuzzy(q, it.name + ' ' + it.key + ' ' + it.hint));
-  cmdSel = (keepSel && prevSel < cmdItems.length) ? prevSel : 0;
+  cmdSel = 0;
   cmdList.innerHTML = '';
   if (!cmdItems.length) {
     const d = document.createElement('div');
@@ -9556,8 +9603,6 @@ function openCmd() {
   renderCmd();
   cmdMask.classList.add('on');
   setTimeout(() => { try { cmdInput.focus(); } catch {} }, 30);
-  // 异步刷一次工作流列表，到了再重渲染：不阻塞面板打开的即时感
-  refreshWf().then(() => { if (cmdMask.classList.contains('on')) renderCmd(true); }).catch(() => {});
 }
 function closeCmd() { cmdMask.classList.remove('on'); }
 
@@ -9614,33 +9659,33 @@ async function refreshWf() {
 
 function setRecUi(on) {
   wfRecording = !!on;
-  // 顶栏那枚（历史遗留，仍在）
+  // 顶栏这枚就是录制开关：未录时是红三角（开始），录制中切成红底白方块（完成）。
   const btn = document.getElementById('rec');
   if (btn) {
-    // 顶栏这枚现在是纯 SVG 图标，绝不能再写 textContent —— 一写图标就没了。
-    // 状态全交给 .on 类：录制中反色 + 红点呼吸 + 外圈顺时针扫环（CSS 里定义）。
+    // 顶栏这枚是纯 SVG 图标，绝不能再写 textContent —— 一写图标就没了。
+    // 状态全交给 .on 类：CSS 里 .on 时 .arrow 隐藏、.stop 显示，方块再以
+    // 1.3s 明暗呼吸表示「还在录」。
     btn.classList.toggle('on', wfRecording);
     btn.title = wfRecording
-      ? '停止录操作（正在录制工作流…）'
+      ? '完成录制并保存（正在录制工作流…）'
       : '录操作：录一遍操作，以后一键重放';
+    btn.setAttribute('aria-label', wfRecording ? '完成录制' : '录操作');
   }
-  // 工具区常驻键：录制中变红 + 文字改「停止」（红点在 CSS 里跟着 .on 走）
-  const tb = document.getElementById('toolRec');
-  if (tb) {
-    tb.classList.toggle('on', wfRecording);
-    const s = tb.querySelector('span');
-    if (s) s.textContent = wfRecording ? '停止' : '录制';
-    tb.title = wfRecording ? '停止录制并保存' : '录制工作流：录一遍操作，以后一键重放';
-  }
+  // 注：工具区那枚 #toolRec 在工具行重构时已被移除（HTML 里没有这个 id），
+  // 原来留着的分支是永久空转的死代码 —— 这正是"点了开始录制却找不到停止键"的
+  // 根源：唯一的完成入口其实就在顶栏这枚键上，只是它以前录制中还是一枚在动的
+  // 三角，看不出已经变成停止键了。现在改成红底方块，一眼可辨。
 }
 
 async function toggleRecord() {
   if (wfRecording) {
     const r = await wfCall('rec-stop');
     setRecUi(false);
-    if (r.ok) addMsg('Orb', '已保存工作流「' + esc(r.name) + '」，共 ' + esc(r.steps) + ' 步。可在 Ctrl+K 里搜到它。', 'sys');
+    if (r.ok) addMsg('Orb', '已保存工作流「' + esc(r.name) + '」，共 ' + esc(r.steps) + ' 步。到「设置 › 工作流」里可以回放，也能改步骤。', 'sys');
     else addMsg('Orb', '保存失败：' + esc(r.error || '未知原因'), 'err');
-    await refreshWf();
+    // 用 renderWfSetList 而不是 refreshWf：它内部会刷新，并顺带把设置页
+    // 「工作流」列表重绘成最新，刚存下那条在那儿立刻可见。
+    await renderWfSetList();
     return;
   }
   const def = 'workflow_' + String(Date.now()).slice(-6);
@@ -9658,7 +9703,7 @@ async function toggleRecord() {
     (r.hook
       ? '· <b>你在别的软件里手动点的、拖的、滚的也会自动录</b>（全局鼠标钩子已挂）；<br>'
       : '· <b>你自己用鼠标点的</b>，把鼠标停在目标上按 <b>F9</b> 打一个点（只记录坐标，不会替你点）—— 全局钩子这次没挂上；<br>') +
-    '· 做完点一次「停止」保存。', 'sys');
+    '· 做完点<b>顶栏那枚红色方块</b>（就是刚才这枚键，录制中它会变成 ■）即可完成并保存。', 'sys');
 }
 
 /* 录制打点：F9 → 读当前鼠标位置 → 往录制里追加一步 Click。
@@ -9694,65 +9739,72 @@ async function playWorkflow(name) {
   else addMsg('Orb', '回放中断在第 ' + ((res.stoppedAt ?? -1) + 1) + ' 步（' + esc((res.results || []).slice(-1)[0]?.error) + '）', 'err');
 }
 
-async function openWorkflows() {
-  const box = document.getElementById('wfBox');
+
+/* ---------------- 设置 › 截屏与录屏 › 工作流 ----------------
+ * 工作流从 Ctrl+K 迁出后的新家：这里负责「查看 + 回放 + 改步骤」。
+ * 列表与命令面板共用 refreshWf() 的 wfCache，不另起一份缓存。 */
+async function renderWfSetList() {
+  const box = document.getElementById('wfSetList');
+  if (!box) return;
   box.innerHTML = '';
-
-  const hd = document.createElement('div');
-  hd.className = 'hist-hd';
-  hd.textContent = '工作流　·　点条目进编辑器，▶ 直接回放';
-  box.appendChild(hd);
-
   const list = await refreshWf();
+  const msg = document.getElementById('wfSetMsg');
   if (!list.length) {
-    const d = document.createElement('div');
-    d.className = 'cmd-empty';
-    d.textContent = '还没有工作流。点顶部「录操作」录一条，或 Ctrl+K 搜「用 AI 生成工作流」。';
-    box.appendChild(d);
+    const e = document.createElement('div');
+    e.className = 'wf-row wf-empty';
+    e.textContent = '还没有工作流。点顶部「录操作」录一条，或用下面的「AI 生成」写一条。';
+    box.appendChild(e);
+    if (msg) msg.textContent = '';
+    return;
   }
-
   for (const w of list) {
     const row = document.createElement('div');
-    row.className = 'cmd-item';
+    row.className = 'wf-row';
 
     const nm = document.createElement('span');
-    nm.className = 'n';
+    nm.className = 'wf-nm';
     nm.textContent = w.name;
-    const hz = document.createElement('span');
-    hz.className = 'h';
-    hz.textContent = w.steps + ' 步';
+    nm.title = '点名称回放「' + w.name + '」';
+    nm.addEventListener('click', () => playWorkflow(w.name));
 
-    const ops = document.createElement('span');
-    ops.className = 'step-ops';
-    const mk = (label, title, fn, cls) => {
+    const st = document.createElement('span');
+    st.className = 'wf-st';
+    st.textContent = w.steps + ' 步';
+
+    const mkOp = (label, title, fn) => {
       const b = document.createElement('button');
-      b.className = 'step-op' + (cls ? ' ' + cls : '');
+      b.className = 'chip';
       b.textContent = label;
       b.title = title;
-      b.onclick = (ev) => { ev.stopPropagation(); fn(); };
+      b.addEventListener('click', (ev) => { ev.stopPropagation(); fn(); });
       return b;
     };
-    ops.append(
-      mk('▶', '立即回放', () => {
-        document.getElementById('wfMask').classList.remove('on');
-        playWorkflow(w.name);
-      }),
-      mk('✕', '删除', async () => {
-        // 不用 confirm()：Electron 静默失效
-        await wfCall('delete', { name: w.name });
-        openWorkflows();
-      }, 'del'),
-    );
 
-    row.append(nm, hz, ops);
-    row.addEventListener('click', () => {
-      document.getElementById('wfMask').classList.remove('on');
-      openWorkflowEditor(w.name);
-    });
+    row.append(
+      nm, st,
+      mkOp('回放', '立即回放「' + w.name + '」', () => playWorkflow(w.name)),
+      mkOp('编辑', '打开步骤编辑器改「' + w.name + '」', () => openWorkflowEditor(w.name)),
+    );
     box.appendChild(row);
   }
-  document.getElementById('wfMask').classList.add('on');
+  if (msg) msg.textContent = '共 ' + list.length + ' 条';
 }
+
+/* 生成类入口与列表同页：产出后立刻重刷列表，省得用户手动找刷新。 */
+function bindWfSetActions() {
+  const wire = (id, fn) => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { await fn(); } finally { b.disabled = false; }
+      await renderWfSetList();
+    });
+  };
+  wire('wfSetSample', createSampleWorkflow);
+  wire('wfSetAi', aiMakeWorkflow);
+}
+bindWfSetActions();
 
 document.getElementById('rec').addEventListener('click', toggleRecord);
 document.getElementById('wfMask').addEventListener('click', (e) => {
@@ -9879,7 +9931,7 @@ async function createSampleWorkflow() {
 
   const r = await wfCall('save', { workflow: wf });
   addMsg('Orb', r.ok
-    ? ('已生成示例「' + esc(r.name) + '」。Ctrl+K 搜它可回放；想改结构就编辑 workflows 目录下的 JSON。')
+    ? ('已生成示例「' + esc(r.name) + '」。在下面的列表里点它即可回放；想改结构就编辑 workflows 目录下的 JSON。')
     : ('生成失败：' + esc(r.error)), r.ok ? 'sys' : 'err');
   await refreshWf();
 }
@@ -9994,8 +10046,8 @@ async function aiMakeWorkflow() {
 
     const saved = await wfCall('save', { workflow: wf });
     if (saved.ok) {
-      addMsg('Orb', 'AI 已生成「' + esc(saved.name) + '」（' + esc(saved.steps) + ' 步）。Ctrl+K 搜它可回放。', 'sys');
-      await refreshWf();
+      addMsg('Orb', 'AI 已生成「' + esc(saved.name) + '」（' + esc(saved.steps) + ' 步）。到「设置 › 工作流」里可以回放，也能改步骤。', 'sys');
+      await renderWfSetList();
     } else {
       addMsg('Orb', '保存失败：' + esc(saved.error), 'err');
     }
@@ -10036,19 +10088,10 @@ function renderStop(s) {
     b.title = stopOn
       ? ('已急停：' + ((s && s.reason) || '') + '　（点击恢复）　｜　' + STOP_SCOPE_NOTE)
       : '急停：立即停止所有自动化（不是停录制）｜热键 Ctrl+Alt+Backspace｜' + STOP_SCOPE_NOTE;
+    b.setAttribute('aria-label', stopOn ? '解除急停' : '急停');
   }
-  // 工具区常驻键：急停中反色强调 + 文字改「恢复」，让人知道再点一下能解除
-  const tb = document.getElementById('toolStop');
-  if (tb) {
-    tb.classList.toggle('on', stopOn);
-    const sp = tb.querySelector('span');
-    if (sp) sp.textContent = stopOn ? '恢复' : '急停';
-    tb.title = stopOn
-      ? ('已急停：' + ((s && s.reason) || '') + '　（点击恢复）　｜　' + STOP_SCOPE_NOTE)
-      : '急停：立即停止所有自动化（热键 Ctrl+Alt+Backspace）｜' + STOP_SCOPE_NOTE;
-    if (stopOn) { tb.style.background = '#D8443F'; tb.style.color = '#fff'; tb.style.borderColor = '#D8443F'; }
-    else { tb.style.background = ''; tb.style.color = ''; tb.style.borderColor = ''; }
-  }
+  // 注：工具区那枚 #toolStop 在工具行重构时已被移除（HTML 里没有这个 id），
+  // 这里原本留着的分支是死代码，已删除 —— 急停状态现在只由顶栏那枚表达。
 }
 
 /* 单独查一次急停状态（按钮点完后立即刷新用） */
@@ -10161,21 +10204,29 @@ let wfe = null;   // 当前编辑中的工作流对象
 /* 角色树的四种节点类型。图标代替文字：
    树形结构里缩进本来就占地方，再写「循环/判断」四个字，
    子步骤就没空间了。图标 14px + title 提示，信息量不减，宽度省一半。 */
+/* 步骤类型图标：按 Lucide / Feather 的通用图标语言重做 —— 画布 24×24、
+   stroke-width 2、round cap/join、currentColor（ICO() 已是这套参数）。
+   语义一律取各图标库的公认表达，不自造：
+     循环 = repeat：两支首尾相追的水平箭头（不是 refresh 那种单支弯箭头）
+     判断 = git-branch：一条主干 + 分出去的支路 + 两个节点
+     变量 = 花括号 { }，各库表达 variable 的通用形状
+     动作 = 实心三角（执行一步），沿用原设计。
+   ⚠️ 这四枚同时被 stepCard 用作工具位图标（非 action 的步骤不再回退占位图）。 */
 const STEP_KIND = {
   action: {
-    svg: ICO('<path d="M8.4 5.6 18.6 12 8.4 18.4Z" fill="currentColor" stroke-linejoin="round"/>'),
+    svg: ICO('<path d="M8 5.2 18.4 12 8 18.8Z" fill="currentColor" stroke-linejoin="round"/>'),
     cls: 'act', name: '动作',
   },
   loop: {
-    svg: ICO('<path d="M4.6 12a7.4 7.4 0 0 1 12.6-5.2l2.2 2.2"/><path d="M19.4 4.6v4.4h-4.4"/><path d="M19.4 12a7.4 7.4 0 0 1-12.6 5.2l-2.2-2.2"/><path d="M4.6 19.4V15h4.4"/>'),
+    svg: ICO('<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>'),
     cls: 'loop', name: '循环',
   },
   if: {
-    svg: ICO('<path d="M9.4 4.6h5.2v4.2H9.4ZM9.4 15.2h5.2v4.2H9.4ZM14.6 8.8h4.2v6.4h-4.2"/><path d="M4.6 8.8h4.8M4.6 15.2h4.8"/>'),
+    svg: ICO('<path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>'),
     cls: 'if', name: '判断',
   },
   set: {
-    svg: ICO('<rect x="3.4" y="7.4" width="17.2" height="9.2" rx="2.2"/><path d="M7.4 12h9.2"/>'),
+    svg: ICO('<path d="M8 21s-4-3-4-9 4-9 4-9"/><path d="M16 21s4-3 4-9-4-9-4-9"/><path d="M15 4a5 5 0 0 0-6 0"/><path d="M15 20a5 5 0 0 1-6 0"/>'),
     cls: 'set', name: '变量',
   },
 };
@@ -10512,7 +10563,10 @@ function stepCard(s, arr, idx) {
      完整「工具 + 参数」进 title，悬停可看。 */
   const tico = document.createElement('span');
   tico.className = 'step-toolico';
-  tico.innerHTML = (k === 'action' && TOOL_ICONS[s.tool]) ? TOOL_ICONS[s.tool] : ICO_FALLBACK;
+  /* 三类非动作步骤（循环 / 判断 / 变量）原先一律落到 ICO_FALLBACK 占位图 ——
+     它们的语义图标本来就定义在 STEP_KIND 里，只是这里没取用，看着就像"图标不对"。
+     action 仍按 tool 取工具图标，取不到才回退。 */
+  tico.innerHTML = (k === 'action') ? (TOOL_ICONS[s.tool] || ICO_FALLBACK) : meta.svg;
   tico.title = k === 'action' ? (s.tool || '动作') : meta.name;
   const txt = document.createElement('span');
   txt.className = 'step-args';
@@ -10963,7 +11017,7 @@ async function saveWfe() {
   const r = await wfCall('save', { workflow: wfe });
   if (r.ok) {
     addMsg('Orb', '已保存「' + esc(r.name) + '」（' + esc(r.steps) + ' 步）。', 'sys');
-    await refreshWf();
+    await renderWfSetList();
   } else {
     addMsg('Orb', '保存失败：' + esc(r.error), 'err');
   }
@@ -11137,7 +11191,7 @@ window.orb.onNotice((t) => {
   addMsg('Orb', esc(t), 'sys');
 });
 window.orb.onPinState((v) => document.getElementById('pin').classList.toggle('on', !!v));
-window.orb.onCoordMode((m) => { coordMode = m; coordText(); });
+window.orb.onCoordMode((m) => { coordMode = m; });
 window.orb.onBorderMode(() => {});
 window.orb.onFocusRoute((r) => {
   route = r;
@@ -11182,7 +11236,6 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
     themePrefs.gradCustom = { c1: shex(sgc.c1), c2: shex(sgc.c2) };
     themePrefs.themeImage = s.themeImage || '';
   }
-  coordText();
   /* 这里只保证 cur 存在，好让下面的 access / 滑轨有得读。
      真正的「当前会话」由 startFreshConversation() 在磁盘历史读完后统一建立，
      所以这里**不要用 newConv()** —— 它会立刻落盘，等于每次启动先往历史里塞一条空会话。 */
