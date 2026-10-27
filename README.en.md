@@ -92,9 +92,41 @@ npm install --prefix orb/desktop
 | Screenshot | Invokes your local Snipaste for selection and annotation, archives into your storage folder (v1.2.0) |
 | Workflow recording | Record a sequence from the top bar; while recording that button turns into a red square (finish). Replay and edit it under Settings › Screenshot & Recording › Workflow (v1.3.6) |
 | Feature lookup | `Ctrl + K` now searches features only — workflows and chat history have their own homes instead of sharing one search box (v1.3.6) |
+| Workflow: when things change | Every workflow gets a goal and an "if something looks wrong" policy: keep going by coordinates / stop and report / ask the vision model once / hand a few steps to the agent. The last two only fire on steps that have an anchor and where that anchor is genuinely gone — every other step stays pure replay (v1.4.0) |
+| Smart takeover | If replay loses its target, the vision model drives a small batch of actions to get back on track. The backend decides (it re-screenshots and OCRs to check); inside loops it tells the model which round it is, so rounds are never silently skipped (v1.4.0) |
+| Loop round marker | Mark the action that runs once per round; if the UI slips, the audit log counts how many times it succeeded to infer completed rounds (v1.4.0) |
+| Repeat folding | If a recording contains near-identical segments, you get one line of explanation and a "fold into a loop" button. It never restructures your workflow on its own (v1.4.0) |
+| Inline triggers | Interval / file-change / hotkey triggers live at the bottom of each workflow's editor — enable, disable, delete in place (v1.4.0) |
+| Workflow list & audit | Replay / edit / delete are now icon buttons; delete asks you to type a confirmation. The audit log moved into Settings › Storage (v1.4.0) |
+| Six personas | Gentle Guardian / Sunshine / Joker / Comrade / Guide / Tsundere — each with its own lines, tone, kaomoji and voice. Pick one under Settings › Persona (v1.4.0) |
+| Orb behaviour | Seven GIFs (done / greet / loading / nod / shy / think / goodnight), each with its own trigger; toggle all or individually. Idle for two minutes and it plays one at random (v1.4.0) |
 | Persona speech bubbles | Each spoken line now also appears as a small bubble in the chat (muted, tinted with the theme accent). It shows even with sound off — previously the lines were audio-only and never displayed (v1.4.0) |
 | Lean narration | By default it only speaks on outcomes and moods (done / fail / praised / milestones / late night / sedentary), skipping "received" and "working". Switch back to full under Settings › Persona › Voice (v1.4.0) |
 | Four themes | Deep Space / Daylight / Aurora / Custom gradient; frosted glass available on Deep Space and Custom |
+
+### Workflows: recorded once, still working after the UI moves (v1.4.0)
+
+The hard part of replay isn't recording — it's that buttons move and dialogs appear later. Every workflow now carries a
+**goal** and an **"if something looks wrong"** policy with four choices: keep going by coordinates, stop and report,
+ask the vision model once, or hand a few steps to the agent. The last two only trigger on steps that have an anchor
+and where that anchor is genuinely missing, so nothing else gets slower.
+
+Also in this release: an optional **round marker** on loops (the audit log counts how many times the marker action
+succeeded, to infer completed rounds), a **fold-into-loop suggestion** after recording (offered, never applied
+silently), and interval / file / hotkey triggers managed inline in each workflow's editor.
+
+### Personas: six characters, and their lines (v1.4.0)
+
+Personality is a **companion layer**, kept separate from what the AI answers — it never rewrites the model's reply,
+it just mutters alongside. Choose one under **Settings › Persona**: Gentle Guardian, Sunshine, Joker, Comrade,
+Guide or Tsundere, each with its own line library, tone, kaomoji and voice; the floating orb's seven GIFs act
+along with it.
+
+Spoken lines now **show up in the chat** as a small bubble (one size smaller, muted, with a thin accent rule) —
+they work with sound off, which they never did before. **Lean narration** is on by default: one line per task at
+outcome moments (done, failed, praised) instead of "received → working → done".
+
+> The Persona › Memory option currently only stores your choice; reading the actual memory files is not wired up yet.
 
 ---
 
