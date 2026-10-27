@@ -92,6 +92,8 @@ npm install --prefix orb/desktop
 | Screenshot | Invokes your local Snipaste for selection and annotation, archives into your storage folder (v1.2.0) |
 | Workflow recording | Record a sequence from the top bar; while recording that button turns into a red square (finish). Replay and edit it under Settings › Screenshot & Recording › Workflow (v1.3.6) |
 | Feature lookup | `Ctrl + K` now searches features only — workflows and chat history have their own homes instead of sharing one search box (v1.3.6) |
+| Persona speech bubbles | Each spoken line now also appears as a small bubble in the chat (muted, tinted with the theme accent). It shows even with sound off — previously the lines were audio-only and never displayed (v1.4.0) |
+| Lean narration | By default it only speaks on outcomes and moods (done / fail / praised / milestones / late night / sedentary), skipping "received" and "working". Switch back to full under Settings › Persona › Voice (v1.4.0) |
 | Four themes | Deep Space / Daylight / Aurora / Custom gradient; frosted glass available on Deep Space and Custom |
 
 ---

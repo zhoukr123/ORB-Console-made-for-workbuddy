@@ -11,75 +11,202 @@
     user-select: none; cursor: grab;
   }
   body:active { cursor: grabbing; }
+
+  /* ==================================================================
+     先记住这个图标真实的尺寸，否则所有动效数值都会算错：
+     窗口 72px，<img> 摆 66px，但 icon.png 本身是 512×512 里一块
+     435×440 的不透明圆角方块（四周自带透明边）。所以铺到 66px 时，
+     **看得见的蓝方块只有约 56px**，圆角约 11px，四周各留约 8px 空白。
+     也就是说真正可用的活动余量是 8px/边，不是 66 与 72 差的 3px。
+     发光不另做元素：PNG 的 alpha 形状就是圆角方块，用 accent 色的
+     drop-shadow 让**它自己的轮廓**亮起来，天然贴形，也不用算任何圆的大小。
+
+     三层各管一件事：
+       .ball  整块 —— 按下时整体缩进去（只缩图标像贴纸，整块缩才像实体）
+       .orb   待机漂移 —— 极慢的缩放 + 微倾，让球一直"在喘气"
+       img    图标 —— 状态动效（悬停回弹 / 思考起伏 / 呼吸发光 / 心跳）
+     ================================================================== */
   .ball {
+    position: relative; z-index: 1;
     width: 100%; height: 100%;
     display: flex; align-items: center; justify-content: center;
+    transition: transform .16s cubic-bezier(.3,1.4,.6,1);
+  }
+  .orb {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    transform-origin: 50% 50%;
+    animation: drift 11.5s cubic-bezier(.37,0,.63,1) infinite;
+    will-change: transform;
   }
   .ball img {
     width: 66px; height: 66px; display: block;
-    /* 投影改中性黑：以前是紫罗兰色调（rgba(38,33,92,.35)），
-       自选交互色是青柠/琥珀时这一坨永远是脏紫 */
-    filter: drop-shadow(0 2px 6px rgba(0,0,0,.28));
-    transition: transform .18s ease;
+    /* 回弹用 back-out：进入 .hot 时由 perk 动画负责，离开时靠这条过渡收回去 */
+    transition: transform .2s cubic-bezier(.34,1.5,.64,1),
+                width .18s cubic-bezier(.37,0,.63,1),
+                height .18s cubic-bezier(.37,0,.63,1);
     -webkit-user-drag: none;
   }
-  body.hot .ball img { transform: scale(1.06); }
+  /* ==================================================================
+     多这一层 .face 是为了动图（2026-10-27）。
+     七张 GIF 实测：400×400、**不透明白底** #fbfcfd、蓝块 370×374 从 (13,13)
+     开始、圆角 79px。而 icon.png 是 512×512 里一块 440×445 的方块、圆角 92px、
+     四周**透明**。两套几何不一样，直接换 src 会有两个毛病：
+       1. 蓝块从 56.7px 变成 61px（大一圈，切换时看得见"跳一下"）；
+       2. 动图自带 3.25% 的不透明白边，在桌面上就是一圈白框。
+     所以动图态单独定尺寸 + clip-path 裁掉白边，让蓝块落回静态态的可见大小。
+     但 clip-path 是在 filter **之后**生效的 —— 把投影和裁剪挂在同一个元素上，
+     投影会被一起裁掉，球就变成"平贴"在桌面上。于是投影搬到这层父元素上：
+     父层的 filter 看到的是**已经裁好**的子元素，光晕自然贴形。
+     ================================================================== */
+  .face {
+    width: 66px; height: 66px;
+    display: flex; align-items: center; justify-content: center;
+    filter: brightness(1)
+            drop-shadow(0 0 0 color-mix(in srgb, var(--accent, #5b6ee8) 0%, transparent))
+            drop-shadow(0 2px 6px rgba(0,0,0,.28));
+    transition: filter .3s ease;
+    /* 待机心跳：7.6s 里 6.5s 完全不动，最后 1.1s 亮一下。
+       等时呼吸看久了像机器，偶尔来一下才像活物。 */
+    animation: heartbeat 7.6s cubic-bezier(.2,.7,.3,1) infinite;
+  }
+  /* 动图态：铺 63px 再裁掉 4.5% 的白边。4.5% 是量出来的不是估的 ——
+     白边正好占 3.25%，裁到 3.25% 会卡在临界值上，留一圈抗锯齿的灰白线。
+     裁完蓝块 230/304 个设备像素，静态态是 227/304，差 0.75 CSS px，看不出跳。 */
+  .ball img.gif {
+    width: 63px; height: 63px;
+    clip-path: inset(4.5% round 12px);
+  }
 
+  /* ---------- 贴边收起：只剩一条 16px 竖条 ---------- */
   body.docked { cursor: pointer; }
   body.docked .ball img { display: none; }
-  body.docked .ball { background: linear-gradient(160deg, #b4b2a9, #5f5e5a); }
+  body.docked .face { display: none; }
+  body.docked .orb { display: none; }
+  body.docked .ball {
+    background: linear-gradient(160deg, #b4b2a9, #5f5e5a);
+    transition: none;
+  }
+  /* 收起的竖条以前是块死灰色，加一层很慢的明暗扫过，让人知道它还活着 */
+  body.docked .ball::after {
+    content: ''; position: absolute; inset: 0; border-radius: inherit;
+    background: linear-gradient(200deg, rgba(255,255,255,.45), rgba(255,255,255,0) 58%);
+    pointer-events: none;
+    animation: dockGlow 3.6s ease-in-out infinite;
+  }
   body.dock-left .ball { border-radius: 0 8px 8px 0; }
   body.dock-right .ball { border-radius: 8px 0 0 8px; }
 
-  /* 思考动效：交互色光晕自图标向外同步扩大/缩小（呼吸感）。
-     颜色跟随主题交互色（--accent 由主进程随主题推送，见 main.js pushThemeVars）：
-     以前写死品牌蓝，自选青柠/琥珀时这一圈与主题无关。 */
-  .halo {
-    display: none; position: absolute; inset: 5px; z-index: 0;
-    border-radius: 50%;
-    /* 径向光晕，边缘完全透明，缩放时不会看到硬边 */
-    background: radial-gradient(circle at 50% 50%,
-                color-mix(in srgb, var(--accent, #5b6ee8) 52%, transparent) 0%,
-                color-mix(in srgb, var(--accent, #5b6ee8) 30%, transparent) 44%,
-                color-mix(in srgb, var(--accent, #5b6ee8) 12%, transparent) 66%,
-                color-mix(in srgb, var(--accent, #5b6ee8) 0%, transparent) 78%);
-    will-change: transform, opacity;
+  /* ---------- 状态 ---------- */
+  /* 面板开着 = 我在听：柔光常亮，图标安静下来（注意力在面板上）。
+     .active 这个类以前在 JS 里 toggle 但 CSS 里一条规则都没有，纯空转 */
+  body.active:not(.busy):not(.hot) .face {
+    filter: brightness(1)
+            drop-shadow(0 0 5px color-mix(in srgb, var(--accent, #5b6ee8) 42%, transparent))
+            drop-shadow(0 2px 6px rgba(0,0,0,.28));
+    animation: none;
   }
-  /* 第二层：一圈细环，跟光晕同节奏，让"扩大"更明确 */
-  .halo::after {
-    content: ''; position: absolute; inset: 7px; border-radius: 50%;
-    border: 1.5px solid color-mix(in srgb, var(--accent, #5b6ee8) 68%, transparent);
-    opacity: .9;
-  }
-  /* logo 压在光晕之上 */
-  .ball { position: relative; z-index: 1; }
 
-  body.busy .halo { display: block; animation: breathe 1.7s cubic-bezier(.45,0,.55,1) infinite; }
-  body.busy .ball img { animation: bob 1.7s cubic-bezier(.45,0,.55,1) infinite; }
-  /* 双兜底必须**紧贴**基类（等特异性 + 基类在后会盖成死代码）。这两条是无限
-     循环的常驻动画：系统开了"减少动态效果"或面板关了动效（html.no-motion 由
-     主进程推）时不停，这个窗口就等于不认用户的动效偏好。 */
-  html.no-motion body.busy .halo,
-  html.no-motion body.busy .ball img { animation: none; }
+  /* 悬停 = 注意到你了：图标弹一下（overshoot 到 1.11 再落回 1.08）+ 光晕亮起。
+     弹的是 img（transform），亮的是 .face（filter）—— 一分为二之后
+     transform 和 filter 各在各的层上，互不覆盖。 */
+  body.hot .ball img { transform: scale(1.08); }
+  body.hot:not(.busy) .ball img { animation: perk .46s cubic-bezier(.34,1.56,.64,1) 1 both; }
+  body.hot:not(.busy) .face { animation: hotGlow .5s cubic-bezier(.2,.7,.3,1) 1 both; }
+
+  /* 按下 = 被按进去。拖拽期间一直按着，所以这条同时就是"被拎着走"的手感 */
+  body.press .ball { transform: scale(.94); }
+  body.press .face { filter: brightness(.97) drop-shadow(0 1px 3px rgba(0,0,0,.34)); }
+
+  /* 忙 = 在想：1.6s 的起伏 + 1.8s 的发光 + 11.5s 的底座漂移，
+     三个周期互不整除，看起来才不像卡表 */
+  body.busy .ball img { animation: bob 1.6s cubic-bezier(.45,0,.55,1) infinite; }
+  body.busy .face { animation: glowPulse 1.8s cubic-bezier(.45,0,.55,1) infinite; }
+
+  /* ==================================================================
+     关动效的兜底：一条打尽
+     以前只关 busy 那两条，靠"选择器特异性更高"压住基类，于是每加一条新动画
+     就得数着声明顺序补一条 —— 新加的待机漂移 / 心跳 / 回弹会全部漏网。
+     通配 + !important 是唯一不会被"等特异性 + 先后顺序"阴到的写法。
+     面板那边（panel.html）早有同样的 !important 写法，不是新发明的规矩。
+     ================================================================== */
+  html.no-motion *,
+  html.no-motion *::before,
+  html.no-motion *::after {
+    animation: none !important;
+    transition: none !important;
+  }
   @media (prefers-reduced-motion: reduce) {
-    body.busy .halo,
-    body.busy .ball img { animation: none; }
+    html *,
+    html *::before,
+    html *::after {
+      animation: none !important;
+      transition: none !important;
+    }
   }
 
-  /* 同一组 transform 同时驱动光晕与蓝环 → 视觉上"同步扩大/缩小" */
-  @keyframes breathe {
-    0%, 100% { transform: scale(.86); opacity: .45; }
-    50%      { transform: scale(1.14); opacity: 1; }
+  /* ---------- keyframes ----------
+     预算按**看得见的 56px** 算（不是 66px 的元素盒），窗口 72px：
+     最坏组合 56.7 × 1.02(drift) × 1.05(bob) × (cos3°+sin3°) ≈ 63.9px，仍在窗内。 */
+  @keyframes drift {
+    0%   { transform: translate3d(0,0,0) rotate(0deg) scale(1); }
+    26%  { transform: translate3d(.5px,-.7px,0) rotate(-1.8deg) scale(1.016); }
+    53%  { transform: translate3d(0,.5px,0) rotate(-.4deg) scale(1.02); }
+    79%  { transform: translate3d(-.5px,-.4px,0) rotate(1.8deg) scale(1.008); }
+    100% { transform: translate3d(0,0,0) rotate(0deg) scale(1); }
   }
+  /* 回弹：峰值 1.11，落回 1.08 */
+  @keyframes perk {
+    0%   { transform: scale(1); }
+    55%  { transform: scale(1.11); }
+    100% { transform: scale(1.08); }
+  }
+  /* 思考起伏：峰值 1.05，带一点反向微倾 */
   @keyframes bob {
-    0%, 100% { transform: scale(1); }
-    50%      { transform: scale(1.05); }
+    0%, 100% { transform: scale(1) rotate(0deg); }
+    32%      { transform: scale(1.05) rotate(-1.2deg); }
+    66%      { transform: scale(1.015) rotate(1deg); }
+  }
+  /* 三条 drop-shadow 必须函数序列一致才能插值，所以每条都写全 */
+  @keyframes hotGlow {
+    0%   { filter: brightness(1)
+                    drop-shadow(0 0 0 color-mix(in srgb, var(--accent, #5b6ee8) 0%, transparent))
+                    drop-shadow(0 2px 6px rgba(0,0,0,.28)); }
+    100% { filter: brightness(1.04)
+                    drop-shadow(0 0 8px color-mix(in srgb, var(--accent, #5b6ee8) 62%, transparent))
+                    drop-shadow(0 2px 7px rgba(0,0,0,.3)); }
+  }
+  @keyframes glowPulse {
+    0%, 100% { filter: brightness(1)
+                        drop-shadow(0 0 2px color-mix(in srgb, var(--accent, #5b6ee8) 34%, transparent))
+                        drop-shadow(0 2px 6px rgba(0,0,0,.28)); }
+    50%      { filter: brightness(1.05)
+                        drop-shadow(0 0 9px color-mix(in srgb, var(--accent, #5b6ee8) 72%, transparent))
+                        drop-shadow(0 2px 7px rgba(0,0,0,.3)); }
+  }
+  /* 心跳：86% 之前与静止态逐字一致 —— 不能省成 `filter: none`，
+     函数序列对不上就插值不了，会变成硬切换 */
+  @keyframes heartbeat {
+    0%, 86% { filter: brightness(1)
+                       drop-shadow(0 0 0 color-mix(in srgb, var(--accent, #5b6ee8) 0%, transparent))
+                       drop-shadow(0 2px 6px rgba(0,0,0,.28)); }
+    91%     { filter: brightness(1.06)
+                       drop-shadow(0 0 8px color-mix(in srgb, var(--accent, #5b6ee8) 66%, transparent))
+                       drop-shadow(0 2px 6px rgba(0,0,0,.28)); }
+    100%    { filter: brightness(1)
+                       drop-shadow(0 0 0 color-mix(in srgb, var(--accent, #5b6ee8) 0%, transparent))
+                       drop-shadow(0 2px 6px rgba(0,0,0,.28)); }
+  }
+  @keyframes dockGlow {
+    0%, 100% { opacity: .28; }
+    50%      { opacity: .72; }
   }
 </style>
 </head>
 <body>
-  <div class="ball"><img id="icon" src="icon.png" alt="Orb"></div>
-  <div class="halo"></div>
+  <div class="ball">
+    <div class="orb"><span class="face"><img id="icon" src="icon.png" alt="Orb"></span></div>
+  </div>
 
 <script>
   const body = document.body;
@@ -98,6 +225,7 @@
   body.addEventListener('mouseenter', () => {
     body.classList.add('hot');
     window.orb.hover(true);
+    touchActivity();          // 摸一下球也算"有人在用"：空闲计时重来
     if (window.innerWidth < 40) window.orb.undock();
   });
   body.addEventListener('mouseleave', () => {
@@ -106,27 +234,195 @@
   });
 
   let downAt = null;
+  function pressOn() { body.classList.add('press'); }
+  function pressOff() { body.classList.remove('press'); }
   window.addEventListener('mousedown', (e) => {
     if (e.button === 2) return;
     downAt = { x: e.screenX, y: e.screenY };
+    pressOn();
+    touchActivity();
     window.orb.dragBegin();
   });
   window.addEventListener('mouseup', (e) => {
     if (e.button === 2) return;
     if (!downAt) return;
     downAt = null;
+    pressOff();
     window.orb.dragEnd();
+  });
+  /* 松手落在窗外时 DOM 收不到 mouseup → 球会永远停在"按扁"状态。
+     窗口失焦就松开视觉（不动 drag 状态机，那块的收尾还是原来的逻辑）。 */
+  window.addEventListener('blur', () => {
+    if (!downAt) return;
+    downAt = null;
+    pressOff();
   });
   window.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     window.orb.contextMenu();
   });
 
-  window.orb.onBusy((v) => body.classList.toggle('busy', !!v));
-  window.orb.onPanelState((open) => body.classList.toggle('active', !!open));
-  window.orb.onAvatar((url) => { if (url) icon.src = url; });
+  /* ==================================================================
+     个性动图（2026-10-27）
+     映射是用户定的，别自己改：启动 greet 一遍 / 收到任务 nod 一遍 /
+     执行中 think 循环 / 完成 done 一遍 / 空闲 2 分钟在 greet·loading·
+     shy·sleep 里随机播三遍。
+     单次时长不靠猜：主进程把每张 GIF 的真实循环毫秒数一起发过来（gifMeta），
+     浏览器没有任何 API 能给出这个值。
+     ================================================================== */
+  const GIF_SRC = {
+    done: 'anim/logo_anim_done_v8.gif',
+    greet: 'anim/logo_anim_greet_v8.gif',
+    loading: 'anim/logo_anim_loading_v9.gif',
+    nod: 'anim/logo_anim_nod_v8.gif',
+    shy: 'anim/logo_anim_shy_v8.gif',
+    sleep: 'anim/logo_anim_sleep_v8.gif',
+    think: 'anim/logo_anim_think_sym_v8.gif',
+  };
+  const IDLE_POOL = ['greet', 'loading', 'shy', 'sleep'];
+  /* 谁更贴谁：偏爱的那张在抽签袋里多塞三次（权重 4:1）。
+     不做成硬白名单 —— 人格是调性不是牢笼，四张只剩一张会看腻。 */
+  const AFFINITY = {
+    gentle: ['sleep', 'shy'],
+    genki: ['greet', 'greet'],
+    joker: ['greet', 'shy'],
+    comrade: ['loading', 'greet'],
+    guide: ['sleep', 'loading'],
+    tsundere: ['shy', 'sleep'],
+  };
+  const IDLE_MS = 120000;
 
-  window.orb.getState().then((s) => { if (s && s.avatar) icon.src = s.avatar; });
+  let charCfg = { persona: 'gentle', gif: { enabled: true, off: [] } };
+  let gifMeta = {};
+  let baseSrc = 'icon.png';   // 用户换过头像时这里不是 icon.png，回退必须回它
+  let gifTimer = null;
+  let curGif = '';
+  let idleTimer = null;
+
+  function gifOff(id) {
+    const off = (charCfg.gif && charCfg.gif.off) || [];
+    return off.indexOf(id) >= 0;
+  }
+  function gifReady() {
+    return !!(charCfg.gif && charCfg.gif.enabled) && charCfg.persona !== 'off';
+  }
+  function loopMsOf(id) {
+    const m = gifMeta[id];
+    return (m && m.loopMs) || 0;
+  }
+
+  /** 收回动图、回到静态图标 */
+  function clearGif() {
+    if (gifTimer) { clearTimeout(gifTimer); gifTimer = null; }
+    if (!curGif) return;
+    curGif = '';
+    icon.classList.remove('gif');
+    icon.src = baseSrc;
+  }
+
+  /** 播一张。times = 0 表示一直播到被打断（执行中那张）。 */
+  function playGif(id, times) {
+    if (!gifReady() || gifOff(id) || !GIF_SRC[id]) return false;
+    clearGif();
+    curGif = id;
+    icon.classList.add('gif');
+    icon.src = GIF_SRC[id];
+    if (times > 0) {
+      /* 时长没解析出来（文件被换过）就按 1.2s 兜底 —— 总比永远卡在动图上好 */
+      const ms = (loopMsOf(id) || 1200) * times;
+      gifTimer = setTimeout(() => { gifTimer = null; clearGif(); }, ms);
+    }
+    return true;
+  }
+
+  function pickIdleGif(pool) {
+    const fav = AFFINITY[charCfg.persona] || [];
+    const bag = pool.slice();
+    for (const id of fav) if (pool.indexOf(id) >= 0) bag.push(id, id, id);
+    return bag[Math.floor(Math.random() * bag.length)] || pool[0];
+  }
+
+  function armIdle(ms) {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(onIdle, ms || IDLE_MS);
+  }
+  function onIdle() {
+    idleTimer = null;
+    /* 面板开着 = 用户在干活，别在他眼前晃；忙的时候更不该插播 */
+    const skip = !gifReady()
+      || body.classList.contains('busy')
+      || body.classList.contains('active')
+      || body.classList.contains('docked')
+      || document.documentElement.classList.contains('no-motion');
+    const pool = IDLE_POOL.filter((id) => !gifOff(id));
+    if (skip || !pool.length) { armIdle(); return; }
+    const id = pickIdleGif(pool);
+    playGif(id, 3);
+    /* 下一次从"这三遍演完"开始重新数，而不是从"开始演"数 —— 否则
+       动的三遍还没播完就又被算进下一轮空闲了。 */
+    armIdle((loopMsOf(id) || 1200) * 3 + IDLE_MS);
+  }
+  /** 检测到"有人在用"：重新计时。 */
+  function touchActivity() { armIdle(IDLE_MS); }
+
+  window.orb.onBusy((v) => {
+    const on = !!v;
+    body.classList.toggle('busy', on);
+    touchActivity();
+    if (on) playGif('think', 0);
+    else playGif('done', 1);
+  });
+  window.orb.onPanelState((open) => {
+    body.classList.toggle('active', !!open);
+    touchActivity();
+  });
+  /* 「外观 › 动效」开关。以前这个类只挂在面板自己的 <html> 上，悬浮球这边
+     html.no-motion 从来没被挂过 —— 关掉动效后球照样呼吸，等于没认这个偏好。 */
+  if (window.orb.onMotion) {
+    window.orb.onMotion((on) => document.documentElement.classList.toggle('no-motion', !on));
+  }
+  window.orb.onAvatar((url) => {
+    if (!url) return;
+    baseSrc = url;
+    if (!curGif) icon.src = url;
+  });
+
+  /* 主进程归一化过的那份偏好（人格 / 动图开关 / 单张关停 / 循环时长）。
+     归一化在 main.js 做：这是渲染层唯一能写、且会影响球怎么演的状态。 */
+  if (window.orb.onCharacter) {
+    window.orb.onCharacter((cfg) => {
+      if (!cfg || typeof cfg !== 'object') return;
+      charCfg = {
+        persona: typeof cfg.persona === 'string' ? cfg.persona : 'gentle',
+        gif: {
+          enabled: !(cfg.gif && cfg.gif.enabled === false),
+          off: (cfg.gif && Array.isArray(cfg.gif.off)) ? cfg.gif.off : [],
+        },
+      };
+      gifMeta = cfg.gifMeta || {};
+      touchActivity();
+      /* 切到"纯工具"或关掉动图：当场收掉，不用等这一轮演完 */
+      if (charCfg.persona === 'off' || !charCfg.gif.enabled) clearGif();
+    });
+  }
+  /* 「刚发出一条任务」：点头。busy 那个信号来的时候已经在思考了，
+     用它会把这颗头点吞掉，所以面板单独报一个 task-sent。 */
+  if (window.orb.onRecv) {
+    window.orb.onRecv(() => { touchActivity(); playGif('nod', 1); });
+  }
+  /* 面板指定的具体手势（专属行为）：播某张动图一遍，受关停/单张关停约束。 */
+  if (window.orb.onGesture) {
+    window.orb.onGesture((id) => { touchActivity(); playGif(id, 1); });
+  }
+
+  window.orb.getState().then((s) => {
+    if (s && s.avatar) { baseSrc = s.avatar; if (!curGif) icon.src = s.avatar; }
+  });
+
+  /* 启动打招呼：延后一点再演 —— 窗口刚创建时还在透明期，
+     立刻开演会把 greet 的前半段吃掉。 */
+  setTimeout(() => { if (!curGif) playGif('greet', 1); }, 900);
+  armIdle(IDLE_MS);
 </script>
 </body>
 </html>

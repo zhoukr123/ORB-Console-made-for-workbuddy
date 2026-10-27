@@ -61,6 +61,13 @@ contextBridge.exposeInMainWorld("orb", {
   setHold: (v) => ipcRenderer.send("hold", !!v),
   setBusy: (v) => ipcRenderer.send("busy", !!v),
   setObserving: (v) => ipcRenderer.send("observe", !!v),
+  /* 「外观 › 动效」开关：面板改完要告诉主进程，否则悬浮球那套常驻动效
+     不知道用户已经不想看动效了（球的窗口自己读不到面板的 localStorage）。 */
+  setMotion: (on) => ipcRenderer.send("motion", !!on),
+  /* 「设置 › 个性」那份偏好（人格 / 动图 / 记忆 / TTS）。面板落 localStorage 只够
+     自己用；悬浮球是独立窗口，读不到那份 localStorage，所以整份经主进程中转。
+     传的是纯数据（字符串/布尔/数字），不做任何 fs 或 shell 暴露。 */
+  setCharacter: (cfg) => ipcRenderer.send("character", cfg),
 
   /* 会话历史（落盘到 <存储根>/history/conversations.json） */
   historyLoad: () => ipcRenderer.invoke("history-load"),
@@ -173,7 +180,20 @@ contextBridge.exposeInMainWorld("orb", {
   onDockState: (cb) => on("dock-state", cb),
   onPanelState: (cb) => on("panel-state", cb),
   onBusy: (cb) => on("busy", cb),
+  onMotion: (cb) => on("motion", cb),
   onAvatar: (cb) => on("avatar", cb),
+  /* 个性偏好与动图：`character` 是主进程归一化后的整份配置（含每张 GIF 的真实
+     循环时长 gifMeta，球靠它算「只播一遍」要多久）；`recv` 是「用户刚发出一条
+     任务」的瞬时信号，用来点头 —— busy 那个信号来的时候已经在思考了。 */
+  onCharacter: (cb) => on("character", cb),
+  onRecv: (cb) => on("recv", cb),
+  /* 面板指定悬浮球播某张动图（专属行为用：傲娇害羞、温柔晚安睡觉…）。
+     只传动图 id，球的播放/关停/时长逻辑都在它自己那边。 */
+  onGesture: (cb) => on("gesture", cb),
+  /* 面板：发出任务的瞬间报一下，让悬浮球点头。 */
+  taskSent: () => ipcRenderer.send("task-sent"),
+  /* 指定手势：让球播某张动图（见 onGesture）。 */
+  gesture: (id) => ipcRenderer.send("gesture", id),
   onPrefill: (cb) => on("prefill", cb),
   onRecordMark: (cb) => on("record-mark", cb),   // 录制时的手动打点热键
   onNotice: (cb) => on("notice", cb),

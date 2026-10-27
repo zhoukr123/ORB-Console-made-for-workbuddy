@@ -23,7 +23,7 @@ const { execSync, spawnSync } = require('child_process');
 const ROOT = process.env.ORB_ROOT ? path.resolve(process.env.ORB_ROOT) : path.resolve(__dirname, '..');
 const APP = path.join(ROOT, 'orb', 'desktop');
 const ELECTRON = path.join(APP, 'node_modules', 'electron', 'dist');
-const VERSION = '1.3.6';
+const VERSION = '1.4.0';
 /* 输出目录带时间戳：不删旧构建。早先这里是 fs.rmSync(OUT) 一把清空，
    但批量删除会触发安全保护（3789 个文件远超阈值）而被拦截。
    版本化目录反而更好——每次构建都是可回溯的产物，旧的由用户自行清理。 */
@@ -144,6 +144,16 @@ for (const f of APP_FILES) {
   const src = path.join(APP, f);
   if (!fs.existsSync(src)) { console.error('✗ 缺少应用文件:', f); process.exit(1); }
   cp(src, path.join(APPDIR, f));
+}
+/* 随包目录（2026-10-27 新增）：anim/ 是图标动图（7 张 GIF，约 1.8MB），
+   面板的预览网格与悬浮球都按相对路径 `anim/xxx.gif` 取。
+   漏打包 = 设置页那 7 个格子全是碎图 + 球永远只演静态原图，
+   而开发态完全正常 —— 和 glassbg.js / snipaste.js 是同一类"只炸发布版"的坑。 */
+const APP_DIRS = ['anim'];
+for (const d of APP_DIRS) {
+  const src = path.join(APP, d);
+  if (!fs.existsSync(src)) { console.error('✗ 缺少应用目录:', d); process.exit(1); }
+  cpr(src, path.join(APPDIR, d));
 }
 
 /* 桥进程：main.js 用 path.join(__dirname,'..','bridge.mjs') 定位，

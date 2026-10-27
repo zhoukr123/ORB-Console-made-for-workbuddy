@@ -721,6 +721,12 @@ function createBall() {
   ball.webContents.once("did-finish-load", () => {
     log("[ball-bounds]", JSON.stringify(ball.getBounds()));
     pushThemeVars();               // 悬浮球的光晕/投影跟随主题交互色
+    /* 动效开关要补推一次：面板报告的那一刻球可能还没加载完，send 过去直接丢，
+       结果就是"关了动效但球还在呼吸"。主进程留一份状态，加载完再灌一次。 */
+    sendToBall("motion", motionOn);
+    /* 个性偏好同理：面板先报、球后加载的话，不补推球就一直按默认人格演，
+       用户会以为"选了人格没反应"。 */
+    sendToBall("character", Object.assign({}, characterCfg, { gifMeta: animMeta() }));
   });
 }
 
@@ -2862,6 +2868,123 @@ ipcMain.on("voice-start", () => {
 });
 ipcMain.on("pin", (_e, v) => { saveState({ pinned: !!v }); if (!v) scheduleClose(300); });
 ipcMain.on("busy", (_e, v) => sendToBall("busy", !!v));
+/* 动效总开关（面板「外观 › 动效」）。主进程留一份，是因为面板报过来的时候
+   悬浮球未必加载完了 —— createBall 的 did-finish-load 里会再补推一次。
+   默认 true：面板没报过（旧存档）就按"有动效"走，和面板自身的默认一致。 */
+let motionOn = true;
+ipcMain.on("motion", (_e, v) => { motionOn = !!v; sendToBall("motion", motionOn); });
+
+/* 个性偏好（设置 › 个性）。和 motion 同一个理由：面板报过来时球可能还没加载完，
+   主进程留一份，createBall 的 did-finish-load 里补推。
+   白名单化是硬要求 —— 这是渲染层能写的唯一一份"会影响球怎么演"的状态，
+   不收窄就等于让面板能往球里塞任意串（球的 DOM 里会用到它）。 */
+const PERSONA_IDS = new Set(["off", "gentle", "genki", "joker", "comrade", "guide", "tsundere"]);
+const GIF_IDS = new Set(["done", "greet", "loading", "nod", "shy", "sleep", "think"]);
+let characterCfg = {
+  persona: "gentle",
+  gif: { enabled: true, off: [] },
+  memory: { enabled: false, source: "" },
+  tts: { enabled: false },
+};
+function sanitizeCharacter(raw) {
+  const o = (raw && typeof raw === "object") ? raw : {};
+  const persona = PERSONA_IDS.has(o.persona) ? o.persona : "gentle";
+  const g = (o.gif && typeof o.gif === "object") ? o.gif : {};
+  const off = Array.isArray(g.off) ? g.off.filter((x) => GIF_IDS.has(x)) : [];
+  const m = (o.memory && typeof o.memory === "object") ? o.memory : {};
+  const MEM_SRC = new Set(["", "project", "chat"]);
+  const source = MEM_SRC.has(String(m.source || "")) ? String(m.source || "") : "";
+  const t = (o.tts && typeof o.tts === "object") ? o.tts : {};
+  return {
+    persona,
+    gif: { enabled: g.enabled !== false, off: [...new Set(off)] },
+    memory: { enabled: !!m.enabled && !!source, source },
+    tts: { enabled: !!t.enabled },
+  };
+}
+ipcMain.on("character", (_e, cfg) => {
+  characterCfg = sanitizeCharacter(cfg);
+  sendToBall("character", Object.assign({}, characterCfg, { gifMeta: animMeta() }));
+});
+
+/* 动图的真实循环时长：球要「只播一遍」就必须知道一张 GIF 转完一圈是多少毫秒。
+   浏览器没有这个 API（currentTime / duration 都不给），所以只读 GIF 的块结构
+   把帧延时表算出来 —— 不解码像素，7 张加起来也就几毫秒，结果按路径缓存。 */
+const animMetaCache = Object.create(null);
+function skipGifSubBlocks(b, p) {
+  while (p < b.length) {
+    const n = b[p++];
+    if (n === 0) return p;
+    p += n;
+  }
+  return p;
+}
+function readGifMeta(absPath) {
+  if (animMetaCache[absPath]) return animMetaCache[absPath];
+  let meta = { frames: 0, loopMs: 0 };
+  try {
+    const b = fs.readFileSync(absPath);
+    if (b.length < 14 || b.toString("latin1", 0, 3) !== "GIF") throw new Error("not gif");
+    const packed = b[10];
+    let p = 13;
+    if (packed & 0x80) p += 3 * (1 << ((packed & 0x07) + 1));  // 全局调色板
+    let delayCs = 0;
+    let frames = 0;
+    let total = 0;
+    while (p < b.length) {
+      const tag = b[p++];
+      if (tag === 0x3b) break;                                 // trailer
+      if (tag === 0x21) {                                       // 扩展块
+        const label = b[p++];
+        /* 图形控制扩展：延时两字节小端，单位 1/100 秒 */
+        if (label === 0xf9 && b[p] >= 4) delayCs = b[p + 2] | (b[p + 3] << 8);
+        p = skipGifSubBlocks(b, p);
+        continue;
+      }
+      if (tag === 0x2c) {                                       // 图像描述符
+        const lp = b[p + 8];
+        p += 9;
+        if (lp & 0x80) p += 3 * (1 << ((lp & 0x07) + 1));        // 局部调色板
+        p += 1;                                                 // LZW 最小码长
+        p = skipGifSubBlocks(b, p);
+        frames += 1;
+        /* 0 与 1（=10ms）会被浏览器统一抬到 100ms，这里跟着抬；
+           不然算出来的总时长会比实际短一大截，"播一遍"会半路掐断。 */
+        total += (delayCs <= 1 ? 10 : delayCs) * 10;
+        delayCs = 0;
+        continue;
+      }
+      break;   // 认不出的块就停，别把后面的像素数据当结构读
+    }
+    meta = { frames, loopMs: total };
+  } catch {
+    meta = { frames: 0, loopMs: 0 };
+  }
+  animMetaCache[absPath] = meta;
+  return meta;
+}
+const ANIM_FILES = {
+  done: "logo_anim_done_v8.gif",
+  greet: "logo_anim_greet_v8.gif",
+  loading: "logo_anim_loading_v9.gif",
+  nod: "logo_anim_nod_v8.gif",
+  shy: "logo_anim_shy_v8.gif",
+  sleep: "logo_anim_sleep_v8.gif",
+  think: "logo_anim_think_sym_v8.gif",
+};
+function animMeta() {
+  const out = {};
+  for (const id of Object.keys(ANIM_FILES)) {
+    out[id] = readGifMeta(path.join(__dirname, "anim", ANIM_FILES[id]));
+  }
+  return out;
+}
+
+/* 「发出了一条任务」是独立于 busy 的信号：busy 要等 Agent 真的开始跑才来，
+   那时头像已经在"思考"了，点头（收到任务）就只能被吞掉。 */
+ipcMain.on("task-sent", () => sendToBall("recv"));
+/* 面板指定悬浮球播某张动图（陪伴层的专属行为用）。只转发 id，播放逻辑在球那边。 */
+ipcMain.on("gesture", (_e, id) => { if (typeof id === 'string') sendToBall("gesture", id); });
 ipcMain.on("observe", (_e, on) => (on ? startObserve() : stopObserve()));
 ipcMain.on("open-external", (_e, url) => {
   /* 只放行 http/https：任何拿到 preload 白名单的窗口（面板、划词工具条）都能调
@@ -2925,60 +3048,95 @@ safeHandle("open-guide-dir", async () => {
 }, false);
 /* 打开 CodeBuddy CLI 登录脚本。
  * 用户要求"设置里直达，不用去桌面找"。
- * 桌面上的 codebuddy-login.cmd 已移除（纯转发器，冗余），直接指向项目根那份真脚本。
- * 保留桌面版作为兜底（万一又被放回桌面也能用）。
- * 用 shell.openPath 而不是 openExternal：.cmd 是本地文件，openPath 直接
- * 交给系统默认处理器，且能拿到失败原因（返回空串=成功）。
  *
- * 打包态：上面两份都不存在（仓库根那份不在 APP_FILES 里，桌面那份是本机遗留），
- * 于是**运行时生成一份到 DATA_ROOT**（打包态 = %APPDATA%/ORB 控制台，可写）。
- * 为什么不把它塞进打包清单：脚本内容只调 `codebuddy`，不带任何本机路径，
- * 运行时生成既省一份随包文件，也保证发布包里不可能出现作者机器的私有目录。
- * 开发态不生成（DATA_ROOT 就是项目根，写进去会污染仓库工作区），未找到就返回 false。 */
-safeHandle("open-cli-login", async () => {
-  const root = path.resolve(__dirname, "..", "..");
-  const cands = [
-    path.join(root, "codebuddy-login.cmd"),
-    path.join(require("os").homedir(), "Desktop", "codebuddy-login.cmd"),
-  ];
-  for (const p of cands) {
-    if (!fs.existsSync(p)) continue;
-    const err = await shell.openPath(p);
-    return !err;
-  }
-  if (!app.isPackaged) return false;
-  const gen = path.join(DATA_ROOT, "codebuddy-login.cmd");
+ * 关键修复（2026-10-27）：旧实现有俩坑，导致"点开登录脚本窗口闪一下就没了"且根本起不来 CLI：
+ *   ① 脚本里裸 call `codebuddy`，但本机 CLI 在 D:\orb-tools\… 且不在 PATH 中
+ *      （只有 orb/local.conf 的 wbCli 才指得到）→ 永远找不到，登录脚本成了摆设；
+ *   ② shell.openPath 对含中文/空格的路径（%APPDATA%/ORB 控制台/…、项目根的中文目录）
+ *      会闪一下就消失（ShellExecute 对 Unicode 路径不稳）。
+ *
+ * 新实现：
+ *   1. 与 bridge.mjs 同源解析 CLI 路径（env ORB_WB_CLI → orb/local.conf 的 wbCli → PATH where）；
+ *   2. 把登录脚本生成到 os.tmpdir()（纯 ASCII，规避中文路径闪退），并把解析到的
+ *      完整路径烤进脚本（带引号，含空格也不怕）；脚本自带 pause，控制台脚本结束后保持可见；
+ *   3. 用 shell.openPath 打开这份 ASCII 路径脚本：它是"打开文件并让其窗口可见"的正确机制。
+ *      （曾试过 spawn('cmd.exe','/k') 从 Electron GUI 主进程拉起，结果窗口根本不显示，已回退。） */
+/* 异步解析：最后一步要跑 `where`，同步版会把主进程卡住（最坏 5s 超时），
+   而它就在点击按钮的这条路上 —— 改成 async，主进程不被阻塞。 */
+async function resolveWbCliPath() {
+  const envCli = (process.env.ORB_WB_CLI || "").trim();
+  if (envCli && fs.existsSync(envCli)) return envCli;
   try {
-    fs.writeFileSync(gen, [
-      "@echo off",
-      "chcp 65001 >nul",
-      "title CodeBuddy CLI - 登录（ORB 后台 Agent）",
-      "set \"SERVER__PORT=\"",
-      "set \"CODEBUDDY_SERVICE_PROXY_URL=\"",
-      "set \"ELECTRON_RUN_AS_NODE=\"",
-      "echo 正在启动 CodeBuddy CLI 的交互式登录…",
-      "echo 运行后按提示选择登录方式（国内站 / 国际站 / 企业域 / 腾讯 iOA），",
-      "echo 浏览器会自动打开官方登录页完成认证；会话内输入 /login 可重登、/logout 退出。",
-      "echo.",
-      "echo 若提示「不是内部或外部命令」，说明还没装 CLI 或它不在 PATH 中：",
-      "echo   1) 安装：npm install -g @tencent-ai/codebuddy-code  （需 Node.js 18.20+）",
-      "echo      或 PowerShell 执行 irm https://www.codebuddy.cn/cli/install.ps1 ^| iex",
-      "echo      文档：https://www.codebuddy.cn/docs/cli/quickstart",
-      "echo   2) 或设置环境变量 ORB_WB_CLI 指向 codebuddy.exe",
-      "echo.",
-      "codebuddy",
-      "echo.",
-      "echo CLI 已退出（退出码 %ERRORLEVEL%）。",
-      "echo 登录成功后回到 ORB，设置 → 通道 → 「重新检测」，再发一次后台任务即可。",
-      "echo.",
-      "pause",
-      "",
-    ].join("\r\n"), "utf8");
+    const lp = path.join(__dirname, "..", "local.conf");
+    if (fs.existsSync(lp)) {
+      const j = JSON.parse(fs.readFileSync(lp, "utf8"));
+      const c = String((j && j.wbCli) || "").trim();
+      if (c && fs.existsSync(c)) return c;
+    }
+  } catch {}
+  try {
+    const out = await new Promise((res, rej) => {
+      execFile("where", ["codebuddy"], { timeout: 5000, windowsHide: true },
+        (e, stdout) => (e ? rej(e) : res(stdout)));
+    });
+    const lines = String(out).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (!lines.length) return "";
+    const exe = lines.find((l) => /\.exe$/i.test(l));
+    return exe || lines[0];
+  } catch {}
+  return "";
+}
+
+safeHandle("open-cli-login", async () => {
+  const cli = await resolveWbCliPath();
+  const gen = path.join(require("os").tmpdir(), "orb-codebuddy-login.cmd");
+  const cliLine = cli
+    ? `"${cli}" login`
+    : [
+        "echo ❌ 未检测到 CodeBuddy CLI。",
+        "echo    1) 安装：npm i -g @tencent-ai/codebuddy-code  （需 Node.js 18.20+）",
+        "echo       或 PowerShell 执行  irm https://www.codebuddy.cn/cli/install.ps1 | iex",
+        "echo    2) 或设置环境变量 ORB_WB_CLI 指向 codebuddy.exe，再点「打开登录脚本」",
+        "echo    3) 或在本机 orb/local.conf 写 {\"wbCli\":\"…完整路径…\"}",
+      ].join("\r\n");
+  const script = [
+    "@echo off",
+    "chcp 65001 >nul",
+    "title CodeBuddy CLI - 登录（ORB 后台 Agent）",
+    "set \"SERVER__PORT=\"",
+    "set \"CODEBUDDY_SERVICE_PROXY_URL=\"",
+    "set \"ELECTRON_RUN_AS_NODE=\"",
+    "echo 正在启动 CodeBuddy CLI 的交互式登录…",
+    "echo 运行后按提示选择登录方式（国内站 / 国际站 / 企业域 / 腾讯 iOA），",
+    "echo 浏览器会自动打开官方登录页完成认证；会话内输入 /login 可重登、/logout 退出。",
+    "echo.",
+    cliLine,
+    "echo.",
+    "echo CLI 已退出（退出码 %ERRORLEVEL%）。",
+    "echo 登录成功后回到 ORB，设置 → 通道 → 「重新检测」，再发一次后台任务即可。",
+    "echo.",
+    "pause",
+    "",
+  ].join("\r\n");
+  try {
+    fs.writeFileSync(gen, script, "utf8");
   } catch {
     return false;
   }
-  const err = await shell.openPath(gen);
-  return !err;
+  // 主路径：shell.openPath —— "打开文件并让其窗口可见"的正确机制（gen 落在 os.tmpdir()
+  // 纯 ASCII，规避它对中国/空格路径的闪退；脚本自带 pause，结束后窗口保持可见）。
+  // 极少数环境 shell.openPath 会抛异常 / 返回错误串，回退到 spawn('cmd.exe','/k')
+  // （不 detached，保证从 GUI 主进程也能弹出可见控制台）。脚本里已清掉
+  // ELECTRON_RUN_AS_NODE，防 Electron 型 CLI 以 node 模式秒退。
+  let err = "";
+  try { err = await shell.openPath(gen); } catch (e) { err = String((e && e.message) || e); }
+  if (!err) return true;
+  try {
+    spawn("cmd.exe", ["/k", `"${gen}"`], { windowsHide: false });
+    return true;
+  } catch {
+    return false;
+  }
 }, false);
 // 面板改完触发器配置后，让主进程重新注册热键
 ipcMain.on("trigger-reload", () => { try { armHotkeyTriggers(); } catch {} });

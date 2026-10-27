@@ -991,12 +991,49 @@
   .setsec-line { flex: 1 1 auto; height: 1px; background: var(--border-strong); transform: scaleX(.5); transform-origin: left center; transition: transform .22s var(--ease), background-color .22s var(--ease); }
   .setsec:hover .setsec-line { transform: scaleX(1); background: var(--accent); }
   .setsec-bd { display: flex; flex-direction: column; gap: 10px; }
+  /* 设置 › 存储 › 执行审计日志：内联可滚动列表（替代独立弹窗） */
+  .audit-inline { max-height: 280px; overflow: auto; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border); border-radius: var(--r-sm); padding: 6px; background: var(--bg); }
+  .audit-inline .cmd-item { padding: 6px 8px; font-size:calc(12px * var(--fs-scale)); }
+  .audit-inline .cmd-item .k { color: var(--fg-muted); }
   /* 工作流列表（设置 › 截屏与录屏 › 工作流） */
   .wf-list { display: flex; flex-direction: column; gap: 6px; }
   .wf-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-soft); }
   .wf-row .wf-nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--fg); }
   .wf-row .wf-st { flex: 0 0 auto; font-size: 11px; color: var(--fg-muted); }
   .wf-row.wf-empty { justify-content: center; color: var(--fg-muted); font-size: 12px; background: transparent; }
+  /* 工作流列表操作键：回放 / 编辑 / 删除 用图标代替文字。
+     普通态（外观›动效 关，或系统减少动效）只做"高光浮出"：主题色描边 + 轻抬 + 阴影；
+     语义微动效（播放放大 / 编辑倾斜 / 删除变红微晃）只在「外观 › 动效」开启时叠加。 */
+  .wf-op {
+    flex: 0 0 auto; width: 28px; height: 28px; display: inline-flex;
+    align-items: center; justify-content: center; padding: 0;
+    border: 1px solid var(--border); border-radius: var(--r-sm);
+    background: var(--bg); color: var(--fg-soft); cursor: pointer;
+    transition: color .14s var(--ease), border-color .14s var(--ease),
+                background .14s var(--ease), transform .14s var(--ease), box-shadow .14s var(--ease);
+  }
+  .wf-op svg { width: 16px; height: 16px; display: block; }
+  /* 普通高光浮出：任何状态都一样，不受动效开关影响 */
+  .wf-op:hover { border-color: var(--accent); color: var(--accent-fg); transform: translateY(-1px); box-shadow: 0 2px 8px var(--accent-ring); }
+  .wf-op:active { transform: scale(.92); }
+  /* 语义微动效：仅在「外观 › 动效」开启时（html 无 no-motion）才出现 */
+  .wf-op.play:hover svg { transition: transform .14s var(--ease); transform: scale(1.14); }
+  .wf-op.edit:hover svg { transition: transform .14s var(--ease); transform: rotate(-9deg) scale(1.05); }
+  .wf-op.del:hover { border-color: var(--danger); color: var(--danger); box-shadow: 0 2px 8px rgba(216,68,63,.18); }
+  .wf-op.del:hover svg { transition: transform .14s var(--ease); transform: translateY(-1px) rotate(-7deg); }
+  /* 动效关闭：去掉额外图标变换与删除键变红，只留普通高光浮出（按压缩放也属动效，一并关） */
+  html.no-motion .wf-op.play:hover svg,
+  html.no-motion .wf-op.edit:hover svg,
+  html.no-motion .wf-op.del:hover svg { transform: none; }
+  html.no-motion .wf-op.del:hover { border-color: var(--accent); color: var(--accent-fg); box-shadow: 0 2px 8px var(--accent-ring); }
+  html.no-motion .wf-op:active { transform: none; }
+  html.no-motion .wf-op { transition: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .wf-op.play:hover svg, .wf-op.edit:hover svg, .wf-op.del:hover svg { transform: none; }
+    .wf-op.del:hover { border-color: var(--accent); color: var(--accent-fg); box-shadow: 0 2px 8px var(--accent-ring); }
+    .wf-op:active { transform: none; }
+    .wf-op { transition: none; }
+  }
   /* 双兜底必须紧贴基类之后写：等特异性的基础规则若写在后面会把它盖成死代码。 */
   html.no-motion .setsec-line { transition: none; }
   @media (prefers-reduced-motion: reduce) { .setsec-line { transition: none; transform: scaleX(1); } }
@@ -1755,6 +1792,25 @@
   @keyframes typing { 0%, 60%, 100% { transform: translateY(0); opacity: .3 } 30% { transform: translateY(-3px); opacity: 1 } }
   .msg.sys .body { color: var(--fg-muted); font-size:calc(12px * var(--fs-scale)); }
   .msg.err .body { color: var(--danger); background: var(--danger-soft); padding: 7px 11px; border-radius: 10px; display: inline-block; }
+  /* 人格台词气泡：ORB 自己的念白，相当于语音的「字幕」—— 它和 AI 的答复是两回事
+     （个性不改后台提示词，所以答复本身永远是「普通版」）。刻意比正文轻一号、
+     用弱化色 + 一道左边口，既看得见个性，又不跟真正的回答抢注意力。 */
+  .msg.persona { padding-left: 9px; margin-bottom: 8px; }
+  .msg.persona .who { color: var(--accent); font-size: calc(10.5px * var(--fs-scale)); }
+  .msg.persona .body {
+    color: var(--fg-soft);
+    font-size: calc(12.5px * var(--fs-scale));
+    line-height: 1.6;
+    background: var(--accent-soft);
+    border-left: 2px solid var(--accent);
+    padding: 5px 10px;
+    border-radius: var(--r-sm);
+    display: inline-block;
+    max-width: 92%;
+  }
+  /* 动效双兜底必须紧贴基类之后写（等特异性 + 基类在后会盖成死代码，真踩过） */
+  html.no-motion .msg.persona { animation: none; }
+  @media (prefers-reduced-motion: reduce) { .msg.persona { animation: none; } }
   .pending { color: var(--warn); }
 
   /* 工具区：常驻一行（5 个高频键 + 截屏）+ 一个「更多」入口。
@@ -2449,6 +2505,9 @@
 [data-theme="t1"] .hist-mask { background: rgba(4,6,16,.52); }
 .hist-mask.on { display: block; animation: fadein .16s var(--ease); }
 @keyframes fadein { from { opacity: 0 } to { opacity: 1 } }
+/* 通用输入弹层必须压在所有弹窗（工作流编辑器 / 设置 / 命令面板 / 其它 hist-mask）之上：
+   否则在编辑器里点「改名 / 步间隔」时，新弹出的输入框会被主弹窗盖住。 */
+#askMask { z-index: 10001; }
 .hist-box {
   position: absolute; left: 10px; right: 10px; top: 54px; max-height: 68%;
   overflow: auto;
@@ -2582,6 +2641,64 @@ html.no-motion #wfEditMask .hist-box { transition: none; }
 .cr-note b { color: var(--fg-soft); font-weight: 600; }
 
 /* ===== 工作流编辑器 ===== */
+
+/* 编辑器内触发器区块：主题色描边 + hover 高光浮出（始终）；
+   hover 时按类型做语义微动（时钟转 / 文件晃 / 键盘弹），仅当 外观›动效 开启时生效。 */
+.wfe-trg { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }
+.wfe-trg-hd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.wfe-trg-tt { font-size: 13px; font-weight: 500; color: var(--fg); }
+.wfe-trg-add { display: inline-flex; gap: 6px; margin-left: auto; }
+.wfe-trg-addbtn {
+  font-size:calc(12px * var(--fs-scale)); padding: 3px 9px; border: 1px solid var(--border);
+  border-radius: var(--r-sm); background: var(--bg); color: var(--fg-soft); cursor: pointer;
+  transition: color .14s var(--ease), border-color .14s var(--ease), background .14s var(--ease), transform .14s var(--ease), box-shadow .14s var(--ease);
+}
+.wfe-trg-addbtn:hover { border-color: var(--accent); color: var(--accent-fg); transform: translateY(-1px); box-shadow: 0 2px 8px var(--accent-ring); }
+.wfe-trg-addbtn:active { transform: scale(.94); }
+.wfe-trg-list { display: flex; flex-direction: column; gap: 6px; }
+.wfe-trg-item {
+  display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-soft);
+  transition: border-color .14s var(--ease), background .14s var(--ease), transform .14s var(--ease), box-shadow .14s var(--ease);
+}
+.wfe-trg-item:hover { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); box-shadow: 0 2px 8px var(--accent-ring); }
+.wfe-trg-item.off { opacity: .55; }
+.wfe-trg-ico { flex: 0 0 auto; width: 18px; height: 18px; color: var(--accent-fg); display: inline-flex; }
+.wfe-trg-ico svg { width: 18px; height: 18px; display: block; transform-origin: 50% 50%; }
+.wfe-trg-desc { flex: 1 1 auto; min-width: 0; font-size:calc(12.5px * var(--fs-scale)); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wfe-trg-ops { flex: 0 0 auto; display: inline-flex; gap: 4px; opacity: 0; transition: opacity .12s var(--ease); }
+.wfe-trg-item:hover .wfe-trg-ops { opacity: 1; }
+.wfe-trg-op {
+  width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg); color: var(--fg-soft); cursor: pointer;
+  transition: color .14s var(--ease), border-color .14s var(--ease), background .14s var(--ease), transform .14s var(--ease), box-shadow .14s var(--ease);
+}
+.wfe-trg-op svg { width: 15px; height: 15px; display: block; }
+.wfe-trg-op:hover { border-color: var(--accent); color: var(--accent-fg); transform: translateY(-1px); box-shadow: 0 2px 8px var(--accent-ring); }
+.wfe-trg-op:active { transform: scale(.9); }
+.wfe-trg-op.del:hover { border-color: var(--danger); color: var(--danger); box-shadow: 0 2px 8px rgba(216,68,63,.18); }
+/* 动效 ON：图标随类型做语义微动 */
+.wfe-trg-item:hover .wfe-trg-ico.interval svg { animation: trg-spin 2.4s linear infinite; }
+.wfe-trg-item:hover .wfe-trg-ico.file svg { animation: trg-wiggle .5s var(--ease); }
+.wfe-trg-item:hover .wfe-trg-ico.hotkey svg { animation: trg-pop .3s var(--ease); }
+@keyframes trg-spin { to { transform: rotate(360deg); } }
+@keyframes trg-wiggle { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-7deg)} 75%{transform:rotate(7deg)} }
+@keyframes trg-pop { 0%{transform:translateY(0)} 50%{transform:translateY(-3px)} 100%{transform:translateY(0)} }
+/* 动效 OFF：剥掉语义图标动画与按下缩放，保留普通高光浮出（hover 上浮 + 主题色描边），过渡改即时。
+   注意：关闭动效时仍保留 hover 上浮（.wfe-trg-item:hover 的 translateY），只去掉额外的 svg 动画。 */
+html.no-motion .wfe-trg-item:hover .wfe-trg-ico.interval svg,
+html.no-motion .wfe-trg-item:hover .wfe-trg-ico.file svg,
+html.no-motion .wfe-trg-item:hover .wfe-trg-ico.hotkey svg { animation: none; }
+html.no-motion .wfe-trg-addbtn:active, html.no-motion .wfe-trg-op:active { transform: none; }
+html.no-motion .wfe-trg-item, html.no-motion .wfe-trg-addbtn, html.no-motion .wfe-trg-op { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .wfe-trg-item:hover .wfe-trg-ico.interval svg,
+  .wfe-trg-item:hover .wfe-trg-ico.file svg,
+  .wfe-trg-item:hover .wfe-trg-ico.hotkey svg { animation: none; }
+  .wfe-trg-addbtn:active, .wfe-trg-op:active { transform: none; }
+  .wfe-trg-item, .wfe-trg-addbtn, .wfe-trg-op { transition: none; }
+}
+
 .wfe-head {
   padding: 14px 16px 12px; border-bottom: 1px solid var(--border);
   position: sticky; top: 0; background: rgba(255,255,255,.985); z-index: 2;
@@ -2591,6 +2708,20 @@ html.no-motion #wfEditMask .hist-box { transition: none; }
 .wfe-acts { display: flex; gap: 6px; margin-top: 11px; flex-wrap: wrap; }
 .wfe-body { padding: 12px 16px 18px; }
 .wfe-list, .step-kids { display: flex; flex-direction: column; gap: 6px; }
+
+/* 「目标 / 遇到意外怎么办」：这两项管整条流程，不归某一步，
+   所以挂在 head 下面，不塞进步骤列表。 */
+.wfe-goal { padding: 11px 16px 12px; border-bottom: 1px solid var(--border); background: var(--bg-sunken); }
+.wfe-goal-row { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+.wfe-goal-row:first-child { margin-top: 0; }
+.wfe-goal-lb { flex: 0 0 56px; font-size:calc(11.5px * var(--fs-scale)); color: var(--fg-muted); }
+.wfe-goal-in {
+  flex: 1; min-width: 0; font-family: inherit; font-size:calc(12px * var(--fs-scale));
+  padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--fg); outline: none;
+}
+.wfe-goal-in:focus { border-color: var(--accent); }
+.wfe-goal-tip { font-size:calc(11px * var(--fs-scale)); color: var(--fg-muted); margin-top: 7px; line-height: 1.55; }
 
 /* 单步卡片 */
 .step {
@@ -2749,6 +2880,32 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
   .pfield-in.picked::after { animation: none; opacity: 0; }
   .pfield-pick:active { transform: none; }
 }
+  /* ===== 设置 › 个性（Phase 1） ===== */
+  .persona-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0 2px}
+  /* 这两个网格里的卡片是 <button>（要键盘可达）：浏览器默认给 button 一套
+     Arial 13.3px 的字体，不写 font:inherit 就会跟旁边文字差一截。 */
+  .persona-card{display:flex;flex-direction:column;gap:2px;text-align:left;padding:9px 10px;
+    border:1px solid var(--border);border-radius:var(--r-sm);background:var(--bg-soft);
+    color:var(--fg);cursor:pointer;font:inherit;
+    transition:border-color var(--dur-2) var(--ease),background var(--dur-2) var(--ease),transform var(--dur-1) var(--ease)}
+  .persona-card:hover{border-color:var(--accent);transform:translateY(-1px)}
+  .persona-card.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-fg)}
+  .persona-card .pc-name{font-weight:600;font-size:13px}
+  .persona-card .pc-desc{font-size:11.5px;line-height:1.45;color:var(--muted)}
+  .persona-card.on .pc-desc{color:inherit;opacity:.82}
+  .gif-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:8px 0 2px}
+  .gif-item{display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px;
+    border:1px solid var(--border);border-radius:var(--r-sm);background:var(--bg-soft);
+    color:var(--fg);cursor:pointer;font:inherit;
+    transition:border-color var(--dur-2) var(--ease),opacity var(--dur-2) var(--ease)}
+  .gif-item:hover{border-color:var(--accent)}
+  .gif-item img{width:44px;height:44px;object-fit:contain;border-radius:8px;background:var(--bg-sunken)}
+  .gif-item span{font-size:10.5px;color:var(--muted)}
+  /* 单张关掉：灰掉但不隐藏 —— 用户要看得见自己关了哪张，才敢再点开 */
+  .gif-item.off{opacity:.42;border-style:dashed}
+  .gif-item.off img{filter:grayscale(1)}
+  .persona-range{width:100%;accent-color:var(--accent)}
+  html.no-motion .persona-card,html.no-motion .persona-card:hover{transform:none;transition:none}
 </style>
 </head>
 <body>
@@ -2896,8 +3053,61 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
       <button class="setnav-i" data-pane="chan" title="通道" aria-label="通道"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 9.4h12l-3-3M19.4 14.6h-12l3 3"/></svg></button>
       <button class="setnav-i" data-pane="storage" title="存储" aria-label="存储"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.4 6.4A1.8 1.8 0 0 1 5.2 4.6h3.6l2 2.4h8a1.8 1.8 0 0 1 1.8 1.8v8.8a1.8 1.8 0 0 1-1.8 1.8H5.2a1.8 1.8 0 0 1-1.8-1.8Z"/><path d="M3.4 10h17.2"/></svg></button>
       <button class="setnav-i" data-pane="about" title="关于" aria-label="关于"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path d="M12 11v5.4"/><circle cx="12" cy="7.8" r="1.1" fill="currentColor" stroke="none"/></svg></button>
+      <button class="setnav-i" data-pane="persona" title="个性" aria-label="个性"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path d="M8.4 14.2c.9 1.3 2.1 2 3.6 2s2.7-.7 3.6-2"/><circle cx="9.2" cy="10" r="1.1" fill="currentColor" stroke="none"/><circle cx="14.8" cy="10" r="1.1" fill="currentColor" stroke="none"/></svg></button>
     </nav>
     <div class="setpanes">
+      <div class="setpane" data-pane="persona">
+        <div class="slotbox">
+          <div class="slothead">个性 <span class="muted">按情境说话与表情</span></div>
+          <div class="field"><label>启用</label>
+            <button class="chip" id="personaOff" title="关闭个性，回到纯工具">关闭个性（纯工具）</button>
+          </div>
+          <div class="persona-grid" id="personaGrid"></div>
+          <div class="slotmsg" id="personaMsg"></div>
+        </div>
+        <div class="slotbox">
+          <div class="slothead">声音（TTS）</div>
+          <div class="field"><label>声音</label>
+            <button class="chip" id="ttsToggle" title="开启或关闭语音播报">声音 关</button>
+          </div>
+          <div class="field"><label>精简念白</label>
+            <button class="chip" id="ttsLean" title="只在完成 / 失败 / 被夸 / 里程碑等有结果有情绪的节点念，省掉每个任务必念的「收到」「执行中」——一轮能省十几秒。台词气泡照常显示">精简念白 开</button>
+          </div>
+          <div class="field"><label>音色</label><select id="ttsVoice"></select></div>
+          <div class="field"><label>语速 <span class="muted" id="ttsRateV"></span></label>
+            <input class="persona-range" type="range" id="ttsRate" min="0.6" max="1.6" step="0.05" value="1">
+          </div>
+          <div class="field"><label>音调 <span class="muted" id="ttsPitchV"></span></label>
+            <input class="persona-range" type="range" id="ttsPitch" min="0.6" max="1.6" step="0.05" value="1">
+          </div>
+          <div class="field"><label>试听</label>
+            <button class="chip" id="ttsTry" title="用当前音色说一句">说一句</button>
+          </div>
+          <div class="slotmsg" id="ttsMsg"></div>
+        </div>
+        <div class="slotbox">
+          <div class="slothead">图标动图</div>
+          <div class="field"><label>启用</label>
+            <button class="chip" id="gifToggle" title="开启或关闭图标动图">动图 开</button>
+          </div>
+          <div class="gif-grid" id="gifGrid"></div>
+          <div class="slotmsg" id="gifMsg">启动 / 收到任务 / 执行 / 完成 / 空闲各用不同动图。</div>
+        </div>
+        <div class="slotbox">
+          <div class="slothead">记忆读取</div>
+          <div class="field"><label>读取</label>
+            <button class="chip" id="memToggle" title="开启或关闭记忆读取">记忆 关</button>
+          </div>
+          <div class="field"><label>来源</label>
+            <select id="memSource">
+              <option value="">不读取</option>
+              <option value="project">项目 MEMORY.md</option>
+              <option value="chat">对话存档</option>
+            </select>
+          </div>
+          <div class="slotmsg" id="memMsg">只读所选来源，不修改、不外传；默认关闭。</div>
+        </div>
+      </div>
       <div class="setpane on" data-pane="look">
         <div class="slotbox">
           <div class="slothead">界面主题</div>
@@ -3368,6 +3578,15 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
               <button class="pri" id="storageMigrate">搬过来</button>
               <button id="storageLeave">留在原地</button>
             </div>
+          </div>
+        </div>
+
+        <div class="setsec">
+          <div class="setsec-hd"><span class="setsec-tt">执行审计日志</span><i class="setsec-line"></i>
+            <button class="chip" id="auditRefresh" style="margin-left:auto">刷新</button>
+          </div>
+          <div class="setsec-bd">
+            <div class="audit-inline" id="auditInline"><div class="cmd-empty">点「刷新」查看最近的操作记录。</div></div>
           </div>
         </div>
       </div>
@@ -3909,7 +4128,12 @@ function render() {
 
 function syncBusy() {
   sendBtn.disabled = frontBusy;
-  window.orb.setBusy(frontBusy || runningJobs > 0);
+  const busy = !!(frontBusy || runningJobs > 0);
+  /* 边沿触发陪伴台词：进入忙碌念"执行中"，退出忙碌由 onTaskDone / onTaskFail 收尾，
+     这里只翻状态位，不念"完成"（避免和完成台词叠在一起）。 */
+  if (busy && !lastBusy) onBusyStart();
+  else if (!busy && lastBusy) onBusyEnd();
+  window.orb.setBusy(busy);
 }
 function setFrontBusy(v) { frontBusy = v; syncBusy(); }
 function setRunning(delta) { runningJobs = Math.max(0, runningJobs + delta); syncBusy(); }
@@ -5078,12 +5302,14 @@ async function runBack(text) {
     if (!r.ok) {
       updateMsg(node, '<span style="color:var(--danger)">派发失败：' + esc(r.error) + '</span>', 'err');
       setRunning(-1);
+      onTaskFail();
       return;
     }
     poll(r.jobId, node);
   } catch (e) {
     updateMsg(node, '<span style="color:var(--danger)">派发失败：' + esc(e.message) + '</span>', 'err');
     setRunning(-1);
+    onTaskFail();
   }
 }
 
@@ -5173,6 +5399,7 @@ function poll(id, node) {
     clearInterval(timer);
     setRunning(-1);
     if (j.status === 'error') {
+      onTaskFail();
       updateMsg(node, '<span style="color:var(--danger)">后台出错：' + esc(j.error) + '</span>', 'err');
       return;
     }
@@ -5189,6 +5416,7 @@ function poll(id, node) {
     if (!txt) txt = truncated ? '(结果过大已省略，未回传全文)' : '(无文本返回)';
     else if (truncated) txt += '\n\n（结果过大已省略，以上仅为开头部分）';
     updateMsg(node, esc('后台完成：\n\n' + txt));
+    onTaskDone();
   }, JOB_POLL_MS);
 }
 
@@ -5408,6 +5636,13 @@ async function send() {
 
   /* 任务文本 = 用户文本 + 附件块；路由判定仍只看用户文本 */
   const task = snap.length ? (text ? text + '\n\n' : '') + attachBlockText(snap) : text;
+
+  /* 「收到任务」是独立于 busy 的信号：busy 要等 Agent 真的开跑才来，
+     那时悬浮球已经在"思考"了，用它点头永远点不出来。 */
+  try { if (window.orb.taskSent) window.orb.taskSent(); } catch {}
+  /* 陪伴层：念"收到"台词（含被夸 / 接梗 / 真难过切温柔等专属分支）。 */
+  onTaskRecv(text);
+  touchActivity();
 
   let track = route;
   if (track === 'auto') track = autoRoute(text);
@@ -7019,7 +7254,9 @@ const VISION_SYS = `你是运行在 Windows 上的桌面操作智能体。你会
 3. zoom 之后你的坐标要相对放大后的画面来给；放大错了就用 reset 退回全屏。
 4. 找不到目标或无法完成时，用 done 说明原因，不要反复无效点击。
 5. 涉及删除、支付、发送等不可逆操作前，用 ask 请求确认。
-6. 只输出 JSON，不要 markdown 代码块以外的解释。`;
+6. 只输出 JSON，不要 markdown 代码块以外的解释。
+7. done 允许附带任务里点名要求的额外字段（如 resumeAt / finished / roundSeen / roundEvidence），
+   任务没要求就不要写。要求了就必须如实填，尤其是需要抄原文的字段 —— 抄不出来宁可不填。`;
 
 let visionCfg = {
   maxSteps: 12,
@@ -7212,24 +7449,40 @@ function addStep(head, step, title, detail, viewUrl) {
   }
 }
 
-async function runVision(task) {
+async function runVision(task, opts = {}) {
+  /* 接管模式（工作流界面变了、交给视觉层顶几小步）与聊天模式的区别：
+       ① 面板要收起 —— 否则全屏截图里最先看到的就是自己的界面，模型会被它带跑偏；
+       ② 步数由调用方给（每批几小步就停，回去重新判定是否已回到原轨道）；
+       ③ 要返回结构化结果，而不是只往聊天区写字。
+     聊天调用（runVision(task)）的行为完全不变。 */
+  const tk = !!opts.takeover;
+  const out = { ok: true, steps: 0, done: false, error: '' };
   if (!visionReady()) {
+    if (tk) return { ok: false, steps: 0, error: '没有配置可用的视觉模型' };
     addMsg('Orb', '还没有可用的视觉模型。点右上角「视觉」配置——主力建议用混元 TokenHub（新账号有 100 万 token 免费额度），备选填 Qwen 3.5。', 'err');
     openVisionSheet();
     return;
   }
   if (access !== 'full') {
+    if (tk) return { ok: false, steps: 0, error: '当前不是「完全访问」，视觉接管被拒绝' };
     addMsg('Orb', '视觉循环会真实操作鼠标键盘，需要切到「完全访问」。', 'err');
     return;
   }
 
   selftestStep = 0;
   primaryFails = 0;
-  const maxSteps = Math.max(1, Math.min(40, visionCfg.maxSteps || 12));
+  const maxSteps = Math.max(1, Math.min(40, Number(opts.maxSteps) || visionCfg.maxSteps || 12));
   visionAbort = false;
   setFrontBusy(true);
   holdPanel();   // 视觉循环全程锁住面板（多步截图+模型往返，中途折叠会让过程看不见）
   setObservingOn(true);
+  if (tk) {
+    /* 收起面板再截图。hide 之后渲染进程仍然活着（main.js 用的是 panel.hide()
+       而不是 destroy），所以循环、fetch、截图全都照跑，只是 setTimeout 会被
+       浏览器节流到 1s —— 每步慢一点，但不会停。 */
+    try { window.orb.closePanel(); } catch { /* 面板本来就关着 */ }
+    await new Promise((r) => setTimeout(r, 260));   // 等窗口真的消失，别把动画帧截进去
+  }
 
   const head = addMsg('Orb', '<span class="pending">视觉循环启动…</span>', 'orb');
   const stopBtn = document.createElement('button');
@@ -7259,11 +7512,12 @@ async function runVision(task) {
 
   try {
     for (let step = 1; step <= maxSteps; step++) {
-      if (visionAbort) { addStep(head, step, '已中断', '', null); break; }
+      out.steps = step - 1;
+      if (visionAbort) { out.ok = false; out.error = '已中断'; addStep(head, step, '已中断', '', null); break; }
 
       let shot;
       try { shot = await grabScreen(); }
-      catch (e) { addStep(head, step, '截图失败', e.message, null); break; }
+      catch (e) { out.ok = false; out.error = '截图失败：' + e.message; addStep(head, step, '截图失败', e.message, null); break; }
 
       const full = crop.x1 === 0 && crop.y1 === 0 && crop.x2 === 1000 && crop.y2 === 1000;
       const view = full ? await shrinkView(shot.dataUrl, 1280) : await cropView(shot.dataUrl, crop, 1280);
@@ -7288,6 +7542,7 @@ async function runVision(task) {
       let reply;
       try { reply = await askVlm(messages); }
       catch (e) {
+        out.ok = false; out.error = '视觉接口不通：' + e.message;
         addStep(head, step, '视觉接口出错（主力与备选都不通）', e.message, null);
         break;
       }
@@ -7305,10 +7560,24 @@ async function runVision(task) {
       let detail = thought ? thought + '\n' : '';
 
       if (type === 'done') {
+        out.done = true; out.steps = step;
+        /* 这三个是「接管模式」才会用到的字段，普通聊天里模型不会输出，忽略即可。
+           resumeAt      —— 推进到原流程清单的第几项（1 起）
+           finished      —— 最终目标是否已完整达成（不是「这一批做完」）
+           roundSeen/roundEvidence —— 屏幕上「已处理几条 / 第几页」那个数字，以及它的原文出处 */
+        const ra = Number(act.resumeAt);
+        if (Number.isFinite(ra) && ra > 0) out.resumeAt = ra;
+        if (act.finished === true) out.finished = true;
+        const rs = Number(act.roundSeen);
+        if (Number.isFinite(rs)) out.roundSeen = rs;
+        if (act.roundEvidence) out.roundEvidence = String(act.roundEvidence).slice(0, 200);
         addStep(head, step, '完成', (thought ? thought + '\n' : '') + (act.summary || ''), view.url);
         break;
       }
       if (type === 'ask') {
+        /* 模型主动要求人确认。接管场景下没人守着，这是失败而不是成功——
+           当成 ok 会让 bridge 继续下一批，下一批又 ask，白烧 token。 */
+        out.ok = false; out.error = '需要人工确认：' + String(act.question || '').slice(0, 160);
         addStep(head, step, '需要确认', (thought ? thought + '\n' : '') + (act.question || ''), view.url);
         addMsg('Orb', '模型请求确认：' + esc(act.question || ''), 'sys');
         break;
@@ -7392,13 +7661,22 @@ async function runVision(task) {
       await new Promise((r) => setTimeout(r, 350));   // 给界面一点时间刷新
     }
   } catch (e) {
+    out.ok = false; out.error = e.message;
     addStep(head, 0, '循环异常终止', e.message, null);
   } finally {
     stopBtn.remove();
     setFrontBusy(false);
     releasePanel();   // 循环结束，恢复「鼠标移开自动折叠」
     stopObservingSoon(OBSERVE_HOLD_LOOP_MS);
+    // 接管模式下是自己把面板收起来的，无论如何都要还回去（异常/中断也一样），
+    // 否则用户会以为程序卡死了 —— 面板没了、流程还在跑。
+    if (tk) { try { window.orb.openPanel(); } catch { /* 主进程不认就随它 */ } }
   }
+  /* 陪伴层收尾：视觉循环成功 → 完成台词；异常/被拒/中断 → 失败台词。
+     视觉循环不走 runningJobs，所以这里直接收尾，不会和 poll 那条重复。 */
+  if (out.ok) onTaskDone();
+  else if (out.error) onTaskFail();
+  return out;
 }
 
 /* ---------- 视觉设置面板 ---------- */
@@ -7736,6 +8014,9 @@ function loadTheme() {
    录制红点与执行中扫光保留 —— 那是状态指示，关掉会让人误以为没在录。 */
 function applyMotion(on) {
   document.documentElement.classList.toggle('no-motion', !on);
+  /* 悬浮球是独立窗口，读不到这里的 localStorage，必须经主进程中转 ——
+     否则「动效关」只关掉面板，球的待机呼吸还在跑。 */
+  try { window.orb.setMotion(on); } catch {}
   const b = document.getElementById('motionToggle');
   if (b) { b.textContent = '动效 ' + (on ? '开' : '关'); b.classList.toggle('on', !on); }
   const s = document.getElementById('motionState');
@@ -7746,6 +8027,802 @@ function loadMotion() {
   let on = true;
   try { on = localStorage.getItem(MOTION_KEY) !== '0'; } catch {}
   applyMotion(on);
+}
+
+/* ---------- 设置 › 个性：人格 / 声音 / 动图 / 记忆（Phase 1） ----------
+   这一层只管「用户选了什么」和「怎么把字念出来」。什么时候演哪张动图、
+   说哪句台词，是后面情境层的事 —— 两层分开，改台词不用碰 UI。 */
+const CHAR_KEY = 'orb.character';
+
+/* 六个人格。desc = 选择时的定位；tip = 选中后的一句自述。
+   tip 用人格自己的口吻写，比「该人格语气温和」这种说明书式描述更容易让人知道选了什么。 */
+const PERSONAS = [
+  { id: 'gentle', name: '温柔守护者', desc: '慢一点，稳一点，会提醒你休息',
+    tip: '「我在。累了就先停一下，不着急。」语气慢、少感叹号，深夜会主动把声音收掉。' },
+  { id: 'genki', name: '元气小太阳', desc: '有精神，爱打招呼，句子短',
+    tip: '「今天也一起冲鸭！(๑•̀ㅂ•́)و✧」空闲时最活跃，但汇报任务时不会吵。' },
+  { id: 'joker', name: '开心果', desc: '爱开玩笑，颜文字多',
+    tip: '「任务收到，本机表示压力不大（其实有点）。」玩笑只在你不想干活时开，正经事不糊弄。' },
+  { id: 'comrade', name: '上进小战友', desc: '把任务当共同目标，会报进度',
+    tip: '「第 3 步了，还差最后一下。」会数着步子给你打气，把你当队友不当用户。' },
+  { id: 'guide', name: '智慧小向导', desc: '讲清楚再动手，少卖萌',
+    tip: '「这个能拆成两步，先看第一步。」话少但有用，不确定的会直接说不知道。' },
+  { id: 'tsundere', name: '正能量傲娇', desc: '嘴上不认，事情照做',
+    tip: '「……又不是特意为你做的。」被夸会躲，失败会嘴硬着再来一次。' },
+];
+
+/* 七张动图。when = 给用户看的触发说明；free = 是否进空闲池
+   （用户指定空闲时在 greet / loading / shy / sleep 四张里随机）。 */
+const GIFS = [
+  { id: 'done',    file: 'logo_anim_done_v8.gif',      name: '完成',   when: '任务完成时播一遍' },
+  { id: 'greet',   file: 'logo_anim_greet_v8.gif',     name: '打招呼', when: '刚启动播一遍 / 空闲', free: true },
+  { id: 'loading', file: 'logo_anim_loading_v9.gif',   name: '加载',   when: '空闲', free: true },
+  { id: 'nod',     file: 'logo_anim_nod_v8.gif',       name: '点头',   when: '收到任务时播一遍' },
+  { id: 'shy',     file: 'logo_anim_shy_v8.gif',       name: '害羞',   when: '空闲 / 被夸', free: true },
+  { id: 'sleep',   file: 'logo_anim_sleep_v8.gif',     name: '睡觉',   when: '久未操作', free: true },
+  { id: 'think',   file: 'logo_anim_think_sym_v8.gif', name: '思考',   when: '执行任务中循环' },
+];
+
+/* 「哪张动图更贴这个人格」：空闲时偏爱的那张权重抬高（+3 对 +1）。
+   但不把别的掐掉 —— 人格是调性，不是牢笼，全掐掉会看腻。 */
+const PERSONA_GIF_AFFINITY = {
+  gentle:   ['sleep', 'shy'],
+  genki:    ['greet', 'greet'],
+  joker:    ['greet', 'shy'],
+  comrade:  ['loading', 'greet'],
+  guide:    ['sleep', 'loading'],
+  tsundere: ['shy', 'sleep'],
+};
+
+/* ====================================================================
+   人格台词库 + 专属行为（Phase 5）
+   - DIALECT：每个情境（start/recv/busy/done/fail/idle/away/grind/night/praised）
+     每个性格一句数组，抽一句念。
+   - KAOMOJI：每个性格一族颜文字（遵守「一、规范」：每句 0–1 个、放句尾、可读性优先）。
+   - PERSONA_TONE：每个性格的语速/音调倍率，乘在用户滑块之上（不覆盖它）。
+   - 专属行为（更多那条）：连击/连胜里程碑、连续失败安慰、被夸、接梗、真难过切温柔、
+     深夜收声、周五傍晚、久未理会、久坐提醒、长会话小结。
+   全部纯本地信号驱动，不读屏。触发优先级：任务相关 > 时间相关 > 状态相关，
+   与空闲动图冲突时，专属行为（念台词）优先。
+   ==================================================================== */
+const DIALECT = {
+  genki: {
+    start: ['早上好呀！新的一天，冲鸭！', '来啦来啦，准备好没？'],
+    recv: ['收到收到！交给我吧！', '任务到手，这就冲！'],
+    busy: ['正在努力中……马上就好！', '我这就去办，你等着！'],
+    done: ['搞定啦！快夸我快夸我！', '完成完成，本机超能！'],
+    fail: ['诶——没关系！再来一次一定行！', '翻车了？不怕，重来！'],
+    idle: ['嘿嘿，陪你摸会儿鱼～', '无聊了无聊了，找点事做嘛'],
+    away: ['你去哪儿啦？人家等你好久～', '回来啦回来啦，人家想你了'],
+    grind: ['专注好久啦，起来跳两下！', '坐太久啦，伸个懒腰！'],
+    night: ['再熬会变熊猫哦！', '很晚啦，但我还能陪你一会儿'],
+    praised: ['嘿嘿，尾巴要翘上天啦～', '被夸了！今天能量满格！'],
+  },
+  gentle: {
+    start: ['早上好…今天也慢慢来就好。', '醒啦…不急，我在。'],
+    recv: ['嗯，交给我…我会好好做的。', '好，我记下了，慢慢来。'],
+    busy: ['不急…我在这里，一步一步来。', '我去办了，你放心。'],
+    done: ['做好了…辛苦你啦。', '完成啦…你歇会儿。'],
+    fail: ['没关系的…我们一起看看哪里出了问题。', '没成功也没事，我陪你。'],
+    idle: ['我就安静陪着你…需要时叫我。', '发会儿呆也挺好，我在。'],
+    away: ['你回来啦…我一直都在的。', '去哪了呀…还好你回来了。'],
+    grind: ['坐很久了…起来喝口水吧。', '歇一下，不差这一会儿。'],
+    night: ['很晚了…早点休息，好吗？', '夜深了，别太累，我在。'],
+    praised: ['不用谢…你轻松一点，我就开心。', '被你夸，我有点不好意思。'],
+  },
+  joker: {
+    start: ['哟！又是元气满满（并没有）的一天！', '开机啦，今天也尽量不躺平。'],
+    recv: ['任务收到！我这就去…摸鱼三分钟再来。', '收到收到，本机表示压力不大（其实有点）。'],
+    busy: ['正在努力（假装）…你看我多认真！', '处理中…其实在偷喝可乐。'],
+    done: ['搞定！我是不是很厉害？…别夸太狠，我会飘。', '完成！这波操作你给几分？'],
+    fail: ['(╯°Д°)╯ ┻━┻ 翻车了！不过这个 bug 一定是在考验你。', '又挂了…没事，bug 也是老朋友。'],
+    idle: ['一起发会儿呆吧，反正也没人管我们。', '安静…（其实在偷看你的桌面）。'],
+    away: ['你再不来，我就要跟空气聊天了…', '人呢？本机要开启自言自语模式了。'],
+    grind: ['你快长在椅子上了…起来扭两下？', '久坐冠军就是你，起来动动呗。'],
+    night: ['熬夜冠军非你莫属！…不过还是睡吧。', '这么晚？你是要跟月亮比谁先睡。'],
+    praised: ['嘿嘿…被夸了，今天能多吃一碗饭！', '过奖过奖，本机只是恰好聪明。'],
+  },
+  comrade: {
+    start: ['来了！今天我们一起拿下它！', '战友到位，开整！'],
+    recv: ['收到，开干！我跟你一起。', '任务记下，咱们分工。'],
+    busy: ['冲！这一步我来，你盯全局。', '我在推进，你别急。'],
+    done: ['拿下！这一仗漂亮！', '完成！又过了一关。'],
+    fail: ['摔一跤而已，爬起来继续。', '没成？没事，复盘一下再上。'],
+    idle: ['休息也是训练的一部分，充会儿电。', '喘口气，待会儿更猛。'],
+    away: ['战友，你掉线啦？我等你归队。', '去哪了？队伍等你呢。'],
+    grind: ['进度不错！但别硬撑，休息一下再冲。', '连轴转啦，喝口水再战。'],
+    night: ['今天的仗打完了，早点收工。', '收工，明天再战。'],
+    praised: ['是咱们一起赢的，缺你不行。', '这功有你一半，别全算我。'],
+  },
+  guide: {
+    start: ['新的一天…今天想先解决哪件事？', '醒啦，咱们列个顺序？'],
+    recv: ['好，我先理一下思路…', '收到，我看看怎么拆。'],
+    busy: ['换个角度看看…这一步或许有更稳的走法。', '我在想更优的路径，稍等。'],
+    done: ['完成了。…你从里面学到什么了吗？', '好了，要点我标出来了。'],
+    fail: ['这次没成…我们复盘一下，问题在哪？', '走不通，我们换个法子。'],
+    idle: ['发呆也是思考的一部分，需要我陪你理理？', '想清楚了再动，不急。'],
+    away: ['你回来了…刚才那件事，想通了吗？', '去哪了？问题还在，我等你。'],
+    grind: ['停下来想想…效率未必靠熬。', '歇一下脑子，思路会更清。'],
+    night: ['夜深了…有些问题，睡一觉反而更清楚。', '不早了，先停，明天思路更顺。'],
+    praised: ['方法是你自己找到的，我只提了个问题。', '你本就懂，我只是点一下。'],
+  },
+  tsundere: {
+    start: ['哼，才不是特意等你的…只是刚好开机而已。', '哦，你来了。…才没等。'],
+    recv: ['知道了知道了…别催，我又不是不会做。', '任务啊…行吧行吧，交给我。'],
+    busy: ['别盯着看…你这样我反而做不好啦。', '忙着呢，别打扰我发挥。'],
+    done: ['…做完了。…才不是想让你夸我。', '好了…勉强算你及格。'],
+    fail: ['失误而已！…下次不会了，看着吧。', '才不是失误…是意外，下次补回来。'],
+    idle: ['…哼，闲着也是闲着，陪你一会儿。', '无聊…（才不是想陪你）。'],
+    away: ['才、才没有想你！…只是有点无聊而已。', '你回来啦…（才没有在等）。'],
+    grind: ['喂…你都坐多久了。起来动动。', '别瘫着了，起来活动下。'],
+    night: ['这么晚还不睡…笨蛋。…早点睡啦。', '还不睡？…笨蛋，去睡。'],
+    praised: ['这、这是当然的！…（小声）谢谢。', '哼，当然厉害…（耳朵红了）。'],
+  },
+};
+
+const KAOMOJI = {
+  genki: ['٩(^ᴗ^)۶', '(๑•̀ㅂ•́)و✧', 'ヽ(・∀・)ﾉ', '(ง •̀_•́)ง'],
+  gentle: ['(*^.^*)', '(◕ᴗ◕✿)', '(｡•ᴗ•｡)♡'],
+  joker: ['(￣▽￣)ノ', '(・ω・)', '_(:3」∠)_'],
+  comrade: ['ᕙ(⇀‸↼‵‵)ᕗ', '(๑•̀ㅂ•́)و✧', '٩(ˊᗜˋ*)و'],
+  guide: ['(´･ω･`)?', '(^_~)', '(｡･ω･｡)ﾉ'],
+  tsundere: ['(￢_￢)', '(//▽//)', '(=｀ω´=)'],
+};
+
+/* 每个性格的"声音性格"：倍率乘在用户滑块上，不覆盖它。 */
+const PERSONA_TONE = {
+  genki: { rate: 1.15, pitch: 1.18 },
+  gentle: { rate: 0.88, pitch: 1.06 },
+  joker: { rate: 1.06, pitch: 1.0 },
+  comrade: { rate: 1.04, pitch: 1.0 },
+  guide: { rate: 0.97, pitch: 1.02 },
+  tsundere: { rate: 1.0, pitch: 0.94 },
+};
+
+/* ---------- 专属行为状态（本地累计，不落盘） ---------- */
+let statDone = 0;        // 连续完成计数（用于连击 / 连胜里程碑）
+let statFail = 0;        // 连续失败计数（用于连续失败安慰）
+let statRounds = 0;      // 会话轮数（用于长会话小结）
+let lastBusy = false;    // syncBusy 的边沿检测
+let workHintAt = 0;      // 久坐提醒的节流时间戳
+let startSpoken = false; // 启动台词只念一次
+let idleSpeechTimer = null;
+const IDLE_SPEECH_MS = 120000;
+
+function isNight() { const h = new Date().getHours(); return h >= 23 || h < 5; }
+function weekday() { return new Date().getDay(); }   // 0=日 1=一 … 5=五 6=六
+
+/* 从用户文本里抽信号：只做关键词，不读屏、不调用模型。 */
+function classifyUserText(text) {
+  const t = String(text || '');
+  return {
+    praise: /(厉害|牛|棒|赞|乖|聪明|谢谢|辛苦了|爱死|好强|强\b|nb|NB|牛批|佩服|天才|妙|漂亮|给力|666|牛逼)/.test(t),
+    sad: /(累|烦|难过|崩溃|压力|焦虑|不想|委屈|哭了|呜呜|唉|难受|丧|想哭)/.test(t),
+    joke: /(哈哈|笑死|绷不住|233|草|艹|离谱|搞笑|笑不活|逗死|笑喷)/.test(t),
+    tired: /(困|睡|熬夜|好累|休息|摸鱼|发呆|歇)/.test(t),
+  };
+}
+
+function randItem(a) { return a && a.length ? a[Math.floor(Math.random() * a.length)] : ''; }
+
+function orbGesture(id) { try { if (window.orb && window.orb.gesture) window.orb.gesture(id); } catch {} }
+function personaTone() { return PERSONA_TONE[charCfg.persona] || { rate: 1, pitch: 1 }; }
+
+/* 精简念白要跳掉的情境。「收到」「执行中」是每个任务必念两次的流程噪音，
+   而面板本来就有状态条在报进度，这两句感知最弱；留着 done / fail 这类有结果、
+   有情绪的节点 —— 个性和信息量都还在，一轮的耗时直接砍掉三分之二。 */
+const LEAN_SKIP = new Set(['recv', 'busy']);
+
+/* 念一句：优先用情境台词库，附带颜文字（失败/深夜不挂，情绪优先于可爱）。
+   台词同时会以气泡形式露在聊天区（personaNote），所以**声音关着也能看到个性** ——
+   之前声音一关陪伴层就彻底隐身，这是被诟病「启用个性但没反应」的一大来源。 */
+function speakSituation(sit, opt) {
+  opt = opt || {};
+  if (charCfg.persona === 'off') return;
+  if (charCfg.tts.lean && LEAN_SKIP.has(sit)) return;
+  const lib = DIALECT[charCfg.persona];
+  if (!lib) return;
+  const arr = lib[sit];
+  if (!arr || !arr.length) return;
+  let line = randItem(arr);
+  if (!opt.noKao && sit !== 'fail' && sit !== 'night' && Math.random() < 0.5) {
+    const k = randItem(KAOMOJI[charCfg.persona]);
+    if (k) line += ' ' + k;
+  }
+  const tone = personaTone();
+  ttsSpeak(line, { rateMul: tone.rate, pitchMul: tone.pitch });
+  personaNote(line);
+  if (opt.gesture) orbGesture(opt.gesture);
+}
+
+/* 念一段自定义文案（里程碑 / 接梗 / 切温柔时用）。 */
+function speakText(text, opt) {
+  opt = opt || {};
+  if (charCfg.persona === 'off') return;
+  const tone = personaTone();
+  ttsSpeak(text, { rateMul: tone.rate, pitchMul: tone.pitch });
+  personaNote(text);
+  if (opt.gesture) orbGesture(opt.gesture);
+}
+
+/* 当前人格的显示名（气泡左上角那行小字）。 */
+function personaName() {
+  const p = PERSONAS.find((x) => x.id === charCfg.persona);
+  return (p && p.name) ? p.name : 'ORB';
+}
+
+/* 把念出来的台词在聊天区露一小条 —— 语音的「字幕」。
+   为什么不落盘（addMsg 的 silent=true）：它是陪伴层的即时反馈，不是会话内容。
+   落盘会污染历史，还会顶掉 cur.title（会话标题取第一条消息的前 18 字）。
+   代价是切会话时随 render() 重建自然消失，正合「转瞬即逝的陪伴」这个定位。 */
+function personaNote(text) {
+  const s = String(text == null ? '' : text).trim();
+  if (!s || charCfg.persona === 'off') return;
+  try {
+    addMsg(personaName(), esc(s), 'persona', true);
+    if (msgs && nearBottom()) msgs.scrollTop = msgs.scrollHeight;
+  } catch {}
+}
+
+/* ---------- 触发钩子（由 send / syncBusy / poll / 空闲计时器调用） ---------- */
+
+/* 用户发出一条任务：收齐信号再决定念哪句。 */
+function onTaskRecv(text) {
+  statRounds++;
+  const c = classifyUserText(text);
+  if (charCfg.persona === 'off') return;
+  /* 真难过时，开心果自动收起玩笑、切温柔口吻（"绝不真伤人"）。 */
+  if (c.sad && charCfg.persona === 'joker') {
+    speakText('（突然正经）…没事吧？我在，不急。', { gesture: 'shy' });
+    return;
+  }
+  /* 被夸：各人格都有 praised 台词，元气小太阳得意跳一下、傲娇躲一下。 */
+  if (c.praise) {
+    const g = charCfg.persona === 'genki' ? 'greet' : (charCfg.persona === 'tsundere' ? 'shy' : null);
+    speakSituation('praised', { gesture: g });
+    return;
+  }
+  /* 接梗：只开心果接，且只在这种时候开。 */
+  if (c.joke && charCfg.persona === 'joker') {
+    speakText('哈哈，这个我接住了——你笑点跟我一样怪。', { gesture: 'greet' });
+    return;
+  }
+  /* 长会话小结：向导在聊够 30 轮时提一句（只触发一次）。 */
+  if (charCfg.persona === 'guide' && statRounds === 30) {
+    speakText('咱们聊了挺久，要不要先小结一下再继续？');
+    return;
+  }
+  speakSituation('recv');
+}
+
+function onBusyStart() {
+  lastBusy = true;
+  if (charCfg.persona === 'off') return;
+  speakSituation('busy');
+}
+function onBusyEnd() { lastBusy = false; }
+
+function onTaskDone() {
+  if (charCfg.persona === 'off') { statDone++; return; }
+  statDone++; statFail = 0;
+  /* 久坐提醒：完成一件事时顺手检查"是否连续工作太久"。 */
+  maybeGrind();
+  /* 里程碑优先于普通完成台词：三连击 / 每十次连胜打卡。 */
+  if (statDone === 3) {
+    speakText('三连击！你今天超猛！' + (charCfg.persona === 'genki' ? ' ٩(ˊᗜˋ*)و' : ''), { gesture: 'greet' });
+    return;
+  }
+  if (statDone > 0 && statDone % 10 === 0) {
+    if (charCfg.persona === 'comrade') { speakText('十连胜，打卡！今天这场仗，咱们赢麻了。', { gesture: 'done' }); return; }
+    speakText('第 ' + statDone + ' 次搞定，状态在线！', { gesture: 'done' });
+    return;
+  }
+  speakSituation('done');
+}
+
+function onTaskFail() {
+  if (charCfg.persona === 'off') { statFail++; return; }
+  statFail++; statDone = 0;
+  /* 连续失败（≥2）：每个性格一句专属安慰，优先于普通失败台词。 */
+  if (statFail >= 2) {
+    const map = {
+      gentle: '没关系的…我一直在。',
+      tsundere: '…别灰心，我再试一次。',
+      comrade: '摔了几跤而已，爬起来继续。',
+      guide: '连续不顺…我们换个法子看看。',
+      genki: '连着翻车？没事，瑞个士气再来！',
+      joker: '又挂了…不过这个 bug 一定是在考验你。',
+    };
+    speakText(map[charCfg.persona] || '没成，没关系。', { gesture: charCfg.persona === 'tsundere' ? 'shy' : 'loading' });
+    return;
+  }
+  speakSituation('fail');
+}
+
+/* 空闲 / 久未理会：时间相关（深夜、周五傍晚）优先，其次久未理会，最后纯空闲。 */
+function onIdleOrAway() {
+  if (charCfg.persona === 'off') return;
+  if (isNight()) {
+    if (charCfg.persona === 'gentle') { orbGesture('sleep'); return; }  // 温柔深夜只演不念
+    speakSituation('night');
+    return;
+  }
+  if (charCfg.persona === 'joker' && weekday() === 5 && new Date().getHours() >= 17) {
+    speakText('周五晚上啦，周末快乐！…先别加班。', { gesture: 'greet' });
+    return;
+  }
+  if (charCfg.persona === 'tsundere') { speakSituation('away', { gesture: 'shy' }); return; }
+  if (charCfg.persona === 'gentle' || charCfg.persona === 'comrade') { speakSituation('away'); return; }
+  speakSituation('idle');
+}
+
+/* 久坐/连续工作提醒：25 分钟内最多一次，避免唠叨。 */
+function maybeGrind() {
+  if (charCfg.persona === 'off') return;
+  const now = Date.now();
+  if (now - workHintAt < 25 * 60000) return;
+  workHintAt = now;
+  speakSituation('grind');
+}
+
+function armIdleSpeech() {
+  if (idleSpeechTimer) clearTimeout(idleSpeechTimer);
+  idleSpeechTimer = setTimeout(() => {
+    idleSpeechTimer = null;
+    onIdleOrAway();
+    armIdleSpeech();
+  }, IDLE_SPEECH_MS);
+}
+/* 检测到"有人在用"：重置空闲计时（与悬浮球的 armIdle 平行，互不干扰）。 */
+function touchActivity() { armIdleSpeech(); }
+
+/* 启动台词：只在应用启动念一次；纯工具不念，深夜走 night，周一早上元气有专属。
+   注意这里**不再**要求 tts.enabled —— 声音关着也要出气泡，
+   否则陪伴层在关声状态下又隐身了（和 speakSituation / speakText 保持一致）。 */
+function speakStart() {
+  if (startSpoken) return;
+  startSpoken = true;
+  if (charCfg.persona === 'off') return;
+  if (charCfg.persona === 'genki' && weekday() === 1) {
+    speakText('新的一周，冲！٩(^ᴗ^)۶');
+    return;
+  }
+  if (isNight()) { speakSituation('night'); return; }
+  speakSituation('start');
+}
+
+/* 状态放在一坨里、整份落盘：四个 key 各自一套版本、改一半崩一半的坑踩过。 */
+let charCfg = {
+  persona: 'gentle',       // 六个人格之一，或 'off'（纯工具）
+  personaLast: 'gentle',   // 关了再开时回到哪一个
+  memory: { enabled: false, source: '' },
+  gif: { enabled: true, off: [] },
+  /* lean = 精简念白：跳过「收到」「执行中」这两个每个任务必念的流程节点，
+     只在完成 / 失败 / 被夸 / 里程碑这类有结果、有情绪的时候出声。默认开。 */
+  tts: { enabled: false, voice: '', rate: 1, pitch: 1, volume: 1, lean: true },
+};
+
+function charNum(v, lo, hi, def) {
+  const n = Number(v);
+  if (!isFinite(n)) return def;
+  return Math.min(hi, Math.max(lo, n));
+}
+
+function charSave() {
+  try { localStorage.setItem(CHAR_KEY, JSON.stringify(charCfg)); } catch {}
+  /* 悬浮球是独立窗口，读不到这里的 localStorage —— 偏好要经主进程中转。
+     通道还没接（Phase 2）时不报错，球先按默认演。 */
+  try { if (window.orb && window.orb.setCharacter) window.orb.setCharacter(charCfg); } catch {}
+}
+
+function charLoad() {
+  let raw = null;
+  try { raw = localStorage.getItem(CHAR_KEY); } catch {}
+  if (raw) {
+    try {
+      const o = JSON.parse(raw) || {};
+      if (typeof o.persona === 'string') charCfg.persona = o.persona;
+      if (typeof o.personaLast === 'string') charCfg.personaLast = o.personaLast;
+      const m = o.memory || {};
+      charCfg.memory.enabled = !!m.enabled;
+      charCfg.memory.source = String(m.source || '');
+      const g = o.gif || {};
+      charCfg.gif.enabled = g.enabled !== false;
+      charCfg.gif.off = Array.isArray(g.off) ? g.off.filter((x) => typeof x === 'string') : [];
+      const t = o.tts || {};
+      charCfg.tts.enabled = !!t.enabled;
+      charCfg.tts.voice = String(t.voice || '');
+      charCfg.tts.rate = charNum(t.rate, 0.6, 1.6, 1);
+      charCfg.tts.pitch = charNum(t.pitch, 0.6, 1.6, 1);
+      charCfg.tts.volume = charNum(t.volume, 0, 1, 1);
+      charCfg.tts.lean = t.lean !== false;   // 精简念白默认开（老配置没有这个字段也算开）
+    } catch { /* 存坏了就当没存过，用默认 —— 不能因为一份 JSON 让整个设置页打不开 */ }
+  }
+  /* 只认 PERSONAS 里有的 id + 'off'：老配置里残留的怪值一律退回默认 */
+  const ok = charCfg.persona === 'off' || PERSONAS.some((p) => p.id === charCfg.persona);
+  if (!ok) charCfg.persona = 'gentle';
+  if (!PERSONAS.some((p) => p.id === charCfg.personaLast)) charCfg.personaLast = 'gentle';
+}
+
+/* ---------- TTS（Web Speech API） ----------
+   两条硬规矩：
+   1) 关了声音就**直接丢**，不排队 —— 否则用户刚关掉，几秒后又冒出一句。
+   2) 同一时刻只说一句：新的一句进来先 cancel。Web Speech 的队列行为各平台不一致，
+      自己管比信它稳。 */
+const TTS_SAMPLE = {
+  gentle: '我在，慢一点也没关系。',
+  genki: '来啦来啦，今天也一起冲！',
+  joker: '试音中，本机正在努力发音，表情认真。',
+  comrade: '试音，试音，听得见吗？听得见就一起开工。',
+  guide: '这是一条试听，语速和音调都可以在这里调。',
+  tsundere: '……只是试一下音，别多想。',
+};
+
+function ttsList() {
+  try {
+    if (!window.speechSynthesis) return [];
+    return speechSynthesis.getVoices() || [];
+  } catch { return []; }
+}
+
+/** 选哪副嗓子：存过的优先 → 中文优先 → 系统默认 → 第一个 */
+function ttsPickVoice() {
+  const vs = ttsList();
+  if (!vs.length) return null;
+  if (charCfg.tts.voice) {
+    const hit = vs.find((v) => v.voiceURI === charCfg.tts.voice)
+      || vs.find((v) => v.name === charCfg.tts.voice);
+    if (hit) return hit;
+  }
+  return vs.find((v) => /^zh/i.test(v.lang || ''))
+    || vs.find((v) => v.default)
+    || vs[0];
+}
+
+/** 念一句。opt.rateMul / opt.pitchMul 是人格的调性倍率 —— 乘在用户设的基准上，
+ *  不覆盖它，否则用户调了半天滑块、一换人格全白调。 */
+function ttsSpeak(text, opt) {
+  const s = String(text == null ? '' : text).trim();
+  if (!s) return false;
+  if (!charCfg.tts.enabled) return false;
+  if (!window.speechSynthesis) return false;
+  const o = opt || {};
+  /* 纯工具模式不出声 —— 这是「关闭个性」承诺的一部分。
+     只有试听能强制出声（否则用户在纯工具下根本没法验证音色选对没）。 */
+  if (charCfg.persona === 'off' && !o.force) return false;
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(s);
+    const v = ttsPickVoice();
+    if (v) { u.voice = v; if (v.lang) u.lang = v.lang; }
+    u.rate = charNum(charCfg.tts.rate * charNum(o.rateMul, 0.4, 2.5, 1), 0.1, 10, 1);
+    u.pitch = charNum(charCfg.tts.pitch * charNum(o.pitchMul, 0.4, 2.5, 1), 0, 2, 1);
+    u.volume = charNum(charCfg.tts.volume, 0, 1, 1);
+    speechSynthesis.speak(u);
+    return true;
+  } catch { return false; }
+}
+
+function ttsStop() {
+  try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch {}
+}
+
+function ttsMsg(text) {
+  const el = document.getElementById('ttsMsg');
+  if (el) el.textContent = String(text || '');
+}
+
+/** 填音色下拉。中文排前面 —— 台词全是中文，让人翻二十条英文嗓子没意义。 */
+function ttsFillVoices() {
+  const sel = document.getElementById('ttsVoice');
+  if (!sel) return;
+  const vs = ttsList();
+  sel.textContent = '';
+  if (!vs.length) {
+    const o = document.createElement('option');
+    o.value = '';
+    o.textContent = '（系统里没有可用语音）';
+    sel.appendChild(o);
+    sel.disabled = true;
+    ttsMsg('这台机器上没找到语音引擎。Windows 可在「设置 › 时间和语言 › 语音」里装一个中文语音，装完重开面板即可。');
+    return;
+  }
+  sel.disabled = false;
+  const zh = vs.filter((v) => /^zh/i.test(v.lang || ''));
+  const rest = vs.filter((v) => !/^zh/i.test(v.lang || ''));
+  const addGroup = (label, arr) => {
+    if (!arr.length) return;
+    const g = document.createElement('optgroup');
+    g.label = label;
+    for (const v of arr) {
+      const o = document.createElement('option');
+      o.value = v.voiceURI || v.name;
+      o.textContent = (v.name || '语音') + (v.lang ? '  ·  ' + v.lang : '');
+      g.appendChild(o);
+    }
+    sel.appendChild(g);
+  };
+  addGroup('中文', zh);
+  addGroup('其它', rest);
+  const pick = ttsPickVoice();
+  if (pick) sel.value = pick.voiceURI || pick.name;
+  ttsMsg(zh.length
+    ? '共 ' + vs.length + ' 副嗓子，其中中文 ' + zh.length + ' 副。'
+    : '系统里有 ' + vs.length + ' 副嗓子，但都不是中文 —— 念中文会怪，建议装一个中文语音。');
+}
+
+function renderTtsUI() {
+  const t = charCfg.tts;
+  const b = document.getElementById('ttsToggle');
+  if (b) {
+    b.textContent = '声音 ' + (t.enabled ? '开' : '关');
+    b.classList.toggle('sel', t.enabled);
+    b.title = t.enabled ? '关闭语音播报（立刻静音，不排队）' : '开启语音播报';
+  }
+  const r = document.getElementById('ttsRate');
+  if (r) r.value = String(t.rate);
+  const rv = document.getElementById('ttsRateV');
+  if (rv) rv.textContent = t.rate.toFixed(2) + '×';
+  const p = document.getElementById('ttsPitch');
+  if (p) p.value = String(t.pitch);
+  const pv = document.getElementById('ttsPitchV');
+  if (pv) pv.textContent = t.pitch.toFixed(2) + '×';
+  const lb = document.getElementById('ttsLean');
+  if (lb) {
+    const on = t.lean !== false;
+    lb.textContent = '精简念白 ' + (on ? '开' : '关');
+    lb.classList.toggle('sel', on);
+    lb.title = on
+      ? '当前只在完成 / 失败 / 被夸 / 里程碑时念。点击改回完整念白（每个任务念「收到」「执行中」「完成」三句，更啰嗦也更慢）'
+      : '当前每个任务都念「收到」「执行中」「完成」三句（更慢）。点击开启精简，只在有结果有情绪时念';
+  }
+}
+
+/* ---------- 人格卡片 ---------- */
+function renderPersonaGrid() {
+  const box = document.getElementById('personaGrid');
+  if (!box) return;
+  box.textContent = '';
+  for (const p of PERSONAS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'persona-card' + (charCfg.persona === p.id ? ' on' : '');
+    b.dataset.persona = p.id;
+    b.title = p.tip;
+    const n = document.createElement('span');
+    n.className = 'pc-name';
+    n.textContent = p.name;
+    const d = document.createElement('span');
+    d.className = 'pc-desc';
+    d.textContent = p.desc;
+    b.appendChild(n);
+    b.appendChild(d);
+    b.addEventListener('click', () => selectPersona(p.id));
+    box.appendChild(b);
+  }
+  renderPersonaMsg();
+}
+
+function selectPersona(id) {
+  if (!PERSONAS.some((p) => p.id === id)) return;
+  charCfg.persona = id;
+  charCfg.personaLast = id;
+  renderPersonaGrid();
+  renderPersonaOffChip();
+  charSave();
+}
+
+function renderPersonaMsg() {
+  const el = document.getElementById('personaMsg');
+  if (!el) return;
+  if (charCfg.persona === 'off') {
+    el.textContent = '个性已关闭：只报事实、不放动图、不发声 —— 回到纯工具。';
+    return;
+  }
+  const p = PERSONAS.find((x) => x.id === charCfg.persona);
+  el.textContent = p ? p.tip : '';
+}
+
+function renderPersonaOffChip() {
+  const b = document.getElementById('personaOff');
+  if (!b) return;
+  const off = charCfg.persona === 'off';
+  b.textContent = off ? '恢复个性' : '关闭个性（纯工具）';
+  b.classList.toggle('sel', off);
+  b.title = off ? '点一下回到上一个人格' : '关闭个性，回到纯工具';
+}
+
+function togglePersonaOff() {
+  if (charCfg.persona === 'off') {
+    charCfg.persona = charCfg.personaLast || 'gentle';
+  } else {
+    charCfg.personaLast = charCfg.persona;
+    charCfg.persona = 'off';
+  }
+  renderPersonaGrid();
+  renderPersonaOffChip();
+  charSave();
+}
+
+/* ---------- 动图预览 ---------- */
+function gifById(id) { return GIFS.find((g) => g.id === id) || null; }
+function gifOn(id) { return !charCfg.gif.off.includes(id); }
+
+function renderGifMsg() {
+  const el = document.getElementById('gifMsg');
+  if (!el) return;
+  if (!charCfg.gif.enabled) {
+    el.textContent = '动图已关闭：图标保持静态原图。';
+    return;
+  }
+  /* 动效总开关关着时，球那边一条都不会演（onIdle 里有这道闸）。
+     不在这里说清楚，用户会以为是这个页签坏了。 */
+  if (document.documentElement.classList.contains('no-motion')) {
+    el.textContent = '「外观 › 动效」当前是关闭的，动图不会播放。';
+    return;
+  }
+  const freeOn = GIFS.filter((g) => g.free && gifOn(g.id)).map((g) => g.name);
+  el.textContent = freeOn.length
+    ? '空闲时在「' + freeOn.join(' / ') + '」里随机，偏爱当前人格的那张。点单张可单独关掉。'
+    : '空闲池已空：只有启动 / 收到任务 / 执行 / 完成这几个节点会演。';
+}
+
+function renderGifGrid() {
+  const box = document.getElementById('gifGrid');
+  if (!box) return;
+  box.textContent = '';
+  for (const g of GIFS) {
+    const it = document.createElement('button');
+    it.type = 'button';
+    it.className = 'gif-item' + (gifOn(g.id) ? '' : ' off');
+    it.dataset.gif = g.id;
+    it.title = g.name + '：' + g.when + '（点一下单独开关）';
+    const im = document.createElement('img');
+    /* 这里**故意不写 src**：七张 GIF 一共 1.8MB，还都是动画，每次启动都解码一遍
+       太亏。而且这个页签启动时是 display:none，loading="lazy" 在隐藏子树里
+       根本不会触发加载（实测 naturalWidth 一直是 0，切过去也不补）。
+       所以路径先放 data-src，等用户真的切到「个性」再取（见 gifGridLoad）。 */
+    im.dataset.src = 'anim/' + g.file;
+    im.alt = g.name;
+    im.draggable = false;
+    const sp = document.createElement('span');
+    sp.textContent = g.name;
+    it.appendChild(im);
+    it.appendChild(sp);
+    it.addEventListener('click', () => {
+      const i = charCfg.gif.off.indexOf(g.id);
+      if (i >= 0) charCfg.gif.off.splice(i, 1); else charCfg.gif.off.push(g.id);
+      it.classList.toggle('off', !gifOn(g.id));
+      charSave();
+      renderGifMsg();
+    });
+    box.appendChild(it);
+  }
+  const t = document.getElementById('gifToggle');
+  if (t) {
+    t.textContent = '动图 ' + (charCfg.gif.enabled ? '开' : '关');
+    t.classList.toggle('sel', charCfg.gif.enabled);
+    t.title = charCfg.gif.enabled ? '关闭图标动图' : '开启图标动图';
+  }
+  renderGifMsg();
+}
+
+/** 真正取图。切到「个性」页时调一次，已经取过的不会再取。 */
+function gifGridLoad() {
+  document.querySelectorAll('#gifGrid img').forEach((im) => {
+    if (im.getAttribute('src')) return;
+    const src = im.dataset.src;
+    if (src) im.src = src;
+  });
+}
+
+/* ---------- 记忆读取（Phase 1 只落盘，真读文件在 Phase 5 接） ---------- */
+function renderMemUI() {
+  const b = document.getElementById('memToggle');
+  const on = charCfg.memory.enabled && !!charCfg.memory.source;
+  if (b) {
+    b.textContent = '记忆 ' + (on ? '开' : '关');
+    b.classList.toggle('sel', on);
+    b.title = on ? '关闭记忆读取' : '开启记忆读取';
+  }
+  const sel = document.getElementById('memSource');
+  if (sel && sel.value !== charCfg.memory.source) sel.value = charCfg.memory.source;
+  const m = document.getElementById('memMsg');
+  if (m) {
+    m.textContent = on
+      ? '只读所选来源，不修改、不外传；内容只用于让语气更贴你，不进任务上下文。'
+      : '默认关闭。开启后只读所选来源，不修改、不外传。';
+  }
+}
+
+function bindPersona() {
+  charLoad();
+  renderPersonaGrid();
+  renderPersonaOffChip();
+  renderGifGrid();
+  renderTtsUI();
+  renderMemUI();
+  ttsFillVoices();
+  /* 语音列表在 Chromium 里是异步填的：第一次 getVoices() 常常是空数组。
+     不监听这个事件，用户会看到「系统里没有可用语音」然后一直卡在那儿。 */
+  if (window.speechSynthesis) {
+    try { speechSynthesis.addEventListener('voiceschanged', ttsFillVoices); } catch {}
+    try { speechSynthesis.onvoiceschanged = ttsFillVoices; } catch {}
+  }
+
+  const off = document.getElementById('personaOff');
+  if (off) off.addEventListener('click', togglePersonaOff);
+
+  const tt = document.getElementById('ttsToggle');
+  if (tt) tt.addEventListener('click', () => {
+    charCfg.tts.enabled = !charCfg.tts.enabled;
+    if (!charCfg.tts.enabled) ttsStop();   // 关掉立刻哑，不等当前这句念完
+    renderTtsUI();
+    charSave();
+    if (charCfg.tts.enabled) ttsSpeak('声音已开启');
+  });
+
+  const leanBtn = document.getElementById('ttsLean');
+  if (leanBtn) leanBtn.addEventListener('click', () => {
+    charCfg.tts.lean = !(charCfg.tts.lean !== false);
+    renderTtsUI();
+    charSave();
+  });
+
+  const vs = document.getElementById('ttsVoice');
+  if (vs) vs.addEventListener('change', () => {
+    charCfg.tts.voice = vs.value || '';
+    charSave();
+  });
+
+  const rr = document.getElementById('ttsRate');
+  if (rr) rr.addEventListener('input', () => {
+    charCfg.tts.rate = charNum(rr.value, 0.6, 1.6, 1);
+    renderTtsUI();
+    charSave();
+  });
+  const pp = document.getElementById('ttsPitch');
+  if (pp) pp.addEventListener('input', () => {
+    charCfg.tts.pitch = charNum(pp.value, 0.6, 1.6, 1);
+    renderTtsUI();
+    charSave();
+  });
+
+  const tryBtn = document.getElementById('ttsTry');
+  if (tryBtn) tryBtn.addEventListener('click', () => {
+    if (!charCfg.tts.enabled) { ttsMsg('声音总开关是关的，先打开「声音」再试听。'); return; }
+    const line = TTS_SAMPLE[charCfg.persona] || '你好，这是一条试听。';
+    ttsSpeak(line, { force: true });
+  });
+
+  const gt = document.getElementById('gifToggle');
+  if (gt) gt.addEventListener('click', () => {
+    charCfg.gif.enabled = !charCfg.gif.enabled;
+    renderGifGrid();
+    charSave();
+  });
+
+  const mt = document.getElementById('memToggle');
+  if (mt) mt.addEventListener('click', () => {
+    if (!charCfg.memory.enabled) {
+      /* 开记忆必须有一个来源，否则开了也是空转 —— 没选就替用户选默认那份 */
+      if (!charCfg.memory.source) charCfg.memory.source = 'project';
+      charCfg.memory.enabled = true;
+    } else {
+      charCfg.memory.enabled = false;
+    }
+    renderMemUI();
+    charSave();
+  });
+
+  const ms = document.getElementById('memSource');
+  if (ms) ms.addEventListener('change', () => {
+    charCfg.memory.source = ms.value || '';
+    if (!charCfg.memory.source) charCfg.memory.enabled = false;
+    else charCfg.memory.enabled = true;
+    renderMemUI();
+    charSave();
+  });
 }
 
 /* ---------- 设置 › 存储 ---------- */
@@ -7932,9 +9009,11 @@ function bindThemeUI() {
         document.querySelectorAll('.setpane').forEach((p) => {
           p.classList.toggle('on', p.dataset.pane === b.dataset.pane);
         });
-        if (b.dataset.pane === 'storage') loadStorageSettings();
+        if (b.dataset.pane === 'storage') { loadStorageSettings(); renderAuditInline(); }
         // 切到「截屏与录屏」时刷新工作流列表：刚录完那条要能在这页直接看到
         else if (b.dataset.pane === 'rec') renderWfSetList();
+        // 切到「个性」时刷一遍音色：用户可能刚在系统里装了语音，不必重开面板
+        else if (b.dataset.pane === 'persona') { ttsFillVoices(); gifGridLoad(); renderGifMsg(); }
       });
     });
   }
@@ -9219,6 +10298,7 @@ function bindVisionSheet() {
   bindSlot('primary');
   bindSlot('backup');
   bindThemeUI();
+  bindPersona();
   bindStorageUI();
   bindRecSettings();
   bindRecScreenSettings();
@@ -9547,13 +10627,8 @@ function cmdSources() {
      会话与历史由顶栏 #hist 承担 —— 三者混在一个搜索框时，搜一个字会同时
      跳出工具、工作流、会话三类结果，命中越多反而越难一眼挑到想要的。 */
   for (const t of TOOLS) out.push({ key: '功能', name: t.label, hint: t.id, run: () => runTool(t.id) });
-  // 触发器：让工作流按时间 / 文件 / 热键自己跑
-  out.push({ key: '触发', name: '触发器列表', hint: '管理已配置的触发器', run: openTriggers });
-  out.push({ key: '触发', name: '新建定时触发器', hint: '每隔 N 分钟跑一次', run: () => addTrigger('interval') });
-  out.push({ key: '触发', name: '新建文件触发器', hint: '文件变化时跑', run: () => addTrigger('file') });
-  out.push({ key: '触发', name: '新建热键触发器', hint: '按下热键就跑', run: () => addTrigger('hotkey') });
-  // 审计：谁在何时做了什么
-  out.push({ key: '审计', name: '执行审计日志', hint: '查看最近的操作记录', run: openAudit });
+  // 触发器：全局概览（创建 / 启用停用 / 删除已迁到「设置 › 工作流」里每条工作流的编辑器）
+  out.push({ key: '触发', name: '触发器列表', hint: '查看 / 管理已配置的触发器', run: openTriggers });
   return out;
 }
 
@@ -9677,12 +10752,75 @@ function setRecUi(on) {
   // 三角，看不出已经变成停止键了。现在改成红底方块，一眼可辨。
 }
 
+/** 录制里检测到重复片段：给一条建议，**不擅自改结构**。
+ *
+ *  用户录 3 段不一定是想循环 —— 也可能就是三份内容不同的表。
+ *  系统直接折了，用户下次打开会看到一个自己没建过的循环，还看不懂为什么。
+ *  所以做成一句话 + 一个按钮，点一下才改。 */
+function offerFold(head, name, hint) {
+  const body = head && head.querySelector('.body');
+  if (!body || !hint || Number(hint.count) < 2) return;
+
+  const n = Number(hint.count);
+  const len = Number(hint.unitLen) || 1;
+  const line = document.createElement('div');
+  line.style.cssText = 'margin-top:8px;line-height:1.6;color:var(--fg-soft)';
+  line.textContent = '这段录制里有 ' + n + ' 段几乎完全相同的操作（每段 ' + len + ' 步），'
+    + '看起来是在重复做同一件事。要不要折叠成「重复 ' + n + ' 次」的循环？'
+    + '折叠后总步数从 ' + (len * n) + ' 步变成 ' + len + ' 步，以后改一处就够了。';
+
+  const btn = document.createElement('button');
+  btn.className = 'mbtn pri';
+  btn.style.marginTop = '6px';
+  btn.textContent = '折叠成循环';
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = '折叠中…';
+    const ok = await foldWorkflowRepeat(name, hint);
+    btn.remove();
+    line.textContent = ok
+      ? '已折叠成「重复 ' + n + ' 次」的循环。'
+      : '折叠失败，工作流没有改动。';
+  });
+
+  body.append(line, btn);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+/** 把录制产物里那段重复折叠成 loop。位置对不上就一律不动 —— 宁可让用户手动改。 */
+async function foldWorkflowRepeat(name, hint) {
+  const r = await wfCall('get', { name });
+  if (!r.ok || !r.workflow) return false;
+  const wf = r.workflow;
+  const steps = Array.isArray(wf.steps) ? wf.steps : [];
+  const start = Math.max(0, Number(hint.start) || 0);
+  const len = Math.max(1, Number(hint.unitLen) || 1);
+  const n = Math.max(2, Number(hint.count) || 2);
+  const end = start + len * n;
+  // 录制之后用户可能已经手动改过步骤，位置对不上就别动
+  if (end > steps.length) return false;
+
+  wf.steps = [
+    ...steps.slice(0, start),
+    { type: 'loop', times: n, body: steps.slice(start, start + len) },
+    ...steps.slice(end),
+  ];
+  const s = await wfCall('save', { workflow: wf });
+  if (!s.ok) return false;
+  await renderWfSetList();
+  return true;
+}
+
 async function toggleRecord() {
   if (wfRecording) {
     const r = await wfCall('rec-stop');
     setRecUi(false);
-    if (r.ok) addMsg('Orb', '已保存工作流「' + esc(r.name) + '」，共 ' + esc(r.steps) + ' 步。到「设置 › 工作流」里可以回放，也能改步骤。', 'sys');
-    else addMsg('Orb', '保存失败：' + esc(r.error || '未知原因'), 'err');
+    if (r.ok) {
+      const head = addMsg('Orb', '已保存工作流「' + esc(r.name) + '」，共 ' + esc(r.steps) + ' 步。到「设置 › 工作流」里可以回放，也能改步骤。', 'sys');
+      if (r.repeatHint) offerFold(head, r.name, r.repeatHint);
+    } else {
+      addMsg('Orb', '保存失败：' + esc(r.error || '未知原因'), 'err');
+    }
     // 用 renderWfSetList 而不是 refreshWf：它内部会刷新，并顺带把设置页
     // 「工作流」列表重绘成最新，刚存下那条在那儿立刻可见。
     await renderWfSetList();
@@ -9735,8 +10873,13 @@ async function playWorkflow(name) {
   addMsg('Orb', '开始回放「' + esc(name) + '」…', 'sys');
   const r = await wfCall('play', { name });
   const res = r.result || {};
-  if (res.ok) addMsg('Orb', '回放完成，共 ' + esc(res.total) + ' 步。', 'sys');
-  else addMsg('Orb', '回放中断在第 ' + ((res.stoppedAt ?? -1) + 1) + ' 步（' + esc((res.results || []).slice(-1)[0]?.error) + '）', 'err');
+  if (res.ok) {
+    addMsg('Orb', res.finished
+      ? '回放结束：接管时的智能体判定最终目标已达成，提前收工（流程共 ' + esc(res.total) + ' 步）。'
+      : '回放完成，共 ' + esc(res.total) + ' 步。', 'sys');
+  } else {
+    addMsg('Orb', '回放中断在第 ' + ((res.stoppedAt ?? -1) + 1) + ' 步（' + esc((res.results || []).slice(-1)[0]?.error) + '）', 'err');
+  }
 }
 
 
@@ -9757,6 +10900,29 @@ async function renderWfSetList() {
     if (msg) msg.textContent = '';
     return;
   }
+  // 图标操作键：回放 / 编辑 / 删除；悬停的语义动效由 CSS 接管（受「外观 › 动效」开关控制）
+  const mkIconOp = (inner, title, cls, fn) => {
+    const b = document.createElement('button');
+    b.className = 'wf-op ' + cls;
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + inner + '</svg>';
+    b.addEventListener('click', (ev) => { ev.stopPropagation(); fn(); });
+    return b;
+  };
+  const delWf = async (name) => {
+    const r = await askText('删除工作流「' + name + '」？输入「删除」两字确认（留空取消）', '');
+    if (r !== '删除') {
+      const m = document.getElementById('wfSetMsg');
+      if (m) m.textContent = (r === null) ? '已取消删除' : '未输入「删除」，未删除';
+      return;
+    }
+    const d = await wfCall('delete', { name });
+    const m = document.getElementById('wfSetMsg');
+    if (!d.ok) { if (m) m.textContent = '删除失败：' + (d.error || ''); return; }
+    await renderWfSetList();
+  };
+
   for (const w of list) {
     const row = document.createElement('div');
     row.className = 'wf-row';
@@ -9771,19 +10937,11 @@ async function renderWfSetList() {
     st.className = 'wf-st';
     st.textContent = w.steps + ' 步';
 
-    const mkOp = (label, title, fn) => {
-      const b = document.createElement('button');
-      b.className = 'chip';
-      b.textContent = label;
-      b.title = title;
-      b.addEventListener('click', (ev) => { ev.stopPropagation(); fn(); });
-      return b;
-    };
-
     row.append(
       nm, st,
-      mkOp('回放', '立即回放「' + w.name + '」', () => playWorkflow(w.name)),
-      mkOp('编辑', '打开步骤编辑器改「' + w.name + '」', () => openWorkflowEditor(w.name)),
+      mkIconOp('<path d="M8 5.2 18.4 12 8 18.8Z" fill="currentColor" stroke="none"/>', '回放「' + w.name + '」', 'play', () => playWorkflow(w.name)),
+      mkIconOp('<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>', '编辑「' + w.name + '」', 'edit', () => openWorkflowEditor(w.name)),
+      mkIconOp('<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>', '删除「' + w.name + '」', 'del', () => delWf(w.name)),
     );
     box.appendChild(row);
   }
@@ -9846,7 +11004,7 @@ async function openTriggers() {
   if (!list.length) {
     const d = document.createElement('div');
     d.className = 'cmd-empty';
-    d.textContent = '还没有触发器。Ctrl+K 搜「新建定时/文件/热键触发器」添加。';
+    d.textContent = '还没有触发器。打开任意工作流的「编辑」面板，在底部「触发器」区即可添加。';
     box.appendChild(d);
   }
   for (const t of list) {
@@ -9877,33 +11035,33 @@ async function openTriggers() {
   document.getElementById('wfMask').classList.add('on');
 }
 
-async function addTrigger(kind) {
-  const wfs = await refreshWf();
-  if (!wfs.length) { addMsg('Orb', '还没有工作流——先点顶部「录操作」录一条。', 'err'); return; }
-
-  const wfName = await askText('触发哪条工作流？可选：' + wfs.map((w) => w.name).join('、'), wfs[0].name);
-  if (wfName === null) return;
-
+/* 给某条工作流加触发器。silent=true 时不在聊天里刷消息（编辑器内联场景用，
+   改完由调用方重渲染区块即可）。 */
+async function addTriggerForWf(kind, wfName, opts) {
+  opts = opts || {};
+  if (!wfName) return;
+  const say = (ok, msg) => { if (!opts.silent) addMsg('Orb', msg, ok ? 'sys' : 'err'); };
   if (kind === 'interval') {
-    const m = await askText('每隔多少分钟执行一次？（最小 5）', '10');
+    const m = await askText('每隔多少分钟执行一次？（最小 1）', '10');
     if (m === null) return;
-    const r = await trgCall('add', { trigger: { type: 'interval', minutes: Number(m) || 10, workflow: wfName.trim() } });
-    addMsg('Orb', r.ok ? '已添加定时触发器。' : ('添加失败：' + esc(r.error)), r.ok ? 'sys' : 'err');
+    const r = await trgCall('add', { trigger: { type: 'interval', minutes: Number(m) || 10, workflow: wfName } });
+    say(r.ok, r.ok ? '已添加定时触发器。' : ('添加失败：' + esc(r.error)));
   } else if (kind === 'file') {
     const p = await askText('监听哪个路径（文件或文件夹）？', 'D:\\');
     if (p === null) return;
-    const r = await trgCall('add', { trigger: { type: 'file', path: p.trim(), workflow: wfName.trim() } });
-    addMsg('Orb', r.ok ? '已添加文件触发器。' : ('添加失败：' + esc(r.error)), r.ok ? 'sys' : 'err');
+    const r = await trgCall('add', { trigger: { type: 'file', path: p.trim(), workflow: wfName } });
+    say(r.ok, r.ok ? '已添加文件触发器。' : ('添加失败：' + esc(r.error)));
   } else if (kind === 'hotkey') {
     const k = await askText('热键写法（Electron 格式），如 Control+Alt+1', 'Control+Alt+1');
     if (k === null) return;
-    const r = await trgCall('add', { trigger: { type: 'hotkey', accelerator: k.trim(), workflow: wfName.trim() } });
+    const r = await trgCall('add', { trigger: { type: 'hotkey', accelerator: k.trim(), workflow: wfName } });
     if (window.orb && window.orb.triggerReload) window.orb.triggerReload();
-    addMsg('Orb', r.ok ? '已添加热键触发器（若与其它软件冲突，注册会失败并记日志）。' : ('添加失败：' + esc(r.error)), r.ok ? 'sys' : 'err');
+    say(r.ok, r.ok ? '已添加热键触发器（若与其它软件冲突，注册会失败并记日志）。' : ('添加失败：' + esc(r.error)));
   }
   await refreshTrg();
 }
 
+/* Ctrl+K 全局入口：先问要绑哪条工作流，再交给 addTriggerForWf 创建。 */
 /* ---------------- 任务编排示例 ----------------
  * 编排是"能判断、能循环、能带变量"的工作流。
  * 手写 JSON 有门槛，所以先给一个能跑的示例，照着改最快上手。 */
@@ -10194,6 +11352,68 @@ function applyLive(L) {
   bar.style.display = 'block';
 }
 
+/* ---------- 智能接管（工作流半路失守时顶几小步） ----------
+ * bridge 在回放中途发现「配了锚点却找不到」，会把请求挂在 LIVE.pendingAgent 上。
+ * 这里轮询看到它，就调视觉智能体顶一小批动作，然后回报。
+ *
+ * 注意分工：**判定权在 bridge**。它手上才有剩余步骤和它们的锚点，
+ * 由它自己截图 OCR 去判断「回没回到原轨道」。面板只负责干活和报账，
+ * 不猜自己到了第几步 —— 猜错了就是跳步，比点错位置难查得多。 */
+let agentRunning = false;
+
+function buildTakeoverTask(p) {
+  const L = [];
+  L.push('你正在接管一条录制好的桌面自动化流程。它跑到一半找不到预期目标了（界面可能改版，或弹了没预料到的窗口）。');
+  if (p.goal) L.push('【最终目标】' + p.goal);
+  L.push('【卡在第】' + p.stepNo + ' / ' + p.totalNo + ' 步。');
+
+  /* 嵌套结构里必须点明「这是第几轮」。
+     不点明的话模型会把这一轮当成唯一的一轮，做完就报 finished，
+     父层循环被整段跳过 —— 少做的那几轮不会有任何提示。 */
+  if (p.scope) {
+    const t = Number(p.scope.total) || 0;
+    L.push('【你在哪一层】当前在一个循环内部，这是第 ' + p.scope.round + ' 轮'
+      + (t > 0 ? '（这个循环共 ' + t + ' 轮；剩下的轮次程序会自己继续，不用你管）' : '')
+      + '。只处理这一轮范围内的事，不要碰循环外面的东西。');
+  }
+
+  if (p.remain) L.push('【原本接下来打算做】\n' + p.remain);
+  L.push('【这一轮要做的事】想办法把流程往前推进，最多 ' + (Number(p.batch) || 3) + ' 步。');
+  L.push('不要想着一口气做完剩下的全部步骤：做完这一批就立刻输出 done，我会重新检查你有没有回到原流程。');
+
+  L.push('输出 done 时带上这几个字段：');
+  L.push('· resumeAt：你已经推进到上面那份清单的第几项（从 1 数）。一步没推进写 0。');
+  L.push('· roundSeen / roundEvidence：如果屏幕上显示了「已处理几条 / 第几页 共几页 / 3 of 10」这类进度数字，'
+    + '把那个数字填进 roundSeen，并把你看到的那句原文**一字不差**抄进 roundEvidence。'
+    + '没有这类显示就写 roundSeen: -1。抄不出原文就别填 —— 我会核对，编一个数字没有意义。');
+  L.push('· finished: true：只有最终目标**已经完整达成**时才写。'
+    + '只是这一批做完了千万别写，写了整条流程会直接收工，剩下的步骤全部跳过。');
+
+  L.push('如果原流程里那个目标确实已经不存在了，但你能换一种方式达成最终目标，也用 done 说明你做了什么。');
+  return L.join('\n');
+}
+
+async function maybeTakeover(L) {
+  const p = L && L.pendingAgent;
+  if (!p || agentRunning) return;   // 没有请求 / 上一轮还没回来（别叠第二份）
+  agentRunning = true;
+  const t0 = Date.now();
+  let out = { ok: false, steps: 0, done: false, error: '未执行' };
+  try {
+    out = await runVision(buildTakeoverTask(p), {
+      takeover: true,
+      maxSteps: Math.max(1, Math.min(12, Number(p.batch) || 3)),
+    });
+  } catch (e) {
+    out = { ok: false, steps: 0, done: false, error: String((e && e.message) || e) };
+  } finally {
+    agentRunning = false;
+  }
+  try {
+    await post('/api/agent-done', Object.assign({}, out, { ms: Date.now() - t0 }));
+  } catch { /* bridge 已超时走人，这份回报丢掉就行 */ }
+}
+
 /* ---------------- 审计日志查看器 ---------------- */
 /* ---------------- 工作流编辑器 ----------------
  * 之前只能「列表 + 回放」：看不了步骤、改不了编排节点，只能去手改 JSON 文件。
@@ -10243,7 +11463,7 @@ function stepKind(s) { return (s && s.type) ? s.type : 'action'; }
 function stepSummary(s) {
   const k = stepKind(s);
   if (k === 'set') return (s.name || '?') + ' = ' + JSON.stringify(s.value);
-  if (k === 'loop') return s.while ? ('条件循环 ' + JSON.stringify(s.while)) : ('重复 ' + (s.times ?? 1) + ' 次');
+  if (k === 'loop') return loopTail(s);
   if (k === 'if') return '当 ' + JSON.stringify(s.when || {}) + ' 时';
   const a = s.args || {};
   let t = '';
@@ -10251,12 +11471,27 @@ function stepSummary(s) {
   const body = (t && t !== '{}') ? (' ' + (t.length > 90 ? t.slice(0, 90) + '…' : t)) : '';
   return (s.tool || '?') + body;
 }
+/* 循环节点的摘要：把「配了轮次标记没有」写出来。
+   不写的话用户根本不知道这个能力存在 —— 它藏在 mark 字段里。 */
+function loopTail(s) {
+  if (s.while) return '条件循环 ' + JSON.stringify(s.while);
+  const mk = (s.mark && (s.mark.anchor || s.mark.tool))
+    ? (' · 标记「' + (s.mark.anchor || s.mark.tool) + '」')
+    : '';
+  return '重复 ' + (s.times ?? 1) + ' 次' + mk;
+}
 /* 只取参数部分，不带工具名 —— 角色树里工具名已经用图标表达了，
    再写一遍就是重复占位。编辑和 JSON 视图里仍用完整的 stepSummary。 */
 function stepArgsText(s) {
   const k = stepKind(s);
   if (k === 'set') return (s.name || '?') + ' = ' + JSON.stringify(s.value);
-  if (k === 'loop') return s.while ? ('条件 ' + JSON.stringify(s.while)) : ('重复 ' + (s.times ?? 1) + ' 次');
+  if (k === 'loop') {
+    if (s.while) return '条件 ' + JSON.stringify(s.while);
+    const mk = (s.mark && (s.mark.anchor || s.mark.tool))
+      ? (' · 标记「' + (s.mark.anchor || s.mark.tool) + '」')
+      : '';
+    return '重复 ' + (s.times ?? 1) + ' 次' + mk;
+  }
   if (k === 'if') return '当 ' + JSON.stringify(s.when || {}) + ' 时';
   const a = s.args || {};
   let t = '';
@@ -10300,6 +11535,7 @@ const PARAM_SPEC = {
       { key: '_pt', label: '位置', kind: 'coord', x: 'x', y: 'y', required: true },
       { key: 'durationMs', label: '按住时长', kind: 'num', unit: 'ms', min: 1, max: 60000, def: 800 },
       { key: 'button', label: '按键', kind: 'sel', options: ['left', 'right', 'middle'], def: 'left' },
+      { key: 'anchor', label: '锚定文字（抗迁移）', kind: 'str', placeholder: '如：确定 / OK' },
     ],
   },
   'orb|mouse_press': {
@@ -10307,6 +11543,7 @@ const PARAM_SPEC = {
     fields: [
       { key: '_pt', label: '位置', kind: 'coord', x: 'x', y: 'y', required: true },
       { key: 'button', label: '按键', kind: 'sel', options: ['left', 'right', 'middle'], def: 'left' },
+      { key: 'anchor', label: '锚定文字（抗迁移）', kind: 'str', placeholder: '如：确定 / OK' },
     ],
   },
   'orb|mouse_release': {
@@ -10324,7 +11561,10 @@ const PARAM_SPEC = {
   },
   'orb|move_to': {
     hint: '移动鼠标：只移动指针，不点击。',
-    fields: [{ key: '_pt', label: '目标', kind: 'coord', x: 'x', y: 'y', required: true }],
+    fields: [
+      { key: '_pt', label: '目标', kind: 'coord', x: 'x', y: 'y', required: true },
+      { key: 'anchor', label: '锚定文字（抗迁移）', kind: 'str', placeholder: '如：确定 / OK' },
+    ],
   },
   'orb|cursor_position': {
     hint: '读取当前鼠标坐标，<b>不产生任何操作</b>。',
@@ -10336,6 +11576,7 @@ const PARAM_SPEC = {
       { key: '_pt', label: '位置', kind: 'coord', x: 'x', y: 'y', required: true },
       { key: 'direction', label: '方向', kind: 'sel', options: ['up', 'down', 'left', 'right'], def: 'down' },
       { key: 'clicks', label: '格数', kind: 'num', min: 1, max: 100, def: 3 },
+      { key: 'anchor', label: '锚定文字（抗迁移）', kind: 'str', placeholder: '如：确定 / OK' },
     ],
   },
   'orb|ocr': { hint: '截屏 OCR 取词（需要控制台在线）。', fields: [] },
@@ -10346,16 +11587,20 @@ const PARAM_SPEC = {
 
   /* ---- windows-mcp 侧 ---- */
   'windows|Click': {
-    hint: '点击。<b>clicks=2 是双击，button=right 是右键。</b>',
+    hint: '点击。<b>clicks=2 是双击，button=right 是右键。</b><br>填「锚定文字」后，回放时不按坐标、而是截图 OCR 找这段文字点它中心（按钮挪位/改名也能点中）。',
     fields: [
       { key: 'loc', label: '坐标', kind: 'loc', required: true },
       { key: 'clicks', label: '点击次数', kind: 'num', min: 1, max: 3, def: 1 },
       { key: 'button', label: '按键', kind: 'sel', options: ['left', 'right', 'middle'], def: 'left' },
+      { key: 'anchor', label: '锚定文字（抗迁移）', kind: 'str', placeholder: '如：确定 / OK' },
     ],
   },
   'windows|Move': {
     hint: '移动鼠标指针。',
-    fields: [{ key: 'loc', label: '目标', kind: 'loc', required: true }],
+    fields: [
+      { key: 'loc', label: '目标', kind: 'loc', required: true },
+      { key: 'anchor', label: '锚定文字（抗迁移）', kind: 'str', placeholder: '如：确定 / OK' },
+    ],
   },
   'windows|Scroll': {
     hint: '滚动滚轮。',
@@ -10536,6 +11781,74 @@ function renderSteps(container, arr) {
   arr.forEach((s, i) => container.appendChild(stepCard(s, arr, i)));
 }
 
+/** 循环节点的「轮次标记」配置行。
+ *
+ *  标记动作 = 每一轮都会做一次的那个动作（点提交、点保存）。
+ *  界面失守时，靠数它**成功执行**了几次来推定「已经完成了几轮」——
+ *  数据源是审计表（callTool 每调一次工具自动写一条），所以零埋点、零运行时成本。
+ *
+ *  为什么是「可选」：不配的情况下还能靠视觉模型读屏自证（看「已处理 3 条」那种数字），
+ *  配了则多一道客观校验，两者不一致时会以自证为准并留日志。 */
+function mkLoopMarkRow(s) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'padding:8px 10px;border-top:1px solid var(--border);background:var(--bg-sunken)';
+
+  const tip = document.createElement('div');
+  tip.style.cssText = 'font-size:calc(11px * var(--fs-scale));color:var(--fg-muted);line-height:1.5;margin-bottom:6px';
+  tip.textContent = '轮次标记（可选）：选一个每轮都会做一次的动作，'
+    + '界面失守时靠它数出已完成几轮。「次数」那栏空着就按循环体里该动作的个数自动算 —— '
+    + '只有某几轮会多点一次（走了分支）时才需要手填。留空整行则只能靠视觉模型读屏判断。';
+
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;align-items:center';
+
+  const tool = document.createElement('select');
+  tool.className = 'wfe-goal-in';
+  tool.style.cssText = 'flex:0 0 82px;padding:4px 7px';
+  [['Click', '点击'], ['Type', '输入'], ['Shortcut', '按键']].forEach(([v, t]) => {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = t;
+    tool.appendChild(o);
+  });
+  tool.value = (s.mark && s.mark.tool) || 'Click';
+
+  const anchor = document.createElement('input');
+  anchor.className = 'wfe-goal-in';
+  anchor.style.cssText = 'flex:1;min-width:0;padding:4px 7px';
+  anchor.placeholder = '标记动作的文字，如：提交';
+  anchor.value = (s.mark && s.mark.anchor) || '';
+
+  const per = document.createElement('input');
+  per.className = 'wfe-goal-in';
+  per.style.cssText = 'flex:0 0 60px;padding:4px 7px';
+  per.type = 'number';
+  per.min = '1';
+  per.placeholder = '自动';
+  per.title = '这个动作每轮做几次。空着就按循环体里该动作的个数自动算';
+  /* 空值 = 自动（由 bridge 数循环体），不能默认填 1 ——
+     填了 1 就等于「用户指定每轮一次」，把自动算的路堵死了。 */
+  per.value = (s.mark && s.mark.perRound > 0) ? s.mark.perRound : '';
+
+  /* 不填文字就等于没配 —— 别留一个 anchor 为空的半截对象，
+     那样 bridge 会按「只认工具名」去数，把无关的点击全算进来。 */
+  const sync = () => {
+    const a = anchor.value.trim();
+    if (!a) { delete s.mark; return; }
+    const next = { tool: tool.value, anchor: a };
+    const pv = Number(per.value);
+    if (pv > 0) next.perRound = Math.floor(pv);   // 只有手填了才写，否则交给静态数
+    s.mark = next;
+  };
+  tool.onchange = sync;
+  anchor.oninput = sync;
+  per.oninput = sync;
+
+  row.append(tool, anchor, per);
+  wrap.append(tip, row);
+  return wrap;
+}
+
 function stepCard(s, arr, idx) {
   const k = stepKind(s);
   const meta = STEP_KIND[k] || STEP_KIND.action;
@@ -10594,6 +11907,11 @@ function stepCard(s, arr, idx) {
 
   main.append(ico, nm, ops);
   box.appendChild(main);
+
+  /* 循环节点：给「轮次标记」一个配置入口。
+     不配也能用（靠视觉模型读屏自证），配了精度更高 ——
+     但这个能力藏在 mark 字段里，没有入口就等于不存在。 */
+  if (k === 'loop' && !s.while) box.appendChild(mkLoopMarkRow(s));
 
   // 编排节点：下钻编辑子步骤
   const kidsKeys = k === 'loop' ? ['body'] : (k === 'if' ? ['then', 'else'] : []);
@@ -10812,6 +12130,7 @@ function toggleStepEditor(box) {
     /* str / 兜底 json —— 都用一个文本框 */
     const inp = document.createElement('input');
     inp.className = 'pfield-in';
+    if (f.placeholder) inp.placeholder = f.placeholder;
     inp.value = f.kind === 'json'
       ? JSON.stringify(args[f.key] ?? f.def ?? null)
       : String(args[f.key] ?? f.def ?? '');
@@ -10844,6 +12163,20 @@ function toggleStepEditor(box) {
       none.textContent = '这一步没有参数。';
       formWrap.appendChild(none);
     }
+  }
+
+  /* ---- 抗迁移：若这一步录到了窗口锚点，显示出来（只读，帮用户理解） ---- */
+  if (step.win && step.win.title) {
+    const winInfo = document.createElement('div');
+    winInfo.className = 'pedit-hint';
+    winInfo.style.marginTop = '6px';
+    winInfo.style.borderTop = '1px dashed var(--border-strong)';
+    winInfo.style.paddingTop = '6px';
+    const off = Array.isArray(step.win.off) ? step.win.off.map((n) => Math.round(n)).join(', ') : '?';
+    winInfo.innerHTML = '窗口锚定（抗迁移已生效）：<b>' + esc(step.win.title || '(无标题窗口)') +
+      '</b>　相对左上角偏移 ' + off +
+      '。窗口移动 / 缩放后，回放会按它现在的位置重新算坐标。';
+    formWrap.appendChild(winInfo);
   }
 
   /* ---- 步间隔：独立一行，带滑轨 ---- */
@@ -11009,7 +12342,143 @@ function renderWfEditor() {
   add.style.marginTop = '10px';
   body.append(list, add);
 
-  box.append(head, body);
+  /* 目标 + 遇到意外怎么办。
+     两个字段直接挂在 wfe 上落盘 —— /api/wf 的 save 是 Object.assign 全量写，
+     未知字段原样保留，所以后端一行都不用改。 */
+  const goalSec = document.createElement('div');
+  goalSec.className = 'wfe-goal';
+  const mkGoalRow = (label, ctrl) => {
+    const row = document.createElement('div');
+    row.className = 'wfe-goal-row';
+    const lb = document.createElement('span');
+    lb.className = 'wfe-goal-lb';
+    lb.textContent = label;
+    row.append(lb, ctrl);
+    return row;
+  };
+
+  const gi = document.createElement('input');
+  gi.className = 'wfe-goal-in';
+  gi.type = 'text';
+  gi.placeholder = '例：打开本月报表，导出成 xlsx 存到桌面';
+  gi.value = wfe.goal || '';
+  // 实时写回：改名/改间隔都会重渲染编辑器，不实时同步的话用户刚打的字会消失
+  gi.addEventListener('input', () => { wfe.goal = gi.value; });
+
+  const sel = document.createElement('select');
+  sel.className = 'wfe-goal-in';
+  [['off', '照录制坐标继续'], ['stop', '停下来并报错'],
+   ['once', '先问一次视觉模型'], ['agent', '交给智能体顶几步再回原流程']]
+    .forEach(([v, t]) => {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = t;
+      sel.appendChild(o);
+    });
+  sel.value = ['off', 'stop', 'once', 'agent'].includes(wfe.escalate) ? wfe.escalate : 'off';
+  sel.addEventListener('change', () => { wfe.escalate = sel.value; });
+
+  const goalTip = document.createElement('div');
+  goalTip.className = 'wfe-goal-tip';
+  goalTip.textContent = '第一项不调用任何模型，但界面一改版就会点错地方；第二项宁可不做也不乱点；'
+    + '后两项只在「配了锚定文字、且那句话确实找不到」的步骤上触发，其余步骤永远纯回放，零成本。';
+
+  goalSec.append(mkGoalRow('目标', gi), mkGoalRow('遇到意外', sel), goalTip);
+
+  box.append(head, goalSec, body);
+
+  // 触发器：和工作流绑定，直接在这里管理，不必再去命令面板
+  const trgSec = document.createElement('div');
+  trgSec.className = 'wfe-trg';
+  box.append(trgSec);
+  renderTriggersForWf(wfe.name, trgSec);
+}
+
+/* 编辑器内联的触发器区块：列出绑本工作流的触发器，可启用 / 停用 / 删除，
+   并直接「+ 定时 / + 文件 / + 热键」新建。触发器存在 bridge，与 wfe 各自独立。 */
+async function renderTriggersForWf(wfName, container) {
+  container.innerHTML = '';
+
+  const sec = document.createElement('div');
+  sec.className = 'wfe-trg-hd';
+  const tt = document.createElement('span');
+  tt.className = 'wfe-trg-tt';
+  tt.textContent = '触发器（让这条工作流自己跑）';
+  const addRow = document.createElement('div');
+  addRow.className = 'wfe-trg-add';
+  const mkAdd = (label, kind) => {
+    const b = document.createElement('button');
+    b.className = 'wfe-trg-addbtn';
+    b.textContent = label;
+    b.onclick = async () => {
+      await addTriggerForWf(kind, wfName, { silent: true });
+      renderTriggersForWf(wfName, container);
+    };
+    return b;
+  };
+  addRow.append(mkAdd('+ 定时', 'interval'), mkAdd('+ 文件', 'file'), mkAdd('+ 热键', 'hotkey'));
+  sec.append(tt, addRow);
+  container.append(sec);
+
+  const list = await refreshTrg();
+  const mine = list.filter((t) => t.workflow === wfName);
+  const ul = document.createElement('div');
+  ul.className = 'wfe-trg-list';
+  if (!mine.length) {
+    const empty = document.createElement('div');
+    empty.className = 'cmd-empty';
+    empty.textContent = '还没有触发器。点上面的「+ 定时 / + 文件 / + 热键」添加。';
+    ul.append(empty);
+  }
+  for (const t of mine) {
+    const row = document.createElement('div');
+    row.className = 'wfe-trg-item' + (t.enabled === false ? ' off' : '');
+    const ico = document.createElement('span');
+    ico.className = 'wfe-trg-ico ' + t.type;
+    ico.innerHTML = TRG_ICON(t.type);
+    const desc = document.createElement('span');
+    desc.className = 'wfe-trg-desc';
+    desc.textContent = trgDesc(t);
+    const ops = document.createElement('span');
+    ops.className = 'wfe-trg-ops';
+    const tog = document.createElement('button');
+    tog.className = 'wfe-trg-op';
+    tog.title = t.enabled === false ? '启用' : '停用';
+    tog.innerHTML = t.enabled === false ? TRG_ICON('play') : TRG_ICON('pause');
+    tog.onclick = async (ev) => {
+      ev.stopPropagation();
+      await trgCall('toggle', { id: t.id });
+      if (window.orb && window.orb.triggerReload) window.orb.triggerReload();
+      renderTriggersForWf(wfName, container);
+    };
+    const del = document.createElement('button');
+    del.className = 'wfe-trg-op del';
+    del.title = '删除';
+    del.innerHTML = TRG_ICON('trash');
+    del.onclick = async (ev) => {
+      ev.stopPropagation();
+      await trgCall('remove', { id: t.id });
+      if (window.orb && window.orb.triggerReload) window.orb.triggerReload();
+      renderTriggersForWf(wfName, container);
+    };
+    ops.append(tog, del);
+    row.append(ico, desc, ops);
+    ul.append(row);
+  }
+  container.append(ul);
+}
+
+/* 触发器类型图标：24×24 / currentColor，与步骤操作键同一套图标语言。 */
+function TRG_ICON(kind) {
+  const m = {
+    interval: '<circle cx="12" cy="12" r="8.6"/><path d="M12 7v5l3.4 2"/>',
+    file: '<path d="M6 2.6h7l5 5V21.4H6Z"/><path d="M13 2.6v5h5"/>',
+    hotkey: '<rect x="3.4" y="6" width="17.2" height="12" rx="2.2"/><path d="M7 10h2M11 10h2M15 10h2M7 14h6"/>',
+    play: '<path d="M8 5.2 18.4 12 8 18.8Z" fill="currentColor" stroke="none"/>',
+    pause: '<rect x="6.5" y="5.5" width="3.6" height="13"/><rect x="13.9" y="5.5" width="3.6" height="13"/>',
+    trash: '<path d="M5.4 7.4h13.2M9.4 7.4V5.2h5.2v2.2M7 7.4l.9 11.4h8.2L17 7.4"/>',
+  };
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (m[kind] || m.interval) + '</svg>';
 }
 
 async function saveWfe() {
@@ -11040,25 +12509,19 @@ document.getElementById('wfEditMask').addEventListener('click', (e) => {
   if (e.target.id === 'wfEditMask') e.target.classList.remove('on');
 });
 
-async function openAudit() {
-  const box = document.getElementById('wfBox');
-  box.innerHTML = '';
-  const hd = document.createElement('div');
-  hd.className = 'hist-hd';
-  hd.textContent = '执行审计（最近 60 条，倒序）';
-  box.appendChild(hd);
-
+/* 执行审计日志：内联渲染到「设置 › 存储」面板里的 #auditInline 容器。
+   切到存储页或点「刷新」时调用；不再走独立弹窗。 */
+async function renderAuditInline() {
+  const el = document.getElementById('auditInline');
+  if (!el) return;
+  const rb = document.getElementById('auditRefresh');
+  if (rb) rb.onclick = renderAuditInline;   // 幂等绑定，首次渲染即接好刷新键
+  el.innerHTML = '<div class="cmd-empty">读取中…</div>';
   let r = {};
   try { r = await api('/api/audit?limit=60'); } catch {}
   const list = (r && r.entries) || [];
-
-  if (!list.length) {
-    const d = document.createElement('div');
-    d.className = 'cmd-empty';
-    d.textContent = '暂无审计记录。执行工具后这里会出现。';
-    box.appendChild(d);
-  }
-
+  if (!list.length) { el.innerHTML = '<div class="cmd-empty">暂无审计记录。执行工具后这里会出现。</div>'; return; }
+  el.innerHTML = '';
   for (const e of list) {
     const d = document.createElement('div');
     d.className = 'cmd-item';
@@ -11071,9 +12534,8 @@ async function openAudit() {
     hz.textContent = (e.ms != null) ? (e.ms + 'ms') : (e.error ? String(e.error).slice(0, 22) : '');
     d.append(hh, nn, hz);
     try { d.title = JSON.stringify(e).slice(0, 300); } catch {}
-    box.appendChild(d);
+    el.appendChild(d);
   }
-  document.getElementById('wfMask').classList.add('on');
 }
 
 /* ---------------- 统一轮询（性能优化） ----------------
@@ -11114,6 +12576,8 @@ async function pollStatus() {
       applyPending(r.pending);
       const busy = (r.live && r.live.active) || (r.pending && r.pending.length);
       next = busy ? POLL_FAST_MS : POLL_IDLE_MS;
+      // 回放卡住等视觉层接手：立刻处理，不等下一轮
+      if (r.live && r.live.pendingAgent) maybeTakeover(r.live);
     }
   } catch {}
   finally {
@@ -11389,6 +12853,18 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
   /* 首屏提示不在这里发 —— 这里发的会落到"启动中转用的占位会话"上，
      等磁盘历史读完后 startFreshConversation() 会换掉它，提示就白发了。
      提示统一由 startFreshConversation() 发（silent 模式，不落盘）。 */
+
+  /* 陪伴层启动：载入偏好（startSpoken 前必须有 persona）、开空闲念白计时、念启动台词。
+     声音默认关，所以通常不发声——用户打开「声音」后，下一次启动才会问候。 */
+  charLoad();
+  armIdleSpeech();
+  speakStart();
+  /* 全局"有人在用"信号：键盘 / 鼠标 / 打字都重置空闲念白计时。 */
+  try {
+    if (typeof input !== 'undefined' && input) input.addEventListener('input', touchActivity);
+    document.addEventListener('keydown', touchActivity);
+    document.addEventListener('mousedown', touchActivity);
+  } catch {}
 })();
 </script>
 <script src="voice.js"></script>

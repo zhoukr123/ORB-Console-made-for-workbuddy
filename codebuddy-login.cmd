@@ -33,7 +33,9 @@ echo   2) 或设置环境变量 ORB_WB_CLI 指向 codebuddy.exe
 echo   3) 或在 orb/local.conf 里写 {"wbCli":"…完整路径…"}
 echo.
 
-codebuddy login
+REM 优先用环境变量 ORB_WB_CLI 指向的 exe（本机 CLI 多在 D:\orb-tools\… 且不在 PATH）；
+REM 没设就退回裸 call codebuddy（依赖 PATH）。local.conf 的 wbCli 由 ORB 按钮生成脚本时直接烤进路径。
+if defined ORB_WB_CLI ("%ORB_WB_CLI%" login) else (codebuddy login)
 
 echo.
 echo CLI 已退出（退出码 %ERRORLEVEL%）。
