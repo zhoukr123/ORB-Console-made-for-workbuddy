@@ -8676,7 +8676,7 @@ function renderGifGrid() {
     it.type = 'button';
     it.className = 'gif-item' + (gifOn(g.id) ? '' : ' off');
     it.dataset.gif = g.id;
-    it.title = g.name + '：' + g.when + '（点一下单独开关）';
+    it.title = g.name + '：' + g.when + '（单击单独开关，双击让球当场播一遍）';
     const im = document.createElement('img');
     /* 这里**故意不写 src**：七张 GIF 一共 1.8MB，还都是动画，每次启动都解码一遍
        太亏。而且这个页签启动时是 display:none，loading="lazy" 在隐藏子树里
@@ -8695,6 +8695,13 @@ function renderGifGrid() {
       it.classList.toggle('off', !gifOn(g.id));
       charSave();
       renderGifMsg();
+    });
+    /* 双击 = 让悬浮球当场播一遍。
+       空闲动图要等两分钟才来一次，光靠它没法确认"到底通没通"；
+       给一个手动入口，用户不必真的干等两分钟才知道这套链路是通的。 */
+    it.addEventListener('dblclick', () => {
+      if (!gifOn(g.id)) return;      // 已经被单独关掉的就别播了，播了才叫自相矛盾
+      orbGesture(g.id);
     });
     box.appendChild(it);
   }

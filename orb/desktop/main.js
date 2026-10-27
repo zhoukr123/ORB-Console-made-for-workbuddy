@@ -706,7 +706,14 @@ function createBall() {
     frame: false, transparent: true, resizable: false, movable: false,
     alwaysOnTop: true, skipTaskbar: true, hasShadow: false,
     backgroundColor: "#00000000",
-    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true },
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      /* 悬浮球的空闲计时是一个 2 分钟的定时器，一旦被判定成"后台页面"，
+         Chromium 会把长定时器对齐到分钟级甚至挂起 —— 表现就是空闲动图永远不来。
+         这颗球 72px 常驻可见，节流它省不了几个 CPU，却会把整套陪伴动效搞没。 */
+      backgroundThrottling: false,
+    },
   });
   ball.loadFile(path.join(__dirname, "ball.html"));
   ball.setAlwaysOnTop(true, "screen-saver");

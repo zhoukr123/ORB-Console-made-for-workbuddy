@@ -297,7 +297,19 @@
   let baseSrc = 'icon.png';   // 用户换过头像时这里不是 icon.png，回退必须回它
   let gifTimer = null;
   let curGif = '';
-  let idleTimer = null;
+  /* 空闲计时：只记"最后一次有人在的时刻"，另外开一个 5s 的轮询去比时间。
+     以前是一个 120s 的 setTimeout 靠 touchActivity 反复重排，它有两个致命点：
+       ① 页面一旦被系统当成后台（切虚拟桌面 / 被判定遮挡），Chromium 会把长定时器
+          对齐到分钟级甚至挂起，那个 setTimeout 可能永远不来；
+       ② 重排它的地方有七八处（悬停 / 按下 / 忙 / 面板开关 / 收到任务 …），
+          任何一处"两分钟内至少来一次"就永远等不到，而出了事根本看不出是哪一个。
+     改成时间戳之后：轮询被节流成 60s 也只是晚一点触发，不会永远不触发；
+     而且每次跳过的原因都会写进 orb.log，下次再说"没看到"就有据可查。 */
+  let lastActivity = Date.now();
+  let idleWatch = null;
+  let lastSkipWhy = '';
+  /* 球的 console 会被主进程收进 orb.log（`[ball:info] …`），这是它唯一的对外出口 */
+  const idleLog = (s) => { try { console.log('[idle] ' + s); } catch {} };
 
   function gifOff(id) {
     const off = (charCfg.gif && charCfg.gif.off) || [];
@@ -342,28 +354,41 @@
     return bag[Math.floor(Math.random() * bag.length)] || pool[0];
   }
 
-  function armIdle(ms) {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(onIdle, ms || IDLE_MS);
+  /** 为什么这一轮不能播。返回空串 = 可以播。
+      每一条都写进日志：用户说"等了两分钟没动静"时，靠它定位是哪一条挡的。 */
+  function idleWhy() {
+    if (!gifReady()) return 'gif-off';                                     // 个性关 / 动图关
+    if (body.classList.contains('busy')) return 'busy';                     // 正在执行
+    if (body.classList.contains('active')) return 'panel-open';             // 面板开着
+    if (body.classList.contains('docked')) return 'docked';                 // 贴边收起
+    if (document.documentElement.classList.contains('no-motion')) return 'no-motion';
+    if (document.visibilityState !== 'visible') return 'hidden';            // 窗口被认为不可见
+    if (!IDLE_POOL.some((id) => !gifOff(id))) return 'pool-empty';          // 四张全被单关
+    return '';
   }
-  function onIdle() {
-    idleTimer = null;
-    /* 面板开着 = 用户在干活，别在他眼前晃；忙的时候更不该插播 */
-    const skip = !gifReady()
-      || body.classList.contains('busy')
-      || body.classList.contains('active')
-      || body.classList.contains('docked')
-      || document.documentElement.classList.contains('no-motion');
-    const pool = IDLE_POOL.filter((id) => !gifOff(id));
-    if (skip || !pool.length) { armIdle(); return; }
-    const id = pickIdleGif(pool);
-    playGif(id, 3);
-    /* 下一次从"这三遍演完"开始重新数，而不是从"开始演"数 —— 否则
-       动的三遍还没播完就又被算进下一轮空闲了。 */
-    armIdle((loopMsOf(id) || 1200) * 3 + IDLE_MS);
+
+  function checkIdle() {
+    const waited = Date.now() - lastActivity;
+    if (waited < IDLE_MS) return;
+    /* 不管播不播，这一轮都算消费掉了：面板刚关上、刚忙完，都该从那一刻重新数，
+       否则下一次轮询会立刻又判定"已经空闲两分钟"。 */
+    lastActivity = Date.now();
+    const why = idleWhy();
+    if (why) {
+      /* 同一个原因不重复刷日志 —— 贴边收着不动的话两分钟一条，日志会被冲淡 */
+      if (why !== lastSkipWhy) { lastSkipWhy = why; idleLog('跳过：' + why); }
+      return;
+    }
+    if (lastSkipWhy) { lastSkipWhy = ''; }
+    const id = pickIdleGif(IDLE_POOL.filter((x) => !gifOff(x)));
+    const ok = playGif(id, 3);
+    idleLog('播放 ' + id + (ok ? '' : '（被 playGif 拒绝）') + '，已空闲 ' + Math.round(waited / 1000) + 's');
+    /* 下一次从"这三遍演完"以后再开始数，不然动图还没演完就又被算进下一轮空闲 */
+    lastActivity = Date.now() + (loopMsOf(id) || 1200) * 3;
   }
+
   /** 检测到"有人在用"：重新计时。 */
-  function touchActivity() { armIdle(IDLE_MS); }
+  function touchActivity() { lastActivity = Date.now(); }
 
   window.orb.onBusy((v) => {
     const on = !!v;
@@ -401,6 +426,10 @@
       };
       gifMeta = cfg.gifMeta || {};
       touchActivity();
+      idleLog('收到偏好：人格=' + charCfg.persona
+        + ' 动图=' + (charCfg.gif.enabled ? '开' : '关')
+        + ' 单独关停=' + (charCfg.gif.off.length ? charCfg.gif.off.join(',') : '无')
+        + ' 时长表=' + Object.keys(gifMeta).length + ' 张');
       /* 切到"纯工具"或关掉动图：当场收掉，不用等这一轮演完 */
       if (charCfg.persona === 'off' || !charCfg.gif.enabled) clearGif();
     });
@@ -422,7 +451,12 @@
   /* 启动打招呼：延后一点再演 —— 窗口刚创建时还在透明期，
      立刻开演会把 greet 的前半段吃掉。 */
   setTimeout(() => { if (!curGif) playGif('greet', 1); }, 900);
-  armIdle(IDLE_MS);
+  /* 空闲看门狗：5s 一次比时间。间隔取 5s 是折中 ——
+     取 1s 太勤（每秒一次 Date.now 比较，虽然便宜但没必要），
+     取 30s 则"刚满两分钟"那一刻最多要等半分钟才演，等的人会觉得不准。 */
+  touchActivity();
+  idleWatch = setInterval(checkIdle, 5000);
+  idleLog('看门狗已启动，空闲 ' + (IDLE_MS / 1000) + 's 后播一张');
 </script>
 </body>
 </html>
