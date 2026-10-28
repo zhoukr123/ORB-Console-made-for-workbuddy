@@ -689,19 +689,25 @@
     --glass-float: rgba(255,255,255,.86);
     --glass-rim: rgba(255,255,255,.72);
   }
-  html.glass .card {
+  /* 玻璃态只在「桌面实拍底图已就绪」时才把卡片调成半透明 —— 否则退化为不透明
+     --bg 面板（见 .card 基础规则），绝不让面板变成「透出桌面的空窗」。
+     glass-live 由渲染层在收到首张玻璃底图时挂到 <html>；捕获失败则永远不挂，
+     于是玻璃模式「最坏也只是实心面板」，不会再出现「只有按钮、没有实体」的空窗。
+     t3 不在此列：它自带流光溢彩背景板（含不透明渐变底层），照常生效、本就透不出桌面。 */
+  html.glass.glass-live .card {
     background: var(--glass-card);
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
     border-color: var(--glass-rim);
+    transition: background var(--dur-2) var(--ease);
   }
   /* t4 的卡片还压着一层紫调渐变，玻璃化时把那一层留着 —— 只换底色不换配方 */
-  html.glass[data-theme="t4"] .card {
+  html.glass.glass-live[data-theme="t4"] .card {
     background: linear-gradient(180deg, rgba(139,92,246,.06), transparent 42%), var(--glass-card);
   }
-  html.glass .hist-box,
-  html.glass .sheet,
-  html.glass .more-panel {
+  html.glass.glass-live .hist-box,
+  html.glass.glass-live .sheet,
+  html.glass.glass-live .more-panel {
     background: var(--glass-float);
     -webkit-backdrop-filter: blur(8px);
     backdrop-filter: blur(8px);
@@ -2035,6 +2041,22 @@
   /* 已装载（.has）：附件挂着时的「有东西」信号。填充键不便改色（四主题各一套
      渐变），用提亮 7% 表达 —— 不动 box-shadow，避免跟各主题的阴影规则打架 */
   .attach.has { filter: brightness(1.07); }
+
+  /* ===== 麦克风键：用户要求做成「实体」按钮（实心表面 + 描边 + 微投影），
+     透明面板上也能一眼认出是键；录制中反色成强调色（与录制键同语言）。
+     默认用中性表面色，不抢发送/附件两颗主键的强调渐变脸。 */
+  #mic {
+    background: var(--bg-sunken);
+    color: var(--fg);
+    border: 1px solid var(--border-strong);
+    border-radius: 9px;
+    width: 31px; height: 31px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    box-shadow: 0 1px 2px rgba(0,0,0,.14);
+  }
+  #mic svg { width: 17px; height: 17px; display: block; }
+  #mic:hover { background: var(--accent-soft); color: var(--accent-fg); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  #mic.on { background: var(--accent); color: #fff; border-color: var(--accent); }
 
   /* ===== 附件 chip 栏：输入框与发送栏之间，hidden 由 JS 控制 =====
      注意 [hidden] 必须显式 display:none —— 上面的 display:flex 会盖掉
@@ -8251,6 +8273,11 @@ function applyGlass() {
      不申报 = 主进程零抓取零闪烁。 */
   const needShot = !isT3 && on && (theme === 't1' || theme === 't2');
   glassbgWant(needShot);
+  /* t4 玻璃糊的是页内用户图片（body::after），不走桌面抓取，所以「底图就绪」只看
+     themeImage 是否设置：设了即可显形玻璃态，没设则保持实心面板、避免透出桌面。 */
+  if (!isT3 && on && theme === 't4' && themePrefs.themeImage) {
+    document.documentElement.classList.add('glass-live');
+  }
   const rr = document.getElementById('glassBgRefreshRow');
   if (rr) rr.style.display = needShot ? '' : 'none';
 }
@@ -8258,6 +8285,9 @@ function applyGlass() {
 function glassbgWant(on) {
   const el = document.getElementById('glassbg');
   if (el) el.classList.toggle('on', !!on);
+  /* 关玻璃（或切到不需要桌面抓取的形态）立刻退回实心面板：去掉「底图已就绪」标记，
+     卡片随之回到 .card 基础规则的实心 --bg，不会再卡在半透明空窗。 */
+  if (!on) document.documentElement.classList.remove('glass-live');
   try { window.orb.glassBgWant(!!on); } catch { /* 老 preload 没这个方法也不致命 */ }
 }
 /* 桌面模糊底图的渲染层状态。
@@ -8311,6 +8341,9 @@ function bindGlassBg() {
     if (data) {
       const el = document.getElementById('glassbg');
       if (el) el.style.backgroundImage = 'url(data:' + mime + ';base64,' + data + ')';
+      /* 首张（或任意一张）桌面实拍到底图元素 → 标记「玻璃底图已就绪」，
+         卡片才切换为半透明磨砂态；捕获失败则永不标记，最坏也只是实心面板。 */
+      document.documentElement.classList.add('glass-live');
     }
     glassShot = shot;
     glassPos = shot.at || glassPos;

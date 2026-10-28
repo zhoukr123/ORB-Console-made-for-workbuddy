@@ -71,7 +71,11 @@
 
   const compose = input.closest(".compose");
   const sendrow = compose ? compose.querySelector(".sendrow") : null;
-  if (sendrow) {
+  const attach = sendrow ? sendrow.querySelector("#attach") : null;
+  if (sendrow && attach) {
+    /* 用户要求：麦克风键放在「加号（附件）」左侧，并做成实体按钮（见 panel.html 的 #mic 样式） */
+    sendrow.insertBefore(micBtn, attach);
+  } else if (sendrow) {
     sendrow.insertBefore(micBtn, sendrow.firstChild);
   } else if (compose) {
     compose.appendChild(micBtn);
