@@ -98,10 +98,10 @@ npm install --prefix orb/desktop
 | Repeat folding | If a recording contains near-identical segments, you get one line of explanation and a "fold into a loop" button. It never restructures your workflow on its own (v1.4.0) |
 | Inline triggers | Interval / file-change / hotkey triggers live at the bottom of each workflow's editor — enable, disable, delete in place (v1.4.0) |
 | Workflow list & audit | Replay / edit / delete are now icon buttons; delete asks you to type a confirmation. The audit log moved into Settings › Storage (v1.4.0) |
-| Five personas | Gentle Guardian / Genki Cheer / Comrade / Guide / Tsundere — each with its own lines, tone, kaomoji and voice. Pick one under Settings › Persona. Sunshine and Joker were merged in v1.5.0; old configs migrate automatically (v1.5.0) |
-| AI lines | One extra model call per task generates the whole round (three progress lines + one success + one failure), released against real progress. Progress lines only name the kind of action, never file names — facts come from the program, wording from the model. Any failure silently falls back to canned lines (v1.5.0) |
-| Custom model (can take over) | Point it at your own OpenAI-compatible endpoint (URL / model name / key / a "take over background tasks" toggle). With the toggle on, the console registers it into the CLI's model list and hands dispatches to the CLI — tool orchestration, emergency stop and auditing are all reused. The key stays on this machine and reads back masked; "Test" fires a real request (v1.5.0) |
-| Every token accounted for | The status bar shows total tokens plus the persona share (`13.1k tok (lines 680)`) and marks custom runs; the credits dialog lists input / output / lines / outcome per task, failures included. Custom-model runs spend your own quota, so they no longer trigger the "not signed in" warning (v1.5.0) |
+| Five personas | Gentle Guardian / Genki Cheer / Comrade / Guide / Tsundere — each with its own lines, tone, kaomoji and voice. Pick one under Settings › Persona. Sunshine and Joker were merged in v1.4.1; old configs migrate automatically (v1.4.1) |
+| AI lines | One extra model call per task generates the whole round (three progress lines + one success + one failure), released against real progress. Progress lines only name the kind of action, never file names — facts come from the program, wording from the model. Any failure silently falls back to canned lines (v1.4.1) |
+| Custom model (can take over) | Point it at your own OpenAI-compatible endpoint (URL / model name / key / a "take over background tasks" toggle). With the toggle on, the console registers it into the CLI's model list and hands dispatches to the CLI — tool orchestration, emergency stop and auditing are all reused. The key stays on this machine and reads back masked; "Test" fires a real request (v1.4.1) |
+| Every token accounted for | The status bar shows total tokens plus the persona share (`13.1k tok (lines 680)`) and marks custom runs; the credits dialog lists input / output / lines / outcome per task, failures included. Custom-model runs spend your own quota, so they no longer trigger the "not signed in" warning (v1.4.1) |
 | Orb behaviour | Seven GIFs (done / greet / loading / nod / shy / think / goodnight), each with its own trigger; toggle all or individually. Idle for two minutes and it plays one at random (v1.4.0) |
 | Persona speech bubbles | Each spoken line now also appears as a small bubble in the chat (muted, tinted with the theme accent). It shows even with sound off — previously the lines were audio-only and never displayed (v1.4.0) |
 | Lean narration | By default it only speaks on outcomes and moods (done / fail / praised / milestones / late night / sedentary), skipping "received" and "working". Switch back to full under Settings › Persona › Voice (v1.4.0) |
@@ -118,7 +118,7 @@ Also in this release: an optional **round marker** on loops (the audit log count
 succeeded, to infer completed rounds), a **fold-into-loop suggestion** after recording (offered, never applied
 silently), and interval / file / hotkey triggers managed inline in each workflow's editor.
 
-### Personas: five characters, and their lines (v1.4.0 / v1.5.0)
+### Personas: five characters, and their lines (v1.4.0 / v1.4.1)
 
 Personality is a **companion layer**, kept separate from what the AI answers — it never rewrites the model's reply,
 it just mutters alongside. Choose one under **Settings › Persona**: Gentle Guardian, Genki Cheer, Comrade,
@@ -129,10 +129,10 @@ Spoken lines now **show up in the chat** as a small bubble (one size smaller, mu
 they work with sound off, which they never did before. **Lean narration** is on by default: one line per task at
 outcome moments (done, failed, praised) instead of "received → working → done".
 
-> Sunshine and Joker were merged into **Genki Cheer** in v1.5.0 — their language parameters were nearly identical,
+> Sunshine and Joker were merged into **Genki Cheer** in v1.4.1 — their language parameters were nearly identical,
 > so keeping them apart only produced two look-alike characters. Existing configs migrate automatically.
 
-### AI lines: improvised, but not made up (v1.5.0)
+### AI lines: improvised, but not made up (v1.4.1)
 
 Turn on **Settings › Persona › AI lines** (off by default) and each dispatched task costs **one extra model call**,
 which generates the whole round at once: three progress lines, one success line, one failure line. That is the
