@@ -100,7 +100,8 @@ npm install --prefix orb/desktop
 | Workflow list & audit | Replay / edit / delete are now icon buttons; delete asks you to type a confirmation. The audit log moved into Settings › Storage (v1.4.0) |
 | Five personas | Gentle Guardian / Genki Cheer / Comrade / Guide / Tsundere — each with its own lines, tone, kaomoji and voice. Pick one under Settings › Persona. Sunshine and Joker were merged in v1.5.0; old configs migrate automatically (v1.5.0) |
 | AI lines | One extra model call per task generates the whole round (three progress lines + one success + one failure), released against real progress. Progress lines only name the kind of action, never file names — facts come from the program, wording from the model. Any failure silently falls back to canned lines (v1.5.0) |
-| Custom line model | Point it at your own OpenAI-compatible endpoint for persona lines. The key stays on this machine and reads back masked; a "Test" button fires a real request. Background tasks still run on the CLI — a text endpoint cannot replace its tool orchestration (v1.5.0) |
+| Custom model (can take over) | Point it at your own OpenAI-compatible endpoint (URL / model name / key / a "take over background tasks" toggle). With the toggle on, the console registers it into the CLI's model list and hands dispatches to the CLI — tool orchestration, emergency stop and auditing are all reused. The key stays on this machine and reads back masked; "Test" fires a real request (v1.5.0) |
+| Every token accounted for | The status bar shows total tokens plus the persona share (`13.1k tok (lines 680)`) and marks custom runs; the credits dialog lists input / output / lines / outcome per task, failures included. Custom-model runs spend your own quota, so they no longer trigger the "not signed in" warning (v1.5.0) |
 | Orb behaviour | Seven GIFs (done / greet / loading / nod / shy / think / goodnight), each with its own trigger; toggle all or individually. Idle for two minutes and it plays one at random (v1.4.0) |
 | Persona speech bubbles | Each spoken line now also appears as a small bubble in the chat (muted, tinted with the theme accent). It shows even with sound off — previously the lines were audio-only and never displayed (v1.4.0) |
 | Lean narration | By default it only speaks on outcomes and moods (done / fail / praised / milestones / late night / sedentary), skipping "received" and "working". Switch back to full under Settings › Persona › Voice (v1.4.0) |
@@ -147,8 +148,16 @@ Any failure (no endpoint, endpoint down, timeout, unparsable output) silently fa
 you see the old behaviour. Switch it off and no extra call happens at all.
 
 To make it faster and keep CLI credits untouched, fill in your own OpenAI-compatible endpoint under
-**Settings › Channels › Background Agent › Line model**. That one only decides *how the line is worded*; it does not
-take over background tasks — those need the CLI's tool orchestration.
+**Settings › Channels › Background Agent › Custom model**. With **Take over background tasks** on (the default),
+that endpoint can also do the actual work: the console registers it into the CLI's own model list
+(`~/.workbuddy/models.json`) and dispatches with `--model custom-local:<your model name>`, so reading files, running
+commands and tool orchestration stay in the CLI. Two requirements: the endpoint must support function calling, and
+the model name must match the provider's documentation exactly — the CLI sends it verbatim as the request body's
+`model`. The console only adds/removes its own entry (`vendor` = "ORB 控制台"), never writes into a file it cannot
+parse, and keeps an `.orb-bak` backup.
+
+Everything it spends is accounted for: the status bar shows total tokens with the persona share in brackets
+(`13.1k tok (lines 680)`), and the credits dialog lists input / output / lines / outcome per task — failures included.
 
 > The Persona › Memory option currently only stores your choice; reading the actual memory files is not wired up yet.
 

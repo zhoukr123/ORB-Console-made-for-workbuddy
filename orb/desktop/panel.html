@@ -2975,11 +2975,14 @@ html.no-motion .cm-actions .mbtn:active { transform: none; }
 <div class="hist-mask" id="wfMask"><div class="hist-box" id="wfBox"></div></div>
 <div class="hist-mask" id="cmMask">
   <div class="cm-box" id="cmBox" role="dialog" aria-label="自定义模型">
-    <div class="cm-head"><b>自定义模型</b><span class="muted">只用来生成人格台词，不接管后台任务</span></div>
+    <div class="cm-head"><b>自定义模型</b><span class="muted">接口地址和 Key 只存本机；开了「接管后台任务」就连后台一起走它</span></div>
     <div class="field"><label>名称</label><input id="cmName" placeholder="随便起个名，比如 我的 DeepSeek" maxlength="40"></div>
     <div class="field"><label>接口地址</label><input id="cmBase" placeholder="https://api.example.com/v1" spellcheck="false"></div>
-    <div class="field"><label>模型名</label><input id="cmModel" placeholder="deepseek-chat" spellcheck="false"></div>
+    <div class="field"><label>模型名</label><input id="cmModel" placeholder="deepseek-chat" spellcheck="false" title="要和接口文档里的 model 完全一致（大小写、斜杠都算）。接管后台任务时 CLI 会把它原样发出去，写错接口就不认。"></div>
     <div class="field"><label>API Key</label><input id="cmKey" type="password" placeholder="sk-…" spellcheck="false"></div>
+    <div class="field"><label>接管后台任务</label>
+      <button class="chip" id="cmTools" type="button" title="开：后台任务也用它跑（需要你的接口支持 function calling / 工具调用）。关：只用来生成人格台词">开</button>
+    </div>
     <div class="slotmsg" id="cmMsg">Key 只存在本机，读回来只显示后四位。</div>
     <div class="cm-actions">
       <button class="mbtn" id="cmCancel" type="button">取消</button>
@@ -3584,9 +3587,9 @@ html.no-motion .cm-actions .mbtn:active { transform: none; }
           </div>
         </div>
         <div class="slotmsg" id="wbmodelMsg"></div>
-        <div class="field"><label>台词模型</label>
+        <div class="field"><label>自定义模型 <span class="hint">台词与后台任务都能走它</span></label>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <button class="chip" id="cmOpen" type="button" title="填一个自己的 OpenAI 兼容接口，用来生成人格台词（后台任务仍走上面的模型）">自定义…</button>
+            <button class="chip" id="cmOpen" type="button" title="填一个自己的 OpenAI 兼容接口：人格台词会用它生成；打开「接管后台任务」后，后台任务也改用它跑（会注册进 CodeBuddy CLI 的模型清单）">自定义…</button>
             <span class="muted" id="cmState" style="font-size:calc(11.5px * var(--fs-scale))">未配置自定义模型</span>
           </div>
         </div>
@@ -5367,8 +5370,9 @@ async function runBack(text) {
   startPersonaBundle(text);   // 不 await：台词生成和任务并行跑，慢了自己放弃
   try {
     const mSel = (document.getElementById('wbmodel') || {}).value || '';
-    /* __custom__ 只是「打开配置」的入口，绝不能当模型名传给 CLI */
-    const m = mSel === CM_SEL ? '' : mSel;
+    /* __custom__ 现在是一个真正的引擎选择：原样传给桥，由它翻译成
+       custom-local:<id> 并保证 CLI 的模型清单里有这条（注册失败会带回可读原因）。 */
+    const m = mSel;
     const r = await post('/api/dispatch', {
       server: 'workbuddy', tool: 'workbuddy_execute',
       args: Object.assign({ task: text }, m ? { model: m } : {}),
@@ -5396,18 +5400,24 @@ async function runBack(text) {
 function renderWbModels(p, keepSel) {
   const sel = document.getElementById('wbmodel');
   if (!sel) return;
-  /* 自定义 API 入口：选它只是「打开配置弹窗」，**不改变后台模型** ——
-     后台任务必须走 CLI（它才具备读文件/跑命令的工具编排），
-     自定义接口只负责决定「人格那句话怎么说」。 */
+  /* 自定义 API：现在是**真正的引擎选项**，不是只能开弹窗的入口。
+     选中它的含义是「后台任务改用你填的那个接口」，桥那边会把它注册成
+     CLI 的 custom-local:<id> 再跑 —— 工具编排仍然是 CLI 的，能力不打折。
+     没配完整时选项名里直接标出来，别让人以为选了就能用。 */
   const appendCustom = () => {
-    if (Array.prototype.some.call(sel.options, (o) => o.value === CM_SEL)) return;
-    const oc = document.createElement('option');
-    oc.value = CM_SEL;
-    oc.textContent = '自定义 API（人格台词用）…';
-    sel.appendChild(oc);
+    let oc = Array.prototype.find.call(sel.options, (o) => o.value === CM_SEL);
+    if (!oc) {
+      oc = document.createElement('option');
+      oc.value = CM_SEL;
+      sel.appendChild(oc);
+    }
+    oc.textContent = cmConfigured()
+      ? ('自定义：' + (cmCur.name || cmCur.model) + '（接管后台任务）')
+      : '自定义 API（未配置，点了去填）…';
+    return oc;
   };
   /* 桥没起来 / 返回体里没有 models：**不清空已有清单**（避免一次抖动把列表刷没），
-     但自定义入口必须补上 —— 否则连「配台词模型」这条路都断了。 */
+     但自定义入口必须补上 —— 否则连配模型这条路都断了。 */
   if (!p || !Array.isArray(p.models)) { appendCustom(); return; }
   const prev = keepSel ? sel.value : '';
   sel.innerHTML = '';
@@ -5420,8 +5430,8 @@ function renderWbModels(p, keepSel) {
   appendCustom();
 
   /* 刷新后尽量保住当前选择（模型被下线了才不得不丢）。
-     不恢复 __custom__：它是一次性入口，不是可持久的选择。 */
-  if (prev && prev !== CM_SEL && Array.prototype.some.call(sel.options, (o) => o.value === prev)) sel.value = prev;
+     自定义项也保 —— 它现在是可以一直选着的引擎，不再是一次性入口。 */
+  if (prev && Array.prototype.some.call(sel.options, (o) => o.value === prev)) sel.value = prev;
   const msg = document.getElementById('wbmodelMsg');
   if (msg) {
     const src = p.source === 'cli' ? '已从 CodeBuddy CLI 同步' : 'CLI 暂不可用，显示内置清单';
@@ -5435,22 +5445,36 @@ function loadWbModels(force) {
     .catch(() => null);   /* 桥不在就留空下拉，不影响其它 */
 }
 
-/* ---------- 自定义模型（只服务人格台词） ----------
+/* ---------- 自定义模型（台词 + 后台任务） ----------
  * 存到主进程的 custom-model.json，面板永远拿不到明文 key：
  * 读回来只有 hasKey + 后四位，真正发请求的是 bridge 自己读那份文件。
- * 配置完整时，台词生成自动优先走它；没配或调不通就回落到 CLI / 预定台词。 */
+ *
+ * 两条用途，同一份配置：
+ *   · 人格台词 —— bridge 直接调 /chat/completions；
+ *   · 后台任务 —— bridge 把这条接口注册进 CodeBuddy CLI 的模型清单
+ *     (~/.workbuddy/models.json)，再用 --model custom-local:<id> 跑。
+ *     工具编排、读写文件、MCP 全都还是 CLI 在做，所以它真能「接管」而不只是聊天。
+ * supportsToolCall=false 时只做前者：接口不会调工具，给它派任务只会空谈。
+ */
 const CM_SEL = '__custom__';
 let cmCur = null;
+let cmSelPrev = '';        // 选自定义之前选的是哪个模型，取消时退回
+let cmFromSelect = false;  // 这次弹窗是「从下拉点进来」的 —— 存完要把下拉切过去
 
 function cmConfigured() {
   return !!(cmCur && cmCur.baseUrl && cmCur.model && cmCur.hasKey);
+}
+function cmCanRunTask() {
+  return cmConfigured() && cmCur.supportsToolCall !== false;
 }
 
 function renderCmState() {
   const el = document.getElementById('cmState');
   if (!el) return;
   if (cmConfigured()) {
-    el.textContent = '自定义：' + (cmCur.name || cmCur.model) + (cmCur.keyMask ? ' · ' + cmCur.keyMask : '');
+    el.textContent = '自定义：' + (cmCur.name || cmCur.model)
+      + (cmCur.keyMask ? ' · ' + cmCur.keyMask : '')
+      + (cmCur.supportsToolCall === false ? ' · 仅台词' : ' · 可接管任务');
     /* 配好了是个「结论」，别用 .muted 那种最弱的灰 —— t3 半透明面板上会糊进背景 */
     el.style.color = 'var(--fg-soft)';
   } else if (cmCur && (cmCur.baseUrl || cmCur.model)) {
@@ -5468,6 +5492,8 @@ async function cmLoad() {
     cmCur = r && r.ok ? r : null;
   } catch { cmCur = null; }
   renderCmState();
+  /* 下拉里的自定义项文案依赖配置状态，读完要重挂一次 */
+  try { renderWbModels(null, true); } catch {}
 }
 
 function cmSetMsg(text, kind) {
@@ -5477,23 +5503,47 @@ function cmSetMsg(text, kind) {
   msg.style.color = kind === 'err' ? 'var(--danger)' : (kind === 'ok' ? 'var(--ok)' : '');
 }
 
-function cmOpen() {
+function cmOpen(fromSelect) {
   const m = document.getElementById('cmMask');
   if (!m) return;
+  cmFromSelect = !!fromSelect;
   document.getElementById('cmName').value = (cmCur && cmCur.name) || '';
   document.getElementById('cmBase').value = (cmCur && cmCur.baseUrl) || '';
   document.getElementById('cmModel').value = (cmCur && cmCur.model) || '';
   const key = document.getElementById('cmKey');
   key.value = '';
   key.placeholder = (cmCur && cmCur.hasKey) ? ('已保存 ' + cmCur.keyMask + '，留空则不修改') : 'sk-…';
-  cmSetMsg('Key 只存在本机，读回来只显示后四位；这里的模型只决定人格怎么说话，不接管后台任务。');
+  cmToolsOn = !cmCur || cmCur.supportsToolCall !== false;
+  renderCmTools();
+  cmSetMsg('Key 只存在本机，读回来只显示后四位。填好之后，人格台词和后台任务都会走这个接口。');
   m.classList.add('on');
   setTimeout(() => { try { document.getElementById('cmName').focus(); } catch {} }, 40);
+}
+
+/* 「接管后台任务」开关：它只影响一件事 —— 派任务时能不能选这条接口。
+   关掉时它仍然可以生成台词（纯文本调用不需要工具能力）。 */
+let cmToolsOn = true;
+function renderCmTools() {
+  const b = document.getElementById('cmTools');
+  if (!b) return;
+  b.textContent = cmToolsOn ? '开' : '关';
+  b.classList.toggle('sel', cmToolsOn);
+  b.title = cmToolsOn
+    ? '开：后台任务也用它跑（要求接口支持 function calling）。点一下改成只生成台词'
+    : '关：只用来生成人格台词。点一下改成接管后台任务';
 }
 
 function cmClose() {
   const m = document.getElementById('cmMask');
   if (m) m.classList.remove('on');
+  /* 从下拉点进来、又什么都没配成就取消：别把一个「空引擎」留在选择框里，
+     否则下一次派任务必然失败，而用户以为自己只是关了个弹窗。 */
+  const sel = document.getElementById('wbmodel');
+  if (cmFromSelect && sel && sel.value === CM_SEL && !cmConfigured()) {
+    sel.value = cmSelPrev && Array.prototype.some.call(sel.options, (o) => o.value === cmSelPrev) ? cmSelPrev : '';
+    cmSetMsg('没配置就没法接管后台任务，先把地址和模型名填上。', 'err');
+  }
+  cmFromSelect = false;
 }
 
 async function cmSaveForm() {
@@ -5502,6 +5552,7 @@ async function cmSaveForm() {
     baseUrl: document.getElementById('cmBase').value,
     model: document.getElementById('cmModel').value,
     key: document.getElementById('cmKey').value,
+    supportsToolCall: cmToolsOn !== false,
   };
   if (!patch.baseUrl.trim() || !patch.model.trim()) {
     cmSetMsg('接口地址和模型名都要填，否则没法发请求。', 'err');
@@ -5516,10 +5567,42 @@ async function cmSaveForm() {
   return true;
 }
 
+/** 让桥把它注册进 CLI 的模型清单 —— 这是「接管后台任务」真正生效的那一步。
+ *  提前做一次的好处：配置阶段就知道能不能用，而不是派了任务才失败。 */
+async function cmRegisterCli() {
+  try {
+    const r = await post('/api/call', { server: 'workbuddy', tool: 'cli_model_register', args: {} });
+    const rb = (r && r.result) || null;
+    if (rb && rb.ok) return { ok: true, model: rb.model, warn: rb.warn || '' };
+    return { ok: false, error: (rb && rb.error) || (r && r.error) || '注册失败' };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 async function cmSave() {
   if (!(await cmSaveForm())) return;
-  cmSetMsg('已保存。下一次派任务就会用它来说台词。', 'ok');
-  setTimeout(cmClose, 720);
+  const sel = document.getElementById('wbmodel');
+  if (sel && (cmFromSelect || sel.value === CM_SEL)) sel.value = CM_SEL;
+  if (!cmCanRunTask()) {
+    cmSetMsg('已保存。它只会用来生成台词（「接管后台任务」关着）。', 'ok');
+    setTimeout(cmClose, 900);
+    return;
+  }
+  cmSetMsg('正在注册到 CLI 的模型清单…');
+  const reg = await cmRegisterCli();
+  if (reg.ok) {
+    /* warn = 清单里已经有一条同名模型，CLI 会优先用它。
+       这种时候不能只报「成功」，否则用户会以为用的是这里填的地址和 Key。 */
+    if (reg.warn) {
+      cmSetMsg('已保存。' + String(reg.warn).slice(0, 200), 'err');
+      return;
+    }
+    cmSetMsg('已保存，并已注册为 ' + reg.model + '。现在派任务就会用它跑。', 'ok');
+    setTimeout(cmClose, 1100);
+  } else {
+    cmSetMsg('已保存，但注册到 CLI 失败：' + String(reg.error).slice(0, 140), 'err');
+  }
 }
 
 async function cmTest() {
@@ -5542,7 +5625,16 @@ async function cmTest() {
     const blob = JSON.stringify(rb || '');
     if (r && r.ok && rb && rb.ok === true) {
       const hit = blob.match(/"done"\s*:\s*"([^"]{2,60})"/);
-      cmSetMsg('通了。它会这么说：「' + (hit ? hit[1] : '（已生成台词）') + '」', 'ok');
+      const line = '通了。它会这么说：「' + (hit ? hit[1] : '（已生成台词）') + '」';
+      if (!cmCanRunTask()) { cmSetMsg(line + '（只测了台词，接管后台任务关着）', 'ok'); return; }
+      const reg = await cmRegisterCli();
+      if (!reg.ok) {
+        cmSetMsg(line + ' 但注册到 CLI 失败：' + String(reg.error).slice(0, 110), 'err');
+      } else if (reg.warn) {
+        cmSetMsg(line + ' ' + String(reg.warn).slice(0, 180), 'err');
+      } else {
+        cmSetMsg(line + ' 已注册为 ' + reg.model + '，可以接管后台任务。', 'ok');
+      }
     } else {
       const why = (rb && rb.error) || (r && r.error) || '接口无有效回复';
       const src = rb && rb.src === 'cli' ? '（当前没读到自定义模型配置，回落到了 CLI）' : '';
@@ -5557,19 +5649,30 @@ async function cmTest() {
   const sel = document.getElementById('wbmodel');
   if (sel) {
     sel.addEventListener('change', () => {
-      if (sel.value !== CM_SEL) return;
-      /* 选自定义 = 打开配置，然后退回默认项：主任务始终要有一个真实的 CLI 模型。 */
-      sel.value = '';
-      cmOpen();
+      if (sel.value !== CM_SEL) { cmSelPrev = sel.value; return; }
+      /* 选自定义：配好了就一直选着（它是真正的引擎）；
+         没配好就弹窗让人填，取消时 cmClose 会退回原来那个模型。 */
+      if (cmConfigured()) {
+        cmFromSelect = false;
+        if (!cmCanRunTask()) {
+          addMsg('Orb', '这个自定义模型被标成「只生成台词」，直接派任务会失败。想让它跑任务，去弹窗里把「接管后台任务」打开。', 'sys');
+        }
+        return;
+      }
+      cmOpen(true);
     });
   }
   const mask = document.getElementById('cmMask');
   if (mask) mask.addEventListener('click', (e) => { if (e.target === mask) cmClose(); });
   const b = (id) => document.getElementById(id);
-  if (b('cmOpen')) b('cmOpen').addEventListener('click', cmOpen);
+  if (b('cmOpen')) b('cmOpen').addEventListener('click', () => cmOpen(false));
   if (b('cmCancel')) b('cmCancel').addEventListener('click', cmClose);
   if (b('cmSave')) b('cmSave').addEventListener('click', cmSave);
   if (b('cmTest')) b('cmTest').addEventListener('click', cmTest);
+  if (b('cmTools')) b('cmTools').addEventListener('click', () => {
+    cmToolsOn = !cmToolsOn;
+    renderCmTools();
+  });
   cmLoad();
 })();
 
@@ -10933,14 +11036,41 @@ function renderCreditDetail() {
   const d = creditData;
   const body = document.getElementById('creditBody');
   if (!d) { body.innerHTML = '<div class="cr-note">暂无数据</div>'; return; }
-  // 派发过但一分没花 → 几乎必然是 CLI 未登录，把"怎么修"直接说出来，别让用户对着 0 猜
-  const warn = (d.tasks > 0 && d.credits === 0)
+  const tkRows = Array.isArray(d.tokRecent) ? d.tokRecent : [];
+  const customRuns = tkRows.filter((r) => r && r.engine === 'custom').length;
+  /* 派发过但一分没花 → 以前只可能是 CLI 未登录。现在还有第二种解释：
+     任务走了自定义模型（花的是用户自己的额度，本来就不产生积分）。
+     不区分的话，用自定义模型的用户每次打开都被告知「你没登录」，是纯误导。 */
+  const warn = (d.tasks > 0 && d.credits === 0 && !customRuns)
     ? '<div style="margin-top:10px;padding:8px 10px;border-radius:var(--r-sm);' +
       /* 别写死浅底配色：深空主题下 --danger-soft 是深底，暗红字压上去几乎看不见。
          三个值全走令牌，由主题自己保证对比度。 */
       'background:var(--danger-soft);border:1px solid var(--danger);color:var(--danger);font-size:11.5px;line-height:1.6">' +
       '派发过 ' + d.tasks + ' 次却没产生消耗 —— 后台走的 CodeBuddy CLI 大概率<b>未登录</b>。' +
       '双击桌面的 <b>codebuddy-login.cmd</b> 登录一次即可。</div>'
+    : '';
+  /* 任务用量明细：一行一个任务，输入/输出/台词分开列。
+     「台词」不是附赠品，它是这个任务真金白银多花的那一笔，所以必须同框。 */
+  const tokBlock = tkRows.length
+    ? '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">' +
+        '<div style="font-size:11.5px;color:var(--fg-soft);margin-bottom:5px">' +
+          '本次运行的任务用量（含人格台词）</div>' +
+        tkRows.slice(0, 8).map((r) => {
+          const name = r.engine === 'custom' ? (String(r.model || '').replace(/^custom-local:/, '') || '自定义模型') : '默认模型';
+          return '<div style="display:flex;gap:8px;align-items:baseline;font-size:11.5px;line-height:1.8;color:var(--fg-soft)">' +
+            '<span style="opacity:.65;font-variant-numeric:tabular-nums">' +
+              new Date(r.at).toLocaleTimeString('zh-CN', { hour12: false }) + '</span>' +
+            '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+              (r.ok ? '' : '<span style="color:var(--danger)">✗ </span>') + esc(name) + '</span>' +
+            '<span style="font-variant-numeric:tabular-nums">↑' + fmtTok(r.in) + ' ↓' + fmtTok(r.out) + '</span>' +
+            '<span style="opacity:.8;font-variant-numeric:tabular-nums;min-width:62px;text-align:right">台词 ' +
+              fmtTok((r.personaIn || 0) + (r.personaOut || 0)) + '</span>' +
+          '</div>';
+        }).join('') +
+        '<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">' +
+          (customRuns ? '自定义模型的任务花的是你自己的额度，按 token 计，不进上面的积分统计。<br>' : '') +
+          'CLI 的 --output-format text 不报用量，所以纯 CLI 任务只有积分、没有 token。</div>' +
+      '</div>'
     : '';
   body.innerHTML =
     '<div class="cr-grid">' +
@@ -10953,6 +11083,7 @@ function renderCreditDetail() {
       '<div class="cr-cell"><div class="k">历史累计</div><div class="v">' + fmtCredit(d.allTime) +
         '<small>积分</small></div></div>' +
     '</div>' +
+    tokBlock +
     '<div class="cr-note">' +
       (d.running ? '<b style="color:var(--accent-fg)">有 ' + esc(d.running) + ' 个后台任务正在跑…</b><br>' : '') +
       '<b>统计口径</b> 只算控制台自己派发出去的后台任务（前台自动化不耗积分）<br>' +
@@ -11723,12 +11854,31 @@ function applyLive(L) {
   const stepTxt = L.total ? ('第 ' + L.step + '/' + L.total + ' 步') : '';
   const toolTxt = L.lastTool ? ('· ' + L.lastTool) : '';
   const secs = L.startedAt ? Math.floor((Date.now() - L.startedAt) / 1000) : 0;
-  bar.textContent = '▶ ' + kindLabel + '「' + (L.name || '') + '」 ' + stepTxt + ' ' + toolTxt + '　' + secs + 's';
+  /* 用量紧跟在耗时后面：任务 + 台词是同一笔账，这里显示的就是合计。
+     台词那部分单独标出来 —— 它是「多出来的那一次调用」，用户有权看见。 */
+  let tokTxt = '';
+  const tk = L.tok;
+  if (tk && tk.total > 0) {
+    tokTxt = '　' + fmtTok(tk.total) + ' tok';
+    if (tk.persona > 0) tokTxt += '（台词 ' + fmtTok(tk.persona) + '）';
+  }
+  bar.textContent = '▶ ' + (tk && tk.engine === 'custom' ? '自定义 · ' : '') + kindLabel
+    + '「' + (L.name || '') + '」 ' + stepTxt + ' ' + toolTxt + '　' + secs + 's' + tokTxt;
   /* 必须是 'block'：CSS 里 #liveBar 就是 display:none 打底的，写 '' 只是删掉内联
      声明、随即回落到样式表 —— 那样这条运行条永远不会出现（只有头像在转）。 */
   bar.style.display = 'block';
   /* 过程播报：只在 LIVE.lastTool 变化时才会真的出声（内部有节流与上限） */
   try { personaTick(L); } catch {}
+}
+
+/* 刻度化显示 token（12345 → 12k）。和积分那个 fmtCredit 分开：
+   一个按倍率说话、一个按用量说话，混用迟早算错。 */
+function fmtTok(n) {
+  n = Number(n) || 0;
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 10000) return Math.round(n / 1000) + 'k';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(Math.round(n));
 }
 
 /* ---------- 智能接管（工作流半路失守时顶几小步） ----------

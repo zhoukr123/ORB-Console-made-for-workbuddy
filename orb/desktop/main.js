@@ -4572,9 +4572,12 @@ function cmRead() {
       baseUrl: String(o.baseUrl || ""),
       model: String(o.model || ""),
       key: String(o.key || ""),
+      /* 缺字段按 true：老配置是在「只用来生成台词」那一版写的，没有这个字段，
+         但它对应的接口多半支持 function calling；真不支持的用户可以在弹窗里关掉。 */
+      supportsToolCall: o.supportsToolCall !== false,
     };
   } catch {
-    return { name: "", baseUrl: "", model: "", key: "" };
+    return { name: "", baseUrl: "", model: "", key: "", supportsToolCall: true };
   }
 }
 
@@ -4587,6 +4590,7 @@ safeHandle("cm-get", () => {
     model: c.model,
     hasKey: !!c.key,
     keyMask: c.key ? CM_MASK + c.key.slice(-4) : "",
+    supportsToolCall: c.supportsToolCall !== false,
   };
 }, { ok: false });
 
@@ -4599,12 +4603,14 @@ safeHandle("cm-set", (_e, patch) => {
     model: String(p.model ?? cur.model).trim().slice(0, 120),
     /* key 传空 / 不传 = 保持原值。这样「只改模型名」不必重填 key。 */
     key: typeof p.key === "string" && p.key.trim() ? p.key.trim() : cur.key,
+    /* 只有显式传 false 才关掉：这个开关决定它能不能接管后台任务 */
+    supportsToolCall: p.supportsToolCall === undefined ? cur.supportsToolCall !== false : p.supportsToolCall !== false,
   };
   try {
     fs.mkdirSync(path.dirname(cmFile()), { recursive: true });
     fs.writeFileSync(cmFile(), JSON.stringify(next), "utf8");
     try { fs.chmodSync(cmFile(), 0o600); } catch { /* Windows 下可能不支持，忽略 */ }
-    return { ok: true, hasKey: !!next.key };
+    return { ok: true, hasKey: !!next.key, supportsToolCall: next.supportsToolCall };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }

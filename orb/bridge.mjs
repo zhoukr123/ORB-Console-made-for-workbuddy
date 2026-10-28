@@ -619,7 +619,21 @@ const WORKBUDDY_TOOLS = {
      不进 metered：它本身就是「额外消耗」那一块，面板会单独标注成本，
      不该和「会话记账」混在一起。失败一律返回 {ok:false}，不抛。 */
   persona_bundle: (a) => runPersonaBundle(a),
+  /* 把自定义接口注册进 CLI 的模型清单。面板保存配置后调一次，
+     让「能不能接管后台任务」在配置阶段就有答案，而不是等派任务时才失败。 */
+  cli_model_register: async () => {
+    try {
+      const r = await ensureCliModel();
+      return { ok: true, model: r.model, warn: r.warn || "", file: CLI_MODELS_FILE };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  },
 };
+
+/** 面板用这个值表示「后台任务走用户自己的接口」。
+ *  bridge 收到后先把它翻译成真正的 `custom-local:<id>`（见 ensureCliModel）。 */
+const CUSTOM_ENGINE = "__custom__";
 
 /*
  * 后台可选模型清单（供面板下拉用）。
@@ -785,11 +799,20 @@ async function runWorkbuddy(task, timeoutMs = JOB_TIMEOUT_MS, model = "") {
   const cli = await resolveWbCli();
   if (!cli.found) throw new Error(cli.hint || CLI_HINT_MISSING);
 
+  /* 自定义模型怎么「接管后台任务」：不是自己实现一套工具循环，而是把它注册进
+     CLI 的模型清单再传 --model —— 工具编排、文件读写、MCP 全都还是 CLI 在做。
+     注册失败（没配 / 被标成不支持工具调用 / 清单文件坏了）在这里直接抛，
+     面板能拿到可读原因，不会静默退回默认模型去花用户的积分。 */
+  const wantCustom = String(model || "").trim() === CUSTOM_ENGINE;
+  const reg = wantCustom ? await ensureCliModel() : null;
+  const useModel = reg ? reg.model : model;
+  const engine = wantCustom ? "custom" : "cli";
+
   // 常驻 daemon 优先（可选开启，见 WB_DAEMON 处的实测说明）；
   // 拿不到结果就回落到一次性子进程 —— 保证后台始终有可用路径。
   if (WB_DAEMON) {
     try {
-      const text = await daemonRun(task, timeoutMs, model);
+      const text = await daemonRun(task, timeoutMs, useModel);
       if (text) return { content: [{ type: "text", text }], isError: false };
     } catch (err) {
       log("[wb-daemon] 回落到一次性子进程：", err?.message ?? err);
@@ -800,15 +823,18 @@ async function runWorkbuddy(task, timeoutMs = JOB_TIMEOUT_MS, model = "") {
      只有 LIVE 空闲时才接管，免得和正在跑的工作流回放抢同一个槽。 */
   const ownLive = !LIVE.active;
   if (ownLive) liveStart("workbuddy", String(task || "").replace(/\s+/g, " ").slice(0, 24), 0, "后台任务");
+  tokBegin(engine, wantCustom ? useModel : (useModel || "").trim());
   try {
     /* 默认走流式：能拿到 tool_use 才能做过程播报。
        ORB_WB_TEXT=1 可整体退回旧的纯文本路径（排障用，行为与历史完全一致）。 */
     const r = process.env.ORB_WB_TEXT === "1"
-      ? await spawnOnce(task, timeoutMs, model)
-      : await spawnOnceStream(task, timeoutMs, model);
+      ? await spawnOnce(task, timeoutMs, useModel)
+      : await spawnOnceStream(task, timeoutMs, useModel);
+    tokEnd(true);
     if (ownLive) liveEnd(true);
     return r;
   } catch (e) {
+    tokEnd(false);
     if (ownLive) liveEnd(false, String((e && e.message) || e).slice(0, 120));
     throw e;
   }
@@ -883,6 +909,10 @@ function spawnOnceStream(task, timeoutMs, model, cliPath = "") {
         wbCliAuth = "not-logged-in";
         return reject(new Error(CLI_HINT_LOGIN));
       }
+      /* 用了自定义模型时，CLI 的报错基本都是「清单里没这条 / url 没配」，
+         原文是英文且不知道怎么办，转成能照着做的提示。 */
+      const hint = cliModelHint(detail);
+      if (hint) return reject(new Error(hint));
       if (timedOut) return reject(new Error("CodeBuddy CLI 超时（" + Math.round(timeoutMs / 1000) + " 秒）"));
       return reject(new Error(`CodeBuddy CLI 无输出：${detail || "exit " + ((err && err.code) ?? "?")}`));
     };
@@ -901,8 +931,11 @@ function spawnOnceStream(task, timeoutMs, model, cliPath = "") {
             if (LIVE.active) liveStep(toolSeen, String(c.name));
           }
         }
-      } else if (ev.type === "result" && ev.is_error && Array.isArray(ev.errors)) {
-        stderr += ev.errors.join("\n") + "\n";
+      } else if (ev.type === "result") {
+        /* 整轮累计用量就在这里（assistant 事件上的 usage 全是 0 或占位）。
+           自定义模型也照给，所以两种引擎同一条取数路径。 */
+        if (ev.usage) tokAddTask(ev.usage);
+        if (ev.is_error && Array.isArray(ev.errors)) stderr += ev.errors.join("\n") + "\n";
       }
     };
 
@@ -977,7 +1010,8 @@ function parsePersonaJson(raw) {
   return { steps, done, fail };
 }
 
-/** 调用户自己填的 OpenAI 兼容接口。只用于台词，不接管主任务。 */
+/** 调用户自己填的 OpenAI 兼容接口。这是一条「纯说话」的旁路 ——
+ *  要让它干活走的是 CLI 的 custom-local 通道（见 ensureCliModel）。 */
 async function callCustomChat(custom, sys, usr, timeoutMs) {
   const base = String(custom.baseUrl || "").replace(/\/+$/, "");
   if (!base || !custom.key || !custom.model) throw new Error("自定义模型配置不完整");
@@ -1004,7 +1038,12 @@ async function callCustomChat(custom, sys, usr, timeoutMs) {
   const j = await res.json();
   const t = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
   if (typeof t !== "string" || !t.trim()) throw new Error("自定义模型返回空内容");
-  return t;
+  /* 顺手把 usage 带出去：人格台词这部分消耗要算进「本次任务」的账里，
+     不能让它在面板上变成一笔看不见的支出。 */
+  const usage = j && j.usage && typeof j.usage === "object"
+    ? { input_tokens: Number(j.usage.prompt_tokens) || 0, output_tokens: Number(j.usage.completion_tokens) || 0 }
+    : null;
+  return { text: t, usage };
 }
 
 /** 读主进程写入的自定义模型配置（路径由 main.js 通过 ORB_CM_FILE 注入）。
@@ -1020,11 +1059,168 @@ function readCustomModel() {
       key: String(o.key),
       model: String(o.model),
       name: String(o.name || ""),
+      /* 缺字段按 true 处理：绝大多数 OpenAI 兼容接口都支持 function calling，
+         真不支持的会被 CLI 那侧暴露出来（模型只顾说话、不动工具），比拦在门口好排查。 */
+      supportsToolCall: o.supportsToolCall !== false,
     };
   } catch {
     return null;
   }
 }
+
+/* ══════════ 把自定义接口注册进 CLI 的模型清单 ══════════
+ *
+ * 关键事实（2026-10-28 实测，别再另写一套执行链了）：
+ *   CodeBuddy CLI 会读 `~/.workbuddy/models.json`，把里面每一条都暴露成
+ *   `custom-local:<id>` 交给 `--model`；而且**走的是那条记录里的 apiKey，
+ *   不需要 CLI 登录态**（实测：`-p` 默认模型报 Authentication required，
+ *   换成 custom-local:Qwen3.5 直接返回结果）。
+ *
+ * 所以「让自定义模型接管后台任务」= 注册一条记录 + 传 --model。
+ * 读写文件、跑命令、MCP 工具编排全部还是 CLI 在做，能力不打折；
+ * 自己实现一套工具循环只会把「能干的事」做少，还要重接急停/审计/危险确认。
+ *
+ * 写的是 WorkBuddy 自己的配置文件，所以规矩很严：
+ *   · 只增删 `vendor` 等于 ORB_CONTROL_VENDOR 的条目，用户自己的一个字段都不碰；
+ *   · 原文件不是合法 JSON 就**拒绝写入**（宁可这次任务失败，也不能毁掉用户的模型清单）；
+ *   · 写前备份一份 .orb-bak，原子写避免半截文件。
+ */
+const ORB_CONTROL_VENDOR = "ORB 控制台";
+
+/* 这个路径必须和 CLI 自己算出来的一模一样，否则会「写在一处、CLI 读另一处」，
+   表现就是日志里那句 has no endpoint url configured。
+   CLI 的取法（从二进制里抠出来的，见 getUserConfigPath）：
+     有 WORKBUDDY_CONFIG_DIR / CODEBUDDY_CONFIG_DIR → <它>/models.json
+     否则 → <home>/.workbuddy/models.json
+   ORB_CLI_MODELS 只是给单测改道用的，正式运行不要碰。 */
+const CLI_CONF_DIR = String(process.env.WORKBUDDY_CONFIG_DIR || process.env.CODEBUDDY_CONFIG_DIR || "").trim();
+const CLI_MODELS_FILE = process.env.ORB_CLI_MODELS
+  || path.join(CLI_CONF_DIR || path.join(process.env.USERPROFILE || process.env.HOME || "", ".workbuddy"), "models.json");
+
+/** id 就是**发给接口的 model 名** —— 这一点是从 CLI 二进制里抠出来的：
+ *
+ *    if ($E && ml) { let iE = stripCustomLocalModelPrefix(ml); if (iE !== ml && $E.model === ml) $E.model = iE }
+ *
+ *  也就是说 `--model custom-local:<id>` 里的前缀会被剥掉，剩下的**原样**当请求体的
+ *  model 发出去（实测：清单里 id 写 ORB-接管测试，接口收到的 model 就是 ORB-接管测试）。
+ *  所以这里绝不能加前缀、绝不能美化 —— 加一个字母，接口就找不到模型。
+ *  唯一允许的改动是掐掉换行/制表符（会破坏 JSON 与 argv）。 */
+function cliModelIdFor(custom) {
+  return String(custom.model || custom.name || "").replace(/[\r\n\t]+/g, " ").trim();
+}
+
+/** 读模型清单。missing / corrupt 必须分开 —— 混成一个「空数组」就会把用户的配置清空。 */
+function readCliModels() {
+  if (!CLI_MODELS_FILE) return { arr: [], missing: true, corrupt: false, wrap: null };
+  if (!fsSync.existsSync(CLI_MODELS_FILE)) return { arr: [], missing: true, corrupt: false, wrap: null };
+  try {
+    const j = JSON.parse(fsSync.readFileSync(CLI_MODELS_FILE, "utf8"));
+    const arr = Array.isArray(j) ? j : (j && Array.isArray(j.models) ? j.models : null);
+    if (!arr) return { arr: [], missing: false, corrupt: true, wrap: null };
+    /* 现版本 CLI 的清单是裸数组；万一哪天改成 {models:[...]} 的外壳，
+       也要按原形状写回去，不能把人家的外壳拆掉。 */
+    return { arr, missing: false, corrupt: false, wrap: Array.isArray(j) ? null : j };
+  } catch {
+    return { arr: [], missing: false, corrupt: true, wrap: null };
+  }
+}
+
+/** 按原文件的形状组装要写回的内容（裸数组 or {models:[...]} 外壳）。 */
+function cliModelsPayload(cur, list) {
+  return cur.wrap ? Object.assign({}, cur.wrap, { models: list }) : list;
+}
+
+function customModelUrl(baseUrl) {
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  return /\/chat\/completions$/i.test(base) ? base : base + "/chat/completions";
+}
+
+/** 保证 CLI 的模型清单里有当前这条自定义模型，返回 { model, warn }。
+ *  幂等：字段没变就不写盘（避免每次任务都动用户的配置文件）。 */
+async function ensureCliModel() {
+  const custom = readCustomModel();
+  if (!custom) {
+    throw new Error("还没配置自定义模型。去「设置 › 通道 › 后台 Agent › 自定义模型」填接口地址、模型名和 Key，再来选它。");
+  }
+  if (!custom.supportsToolCall) {
+    throw new Error("这条自定义模型被标记为「不支持工具调用」，只能用来生成台词，接管后台任务需要接口支持 function calling。");
+  }
+  const id = cliModelIdFor(custom);
+  if (!id) {
+    throw new Error("自定义模型没填模型名（就是接口要的那个 model，比如 gpt-4o-mini / qwen-plus）。接管后台任务必须有它。");
+  }
+  const url = customModelUrl(custom.baseUrl);
+  const entry = {
+    /* id 会被 CLI 当请求体的 model 原样发出去，所以它就等于模型名 */
+    id,
+    name: custom.name || id,
+    vendor: ORB_CONTROL_VENDOR,
+    url,
+    apiKey: custom.key,
+    supportsToolCall: true,
+    /* 不宣称视觉与推理：越权声明会让 CLI 把截图丢给它，然后整轮沉默失败。
+       要让它看屏幕，走「设置 › 视觉模型」那条独立通道，与这里无关。 */
+    supportsImages: false,
+    supportsReasoning: false,
+    /* true = url 就是完整的 completions 地址，不要 CLI 再拼路径 */
+    useCustomProtocol: true,
+  };
+
+  const cur = readCliModels();
+  if (cur.corrupt) {
+    throw new Error("读不懂 " + CLI_MODELS_FILE + "（不是合法 JSON）。为了不毁掉你已有的模型配置，这次不写入 —— 请先修好或删掉这个文件。");
+  }
+
+  /* 清单里已经有一条**用户自己的**同名模型时，别再加一条重复的：
+     CLI 是按 id 找第一条匹配（find），重复条目只会让「到底用哪条」变得不可预测。 */
+  let warn = "";
+  const alien = cur.arr.find((m) => m && m.id === id && m.vendor !== ORB_CONTROL_VENDOR);
+  if (alien) {
+    const sameTarget = alien.url === url && alien.apiKey === custom.key;
+    if (!sameTarget) {
+      warn = "模型清单里已经有一条同名模型「" + id + "」（地址/Key 和你这里填的不一样）。"
+        + "CLI 会优先用那一条，所以这次的配置可能不生效 —— 要么把这里改成别的模型名，要么删掉清单里的旧条目。";
+      log("[cli-model] 同名条目已存在，跳过写入：" + id);
+    }
+    return { model: "custom-local:" + id, warn };
+  }
+
+  const mine = cur.arr.filter((m) => m && m.vendor === ORB_CONTROL_VENDOR);
+  const same = mine.find((m) => m.id === id);
+  const stale = mine.some((m) => m.id !== id);
+  const changed = !same || same.url !== url || same.apiKey !== custom.key
+    || same.name !== entry.name || same.useCustomProtocol !== true || same.supportsToolCall !== true
+    || same.supportsImages !== false || same.supportsReasoning !== false;
+
+  if (cur.missing || changed || stale) {
+    try { fsSync.copyFileSync(CLI_MODELS_FILE, CLI_MODELS_FILE + ".orb-bak"); } catch { /* 首次没有原文件 */ }
+    const others = cur.arr.filter((m) => !m || m.vendor !== ORB_CONTROL_VENDOR);
+    writeJsonAtomic(CLI_MODELS_FILE, cliModelsPayload(cur, [...others, entry]), 2);
+    log("[cli-model] 已注册到 CLI 模型清单：" + id + (stale ? "（清理了旧条目）" : ""));
+  }
+  return { model: "custom-local:" + id, warn };
+}
+
+/** CLI 侧对自定义模型的报错太技术，转成能照着做的中文。 */
+function cliModelHint(text) {
+  const s = String(text || "");
+  const m = s.match(/Custom model (\S+) has no endpoint url configured/i);
+  if (m) {
+    return "CLI 没认出这个自定义模型（" + m[1] + "）：它的模型清单里没有对应条目。重新派一次任务会自动重新注册；"
+      + "若一直如此，请检查 " + CLI_MODELS_FILE + " 有没有被别的程序改写成不可写。";
+  }
+  const a = s.match(/Authentication failed for custom model\s*"?([^".\n]*)"?/i);
+  if (a) {
+    return "自定义模型鉴权失败（" + (String(a[1] || "").trim() || "未知模型") + "）：接口不认配置里的 Key。"
+      + "回「设置 › 后台 Agent › 自定义模型」核对 Key；若清单里还有一条同名模型，CLI 会优先用它，那条的 Key 也一并检查。";
+  }
+  if (/model .*not found|unknown model|invalid model/i.test(s)) {
+    return "接口说这个模型名不存在：" + s.slice(0, 160)
+      + "。模型名必须和接口那边一模一样（大小写也算），改完再到设置页重新保存一次。";
+  }
+  return "";
+}
+
 
 async function runPersonaBundle(a) {
   const t0 = Date.now();
@@ -1032,12 +1228,15 @@ async function runPersonaBundle(a) {
   const usr = buildPersonaPrompt(a);
   const custom = readCustomModel() || (a && a.custom && typeof a.custom === "object" ? a.custom : null);
 
-  /* 1) 自定义模型优先：更快、不占 CLI 会话额度 */
+  /* 1) 自定义模型优先：更快、不占 CLI 会话额度，而且能拿到 usage ——
+     这部分消耗要并进「本次任务」的账里（见 tokAddPersona）。 */
   if (custom && custom.baseUrl && custom.key && custom.model) {
     try {
-      const p = parsePersonaJson(await callCustomChat(custom, sys, usr, 9000));
-      if (p) return Object.assign({ ok: true, src: "custom", ms: Date.now() - t0 }, p);
-      return { ok: false, error: "自定义模型输出不是可解析的 JSON", src: "custom", ms: Date.now() - t0 };
+      const r = await callCustomChat(custom, sys, usr, 9000);
+      const p = parsePersonaJson(r.text);
+      if (r.usage) tokAddPersona(r.usage);
+      if (p) return Object.assign({ ok: true, src: "custom", ms: Date.now() - t0, usage: r.usage || null }, p);
+      return { ok: false, error: "自定义模型输出不是可解析的 JSON", src: "custom", ms: Date.now() - t0, usage: r.usage || null };
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e).slice(0, 200), src: "custom", ms: Date.now() - t0 };
     }
@@ -1877,6 +2076,88 @@ function liveEnd(ok, note) {
     ok: LIVE.ok, ms: LIVE.finishedAt - LIVE.startedAt, note: LIVE.note,
   });
 }
+
+/* ---------------- 消耗账本（任务 + 人格，记在同一个任务头上） ----------------
+ * 为什么要有它：人格台词是「额外的一次调用」，如果只报任务本身的用量，
+ * 用户看到的花费就不完整 —— 台词那笔成了看不见的支出。
+ * 所以这里只维护一份「本次任务」的账：
+ *   · 任务用量：从 CLI 的 result.usage 取（它给的是整轮累计，最可信）；
+ *   · 台词用量：persona_bundle 那次调用自己报（自定义模型走 usage，CLI 走不到就记 0）。
+ * 面板读 /api/status 的 live.tok 就能显示「任务 + 台词」的合计，
+ * 任务结束后这条记录进 history，供积分弹窗按任务列出来。
+ *
+ * 归属的坑：人格台词和任务是两个并发的 /api/call，谁先回来不确定 ——
+ * 台词先到就暂存在 pending 里，等任务开始再并进去；任务已经结束才到，
+ * 就补给刚才那条历史记录（而不是算到下一个任务头上，那会张冠李戴）。 */
+const TOK = {
+  in: 0, out: 0, personaIn: 0, personaOut: 0,
+  engine: "", model: "", pending: null, history: [],
+};
+const TOK_HISTORY_MAX = 20;
+let tokOpen = false;
+
+const usageIn = (u) => Math.max(0, Number(u && (u.input_tokens ?? u.prompt_tokens)) || 0);
+const usageOut = (u) => Math.max(0, Number(u && (u.output_tokens ?? u.completion_tokens)) || 0);
+
+function tokBegin(engine, model) {
+  TOK.in = 0; TOK.out = 0; TOK.personaIn = 0; TOK.personaOut = 0;
+  TOK.engine = engine || ""; TOK.model = model || "";
+  tokOpen = true;
+  if (TOK.pending) {   // 台词比任务先落地：并进这次任务
+    TOK.personaIn += TOK.pending.in;
+    TOK.personaOut += TOK.pending.out;
+    TOK.pending = null;
+  }
+}
+
+function tokAddTask(u) {
+  TOK.in += usageIn(u);
+  TOK.out += usageOut(u);
+}
+
+function tokAddPersona(u) {
+  const i = usageIn(u), o = usageOut(u);
+  if (!i && !o) return;
+  if (tokOpen) { TOK.personaIn += i; TOK.personaOut += o; return; }
+  const last = TOK.history[0];
+  if (last && Date.now() - last.at < 120000) {   // 任务刚结束，台词迟到一步
+    last.personaIn += i; last.personaOut += o;
+    return;
+  }
+  TOK.pending = TOK.pending || { in: 0, out: 0 };
+  TOK.pending.in += i;
+  TOK.pending.out += o;
+}
+
+function tokEnd(ok) {
+  if (!tokOpen) return;
+  tokOpen = false;
+  const rec = {
+    at: Date.now(), ok: !!ok, engine: TOK.engine, model: TOK.model,
+    in: TOK.in, out: TOK.out, personaIn: TOK.personaIn, personaOut: TOK.personaOut,
+  };
+  /* 一个字都没记账就不留痕：否则历史里会堆一堆全 0 的条目，读起来像坏了 */
+  if (rec.in || rec.out || rec.personaIn || rec.personaOut) {
+    TOK.history.unshift(rec);
+    if (TOK.history.length > TOK_HISTORY_MAX) TOK.history.length = TOK_HISTORY_MAX;
+  }
+  return rec;
+}
+
+/** 给 /api/status 用的快照。total 就是「整体任务」的合计（含人格那笔）。 */
+function tokSnapshot() {
+  return {
+    engine: TOK.engine,
+    model: TOK.model,
+    in: TOK.in,
+    out: TOK.out,
+    personaIn: TOK.personaIn,
+    personaOut: TOK.personaOut,
+    persona: TOK.personaIn + TOK.personaOut,
+    total: TOK.in + TOK.out + TOK.personaIn + TOK.personaOut,
+  };
+}
+
 
 /* ---------------- 智能接管：bridge ⇄ 面板握手 ----------------
  * 一次接管 = 挂出请求 → 阻塞等面板回答。阻塞是必须的：
@@ -3939,6 +4220,10 @@ async function readCredits() {
     sessions: orbSessions.size,
     model: WB_MODEL || "",
     db: !!creditsBase,
+    /* 本次运行的任务用量明细（最近 20 条），任务与人格台词分开给，
+       面板据此显示「这个任务一共花了多少」—— 两笔都算在同一个任务头上。 */
+    tokRecent: TOK.history,
+    tokCurrent: tokSnapshot(),
   };
   return data;
 }
@@ -4018,7 +4303,9 @@ async function handle(req, res) {
     }
     // 顺带带上面板轮询需要的三样，把原来的 3 个轮询（live/confirm/stop）合并成这一次请求
     out.ok = true;
-    out.live = LIVE;
+    /* tok 是「本次任务的合计用量」，含人格台词那一笔 —— 面板拿它画状态条。
+       复制一份再挂，别把 LIVE 本身改成另一种形状：LIVE 还被审计/接管逻辑读写。 */
+    out.live = Object.assign({}, LIVE, { tok: tokSnapshot() });
     out.stop = { on: STOP.on, reason: STOP.reason };
     out.pending = listPending();
     out.dangerous = [...DANGER_TOOLS];
