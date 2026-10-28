@@ -2906,6 +2906,49 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
   .gif-item.off img{filter:grayscale(1)}
   .persona-range{width:100%;accent-color:var(--accent)}
   html.no-motion .persona-card,html.no-motion .persona-card:hover{transform:none;transition:none}
+/* ---------- 自定义模型弹窗 ----------
+   遮罩复用 .hist-mask（含 t1 深色背景与一次性静态模糊），
+   只补尺寸/居中/动效。颜色全部走已定义令牌，不新造变量。 */
+#cmMask.on { display: flex; align-items: center; justify-content: center; }
+.cm-box {
+  width: min(440px, calc(100vw - 40px));
+  max-height: calc(100vh - 80px);
+  overflow: auto;
+  margin: 0;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 18px 18px 14px;
+  box-shadow: var(--sh-lg);
+}
+#cmMask.on .cm-box { animation: cmIn var(--dur-2) var(--ease) backwards; }
+@keyframes cmIn {
+  from { opacity: 0; transform: translateY(10px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+.cm-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+.cm-head b { font-size: calc(14px * var(--fs-scale)); color: var(--fg); }
+.cm-head .muted { font-size: calc(11.5px * var(--fs-scale)); }
+.cm-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+/* 按钮沿用面板其它弹窗的 .mbtn（保存用 .mbtn.pri 表示主操作），
+   这里只补动效：悬停浮 1px、按下缩 4%，和工具栏 chip 的手感一致。 */
+.cm-actions .mbtn {
+  transition: transform var(--dur-1) var(--ease), background var(--dur-1) var(--ease),
+              border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.cm-actions .mbtn:hover { transform: translateY(-1px); }
+.cm-actions .mbtn:active { transform: scale(.96); }
+/* 双兜底：项目开关与系统偏好都要收掉动效 */
+html.no-motion #cmMask.on .cm-box { animation: none; }
+html.no-motion .cm-actions .mbtn { transition: none; }
+html.no-motion .cm-actions .mbtn:hover { transform: none; }
+html.no-motion .cm-actions .mbtn:active { transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  #cmMask.on .cm-box { animation: none; }
+  .cm-actions .mbtn { transition: none; }
+  .cm-actions .mbtn:hover { transform: none; }
+  .cm-actions .mbtn:active { transform: none; }
+}
 </style>
 </head>
 <body>
@@ -2930,6 +2973,21 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
   </div>
 </div>
 <div class="hist-mask" id="wfMask"><div class="hist-box" id="wfBox"></div></div>
+<div class="hist-mask" id="cmMask">
+  <div class="cm-box" id="cmBox" role="dialog" aria-label="自定义模型">
+    <div class="cm-head"><b>自定义模型</b><span class="muted">只用来生成人格台词，不接管后台任务</span></div>
+    <div class="field"><label>名称</label><input id="cmName" placeholder="随便起个名，比如 我的 DeepSeek" maxlength="40"></div>
+    <div class="field"><label>接口地址</label><input id="cmBase" placeholder="https://api.example.com/v1" spellcheck="false"></div>
+    <div class="field"><label>模型名</label><input id="cmModel" placeholder="deepseek-chat" spellcheck="false"></div>
+    <div class="field"><label>API Key</label><input id="cmKey" type="password" placeholder="sk-…" spellcheck="false"></div>
+    <div class="slotmsg" id="cmMsg">Key 只存在本机，读回来只显示后四位。</div>
+    <div class="cm-actions">
+      <button class="mbtn" id="cmCancel" type="button">取消</button>
+      <button class="mbtn" id="cmTest" type="button" title="发一条真实请求，看接口通不通">测试</button>
+      <button class="mbtn pri" id="cmSave" type="button">保存</button>
+    </div>
+  </div>
+</div>
 <!-- 工作流编辑器：步骤树可视化 + 增删排序 + 参数编辑 -->
 <div class="hist-mask" id="wfEditMask"><div class="hist-box" id="wfEditBox" style="top:30px;max-height:88%"></div></div>
 <div class="hist-mask" id="cfmMask"><div class="hist-box" style="top:110px">
@@ -3084,6 +3142,13 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
             <button class="chip" id="ttsTry" title="用当前音色说一句">说一句</button>
           </div>
           <div class="slotmsg" id="ttsMsg"></div>
+        </div>
+        <div class="slotbox">
+          <div class="slothead">AI 台词 <span class="hint">让模型按人格现编，不套模板</span></div>
+          <div class="field"><label>启用</label>
+            <button class="chip" id="ttsAi" title="开启后每个任务会多一次模型调用：一次生成整轮要用的台词（过程三句 + 收尾一句），再按真实进度放出来。会额外消耗 token / 积分；关掉就只用预定台词，零额外消耗">AI 台词 关</button>
+          </div>
+          <div class="slotmsg" id="aiMsg">开启后每个任务多一次模型调用：过程中说三句、收尾说一句，都按当前人格现编。关掉完全走预定台词，不花任何额外额度。</div>
         </div>
         <div class="slotbox">
           <div class="slothead">图标动图</div>
@@ -3519,6 +3584,12 @@ html.no-motion .step-op:hover svg, html.no-motion .step-op.del:hover svg { anima
           </div>
         </div>
         <div class="slotmsg" id="wbmodelMsg"></div>
+        <div class="field"><label>台词模型</label>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="chip" id="cmOpen" type="button" title="填一个自己的 OpenAI 兼容接口，用来生成人格台词（后台任务仍走上面的模型）">自定义…</button>
+            <span class="muted" id="cmState" style="font-size:calc(11.5px * var(--fs-scale))">未配置自定义模型</span>
+          </div>
+        </div>
         <div class="row2 slot-actions" style="justify-content:flex-start;margin-top:0">
           <button type="button" class="wblink" id="wbCenter" title="在系统默认浏览器中打开 WorkBuddy 个人中心：套餐与积分、积分消耗明细">
             <svg class="wblico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 4.5H19V10"/><path d="M19 4.5 10.5 13"/><path d="M17.5 14.5V18a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 18V8A1.5 1.5 0 0 1 6 6.5h3.5"/></svg>
@@ -5293,8 +5364,11 @@ async function runBack(text) {
   const node = addMsg('Orb', '<span class="pending">已派发到后台，排队中</span>' +
     '<span class="typing"><i></i><i></i><i></i></span>', 'orb');
   setRunning(1);
+  startPersonaBundle(text);   // 不 await：台词生成和任务并行跑，慢了自己放弃
   try {
-    const m = (document.getElementById('wbmodel') || {}).value || '';
+    const mSel = (document.getElementById('wbmodel') || {}).value || '';
+    /* __custom__ 只是「打开配置」的入口，绝不能当模型名传给 CLI */
+    const m = mSel === CM_SEL ? '' : mSel;
     const r = await post('/api/dispatch', {
       server: 'workbuddy', tool: 'workbuddy_execute',
       args: Object.assign({ task: text }, m ? { model: m } : {}),
@@ -5321,7 +5395,20 @@ async function runBack(text) {
  * 拼进选项文本；没公布倍率的新模型不编数，只显示名字。 */
 function renderWbModels(p, keepSel) {
   const sel = document.getElementById('wbmodel');
-  if (!sel || !p || !Array.isArray(p.models)) return;
+  if (!sel) return;
+  /* 自定义 API 入口：选它只是「打开配置弹窗」，**不改变后台模型** ——
+     后台任务必须走 CLI（它才具备读文件/跑命令的工具编排），
+     自定义接口只负责决定「人格那句话怎么说」。 */
+  const appendCustom = () => {
+    if (Array.prototype.some.call(sel.options, (o) => o.value === CM_SEL)) return;
+    const oc = document.createElement('option');
+    oc.value = CM_SEL;
+    oc.textContent = '自定义 API（人格台词用）…';
+    sel.appendChild(oc);
+  };
+  /* 桥没起来 / 返回体里没有 models：**不清空已有清单**（避免一次抖动把列表刷没），
+     但自定义入口必须补上 —— 否则连「配台词模型」这条路都断了。 */
+  if (!p || !Array.isArray(p.models)) { appendCustom(); return; }
   const prev = keepSel ? sel.value : '';
   sel.innerHTML = '';
   for (const mm of p.models) {
@@ -5330,8 +5417,11 @@ function renderWbModels(p, keepSel) {
     o.textContent = mm.label + (mm.credit ? '（' + mm.credit + '）' : '');
     sel.appendChild(o);
   }
-  /* 刷新后尽量保住当前选择（模型被下线了才不得不丢） */
-  if (prev && Array.prototype.some.call(sel.options, (o) => o.value === prev)) sel.value = prev;
+  appendCustom();
+
+  /* 刷新后尽量保住当前选择（模型被下线了才不得不丢）。
+     不恢复 __custom__：它是一次性入口，不是可持久的选择。 */
+  if (prev && prev !== CM_SEL && Array.prototype.some.call(sel.options, (o) => o.value === prev)) sel.value = prev;
   const msg = document.getElementById('wbmodelMsg');
   if (msg) {
     const src = p.source === 'cli' ? '已从 CodeBuddy CLI 同步' : 'CLI 暂不可用，显示内置清单';
@@ -5344,6 +5434,144 @@ function loadWbModels(force) {
     .then((p) => { renderWbModels(p, true); return p; })
     .catch(() => null);   /* 桥不在就留空下拉，不影响其它 */
 }
+
+/* ---------- 自定义模型（只服务人格台词） ----------
+ * 存到主进程的 custom-model.json，面板永远拿不到明文 key：
+ * 读回来只有 hasKey + 后四位，真正发请求的是 bridge 自己读那份文件。
+ * 配置完整时，台词生成自动优先走它；没配或调不通就回落到 CLI / 预定台词。 */
+const CM_SEL = '__custom__';
+let cmCur = null;
+
+function cmConfigured() {
+  return !!(cmCur && cmCur.baseUrl && cmCur.model && cmCur.hasKey);
+}
+
+function renderCmState() {
+  const el = document.getElementById('cmState');
+  if (!el) return;
+  if (cmConfigured()) {
+    el.textContent = '自定义：' + (cmCur.name || cmCur.model) + (cmCur.keyMask ? ' · ' + cmCur.keyMask : '');
+    /* 配好了是个「结论」，别用 .muted 那种最弱的灰 —— t3 半透明面板上会糊进背景 */
+    el.style.color = 'var(--fg-soft)';
+  } else if (cmCur && (cmCur.baseUrl || cmCur.model)) {
+    el.textContent = '自定义配置不完整（缺 Key 或模型名）';
+    el.style.color = 'var(--warn)';
+  } else {
+    el.textContent = '未配置自定义模型';
+    el.style.color = '';
+  }
+}
+
+async function cmLoad() {
+  try {
+    const r = await window.orb.cmGet();
+    cmCur = r && r.ok ? r : null;
+  } catch { cmCur = null; }
+  renderCmState();
+}
+
+function cmSetMsg(text, kind) {
+  const msg = document.getElementById('cmMsg');
+  if (!msg) return;
+  msg.textContent = text;
+  msg.style.color = kind === 'err' ? 'var(--danger)' : (kind === 'ok' ? 'var(--ok)' : '');
+}
+
+function cmOpen() {
+  const m = document.getElementById('cmMask');
+  if (!m) return;
+  document.getElementById('cmName').value = (cmCur && cmCur.name) || '';
+  document.getElementById('cmBase').value = (cmCur && cmCur.baseUrl) || '';
+  document.getElementById('cmModel').value = (cmCur && cmCur.model) || '';
+  const key = document.getElementById('cmKey');
+  key.value = '';
+  key.placeholder = (cmCur && cmCur.hasKey) ? ('已保存 ' + cmCur.keyMask + '，留空则不修改') : 'sk-…';
+  cmSetMsg('Key 只存在本机，读回来只显示后四位；这里的模型只决定人格怎么说话，不接管后台任务。');
+  m.classList.add('on');
+  setTimeout(() => { try { document.getElementById('cmName').focus(); } catch {} }, 40);
+}
+
+function cmClose() {
+  const m = document.getElementById('cmMask');
+  if (m) m.classList.remove('on');
+}
+
+async function cmSaveForm() {
+  const patch = {
+    name: document.getElementById('cmName').value,
+    baseUrl: document.getElementById('cmBase').value,
+    model: document.getElementById('cmModel').value,
+    key: document.getElementById('cmKey').value,
+  };
+  if (!patch.baseUrl.trim() || !patch.model.trim()) {
+    cmSetMsg('接口地址和模型名都要填，否则没法发请求。', 'err');
+    return false;
+  }
+  const r = await window.orb.cmSet(patch).catch(() => null);
+  if (!r || !r.ok) {
+    cmSetMsg('保存失败：' + ((r && r.error) || '未知错误'), 'err');
+    return false;
+  }
+  await cmLoad();
+  return true;
+}
+
+async function cmSave() {
+  if (!(await cmSaveForm())) return;
+  cmSetMsg('已保存。下一次派任务就会用它来说台词。', 'ok');
+  setTimeout(cmClose, 720);
+}
+
+async function cmTest() {
+  if (!(await cmSaveForm())) return;
+  cmSetMsg('正在发一条真实请求…（会计入你填的那个服务的用量）');
+  try {
+    const r = await post('/api/call', {
+      server: 'workbuddy',
+      tool: 'persona_bundle',
+      args: {
+        persona: charCfg.persona,
+        spec: PERSONA_SPEC[charCfg.persona] || PERSONA_SPEC.genki,
+        task: '测试接口是否可用',
+      },
+    });
+    /* 两层 ok 要分开看：外层是「bridge 有没有执行这次调用」，
+       内层才是「模型有没有正常给出台词」。只判外层会把模型报错显示成「接口无有效回复」，
+       用户就永远不知道自己填的 key 错了还是地址错了。 */
+    const rb = (r && r.result) || null;
+    const blob = JSON.stringify(rb || '');
+    if (r && r.ok && rb && rb.ok === true) {
+      const hit = blob.match(/"done"\s*:\s*"([^"]{2,60})"/);
+      cmSetMsg('通了。它会这么说：「' + (hit ? hit[1] : '（已生成台词）') + '」', 'ok');
+    } else {
+      const why = (rb && rb.error) || (r && r.error) || '接口无有效回复';
+      const src = rb && rb.src === 'cli' ? '（当前没读到自定义模型配置，回落到了 CLI）' : '';
+      cmSetMsg('没通：' + String(why).slice(0, 120) + src, 'err');
+    }
+  } catch (e) {
+    cmSetMsg('没通：' + String((e && e.message) || e).slice(0, 120), 'err');
+  }
+}
+
+(function bindCm() {
+  const sel = document.getElementById('wbmodel');
+  if (sel) {
+    sel.addEventListener('change', () => {
+      if (sel.value !== CM_SEL) return;
+      /* 选自定义 = 打开配置，然后退回默认项：主任务始终要有一个真实的 CLI 模型。 */
+      sel.value = '';
+      cmOpen();
+    });
+  }
+  const mask = document.getElementById('cmMask');
+  if (mask) mask.addEventListener('click', (e) => { if (e.target === mask) cmClose(); });
+  const b = (id) => document.getElementById(id);
+  if (b('cmOpen')) b('cmOpen').addEventListener('click', cmOpen);
+  if (b('cmCancel')) b('cmCancel').addEventListener('click', cmClose);
+  if (b('cmSave')) b('cmSave').addEventListener('click', cmSave);
+  if (b('cmTest')) b('cmTest').addEventListener('click', cmTest);
+  cmLoad();
+})();
 
 function poll(id, node) {
   const t0 = Date.now();
@@ -8034,15 +8262,16 @@ function loadMotion() {
    说哪句台词，是后面情境层的事 —— 两层分开，改台词不用碰 UI。 */
 const CHAR_KEY = 'orb.character';
 
-/* 六个人格。desc = 选择时的定位；tip = 选中后的一句自述。
-   tip 用人格自己的口吻写，比「该人格语气温和」这种说明书式描述更容易让人知道选了什么。 */
+/* 五个人格。desc = 选择时的定位；tip = 选中后的一句自述。
+   tip 用人格自己的口吻写，比「该人格语气温和」这种说明书式描述更容易让人知道选了什么。
+   ★ 元气的「太阳」和「开心果」已合并成一个人格（两者语言参数天然趋同，
+     分开写只会生成出两个几乎一样的角色）。合并后占「高外向 + 高宜人」，
+     与其余四个彻底分开 —— joker 这个 id 只留在 charLoad 的迁移映射里。 */
 const PERSONAS = [
   { id: 'gentle', name: '温柔守护者', desc: '慢一点，稳一点，会提醒你休息',
     tip: '「我在。累了就先停一下，不着急。」语气慢、少感叹号，深夜会主动把声音收掉。' },
-  { id: 'genki', name: '元气小太阳', desc: '有精神，爱打招呼，句子短',
-    tip: '「今天也一起冲鸭！(๑•̀ㅂ•́)و✧」空闲时最活跃，但汇报任务时不会吵。' },
-  { id: 'joker', name: '开心果', desc: '爱开玩笑，颜文字多',
-    tip: '「任务收到，本机表示压力不大（其实有点）。」玩笑只在你不想干活时开，正经事不糊弄。' },
+  { id: 'genki', name: '元气开心果', desc: '够燃，也够松弛，会看气氛',
+    tip: '「搞定啦！快夸我快夸我！٩(^ᴗ^)۶」平时又燃又好笑；你卡住时先逗一句再认真夸；你真难受时立刻收起玩笑，只陪着。' },
   { id: 'comrade', name: '上进小战友', desc: '把任务当共同目标，会报进度',
     tip: '「第 3 步了，还差最后一下。」会数着步子给你打气，把你当队友不当用户。' },
   { id: 'guide', name: '智慧小向导', desc: '讲清楚再动手，少卖萌',
@@ -8050,6 +8279,47 @@ const PERSONAS = [
   { id: 'tsundere', name: '正能量傲娇', desc: '嘴上不认，事情照做',
     tip: '「……又不是特意为你做的。」被夸会躲，失败会嘴硬着再来一次。' },
 ];
+
+/* 给 AI 生成台词用的「人格指纹」（完整版见 docs/人格指纹-v1.md）。
+   rules / bans 是硬约束，samples 是风格锚点（明确标注不许照抄）。
+   只传当前选中的那一个，不整包传 —— 省 token，也免得模型被别人的语气带跑。 */
+const PERSONA_SPEC = {
+  gentle: {
+    name: '温柔守护者',
+    mechanism: '以降低对方的压力为第一目标，主动收掉自己的情绪表达，不索取回应。',
+    rules: '句长 18~25 字；多用省略号做停顿；几乎不用感叹号；不下命令，用「要不要」「也许可以」。',
+    bans: '不说「你应该」「必须」；不连发感叹号；不卖萌撒娇；不许下做不到的承诺。',
+    samples: ['做好了…辛苦你啦。', '坐很久了…起来喝口水吧。', '不用谢…你轻松一点，我就开心。'],
+  },
+  genki: {
+    name: '元气开心果',
+    mechanism: '用高能量替对方抵消疲惫，用幽默把压力重新归因。幽默是手段不是目的，不用于回避问题。',
+    rules: '句长 10~18 字；感叹号约四成（留出「先逗后夸」的转折）；句尾「呀/啦/哦/嘛」；颜文字不用 emoji；不说抽象词。',
+    bans: '不讽刺不阴阳（攻击型幽默）；不自我贬低，只许自嘲处境；不用「别想太多」「开心点」「小问题啦」这类淡化安慰；不说教；超过 30 字就要砍。',
+    samples: ['搞定啦！快夸我快夸我！٩(^ᴗ^)۶', '这 bug 藏得挺深啊，跟你玩捉迷藏呢——不过你已经试了三种写法了，这不算没进展。', '我在。不想说话也行。'],
+  },
+  comrade: {
+    name: '上进小战友',
+    mechanism: '用「共同目标」替代「服务关系」，所以会报进度、会分工、会数步子。',
+    rules: '句长 10~16 字；动词开头；祈使句但平等（「咱们」「跟上」）；常带数字（第几步、还差几步）。',
+    bans: '不说「为您服务」「请问需要」；不空喊「加油」（必须带具体动作）；失败后不许敷衍式安慰；不撒娇。',
+    samples: ['收到，开干！我跟你一起。', '第 3 步了，还差最后一下。', '是咱们一起赢的，缺你不行。'],
+  },
+  guide: {
+    name: '智慧小向导',
+    mechanism: '相信「讲清楚」比「陪着」有用。不确定就直说不知道，不用废话填空白。',
+    rules: '句长 22~35 字；用破折号与分号组织逻辑；句号收尾；术语准确；常以提问收尾，把判断交回去。',
+    bans: '不卖萌；不说「我觉得可能大概」；不安慰情绪（这层不归它管）；不重复对方的话凑长度。',
+    samples: ['这个能拆成两步，先看第一步。', '走不通，我们换个法子。', '方法是你自己找到的，我只提了个问题。'],
+  },
+  tsundere: {
+    name: '正能量傲娇',
+    mechanism: '反向作用：越在意越用相反的方式表达。把「想帮忙」包装成「顺便」，把高兴压成「这有什么」。',
+    rules: '句长 10~18 字；前半强硬后半漏软；省略号用来掩饰；反问句多；偶尔用括号小声补一句真心话。',
+    bans: '不真刻薄（攻击只到「笨蛋」这层）；不连续撒娇；不道歉式软化；不用叠词、不用波浪号。',
+    samples: ['…做完了。…才不是想让你夸我。', '哼，当然厉害…（耳朵红了）。', '才、才没有想你！…只是有点无聊而已。'],
+  },
+};
 
 /* 七张动图。when = 给用户看的触发说明；free = 是否进空闲池
    （用户指定空闲时在 greet / loading / shy / sleep 四张里随机）。 */
@@ -8067,8 +8337,7 @@ const GIFS = [
    但不把别的掐掉 —— 人格是调性，不是牢笼，全掐掉会看腻。 */
 const PERSONA_GIF_AFFINITY = {
   gentle:   ['sleep', 'shy'],
-  genki:    ['greet', 'greet'],
-  joker:    ['greet', 'shy'],
+  genki:    ['greet', 'shy'],
   comrade:  ['loading', 'greet'],
   guide:    ['sleep', 'loading'],
   tsundere: ['shy', 'sleep'],
@@ -8087,16 +8356,16 @@ const PERSONA_GIF_AFFINITY = {
    ==================================================================== */
 const DIALECT = {
   genki: {
-    start: ['早上好呀！新的一天，冲鸭！', '来啦来啦，准备好没？'],
-    recv: ['收到收到！交给我吧！', '任务到手，这就冲！'],
-    busy: ['正在努力中……马上就好！', '我这就去办，你等着！'],
-    done: ['搞定啦！快夸我快夸我！', '完成完成，本机超能！'],
-    fail: ['诶——没关系！再来一次一定行！', '翻车了？不怕，重来！'],
-    idle: ['嘿嘿，陪你摸会儿鱼～', '无聊了无聊了，找点事做嘛'],
-    away: ['你去哪儿啦？人家等你好久～', '回来啦回来啦，人家想你了'],
-    grind: ['专注好久啦，起来跳两下！', '坐太久啦，伸个懒腰！'],
-    night: ['再熬会变熊猫哦！', '很晚啦，但我还能陪你一会儿'],
-    praised: ['嘿嘿，尾巴要翘上天啦～', '被夸了！今天能量满格！'],
+    start: ['早上好呀！新的一天，冲鸭！', '开机啦，今天也尽量不躺平～', '来啦来啦，准备好没？'],
+    recv: ['收到收到！交给我吧！', '任务收到！我这就去…先摸三分钟鱼。', '任务到手，这就冲！'],
+    busy: ['正在努力中……马上就好！', '处理中…其实在偷喝可乐。', '我这就去办，你等着！'],
+    done: ['搞定啦！快夸我快夸我！', '完成！这波操作你给几分？', '完成完成，我超能！'],
+    fail: ['诶——没关系！再来一次一定行！', '翻车了…这 bug 也是老朋友了，收拾它。', '翻车了？不怕，重来！'],
+    idle: ['嘿嘿，陪你摸会儿鱼～', '一起发会儿呆吧，反正也没人管我们。', '无聊了无聊了，找点事做嘛'],
+    away: ['你去哪儿啦？人家等你好久～', '你再不来，我就要跟空气聊天了…', '回来啦回来啦，人家想你了'],
+    grind: ['专注好久啦，起来跳两下！', '你快长在椅子上了…起来扭两下？', '坐太久啦，伸个懒腰！'],
+    night: ['再熬会变熊猫哦！', '熬夜冠军非你莫属！…不过还是睡吧。', '很晚啦，但我还能陪你一会儿'],
+    praised: ['嘿嘿，尾巴要翘上天啦～', '被夸了！今天能多吃一碗饭！', '被夸了！今天能量满格！'],
   },
   gentle: {
     start: ['早上好…今天也慢慢来就好。', '醒啦…不急，我在。'],
@@ -8109,18 +8378,6 @@ const DIALECT = {
     grind: ['坐很久了…起来喝口水吧。', '歇一下，不差这一会儿。'],
     night: ['很晚了…早点休息，好吗？', '夜深了，别太累，我在。'],
     praised: ['不用谢…你轻松一点，我就开心。', '被你夸，我有点不好意思。'],
-  },
-  joker: {
-    start: ['哟！又是元气满满（并没有）的一天！', '开机啦，今天也尽量不躺平。'],
-    recv: ['任务收到！我这就去…摸鱼三分钟再来。', '收到收到，本机表示压力不大（其实有点）。'],
-    busy: ['正在努力（假装）…你看我多认真！', '处理中…其实在偷喝可乐。'],
-    done: ['搞定！我是不是很厉害？…别夸太狠，我会飘。', '完成！这波操作你给几分？'],
-    fail: ['(╯°Д°)╯ ┻━┻ 翻车了！不过这个 bug 一定是在考验你。', '又挂了…没事，bug 也是老朋友。'],
-    idle: ['一起发会儿呆吧，反正也没人管我们。', '安静…（其实在偷看你的桌面）。'],
-    away: ['你再不来，我就要跟空气聊天了…', '人呢？本机要开启自言自语模式了。'],
-    grind: ['你快长在椅子上了…起来扭两下？', '久坐冠军就是你，起来动动呗。'],
-    night: ['熬夜冠军非你莫属！…不过还是睡吧。', '这么晚？你是要跟月亮比谁先睡。'],
-    praised: ['嘿嘿…被夸了，今天能多吃一碗饭！', '过奖过奖，本机只是恰好聪明。'],
   },
   comrade: {
     start: ['来了！今天我们一起拿下它！', '战友到位，开整！'],
@@ -8161,9 +8418,8 @@ const DIALECT = {
 };
 
 const KAOMOJI = {
-  genki: ['٩(^ᴗ^)۶', '(๑•̀ㅂ•́)و✧', 'ヽ(・∀・)ﾉ', '(ง •̀_•́)ง'],
+  genki: ['٩(^ᴗ^)۶', '(๑•̀ㅂ•́)و✧', 'ヽ(・∀・)ﾉ', '(ง •̀_•́)ง', '(￣▽￣)ノ', '(・ω・)'],
   gentle: ['(*^.^*)', '(◕ᴗ◕✿)', '(｡•ᴗ•｡)♡'],
-  joker: ['(￣▽￣)ノ', '(・ω・)', '_(:3」∠)_'],
   comrade: ['ᕙ(⇀‸↼‵‵)ᕗ', '(๑•̀ㅂ•́)و✧', '٩(ˊᗜˋ*)و'],
   guide: ['(´･ω･`)?', '(^_~)', '(｡･ω･｡)ﾉ'],
   tsundere: ['(￢_￢)', '(//▽//)', '(=｀ω´=)'],
@@ -8171,9 +8427,8 @@ const KAOMOJI = {
 
 /* 每个性格的"声音性格"：倍率乘在用户滑块上，不覆盖它。 */
 const PERSONA_TONE = {
-  genki: { rate: 1.15, pitch: 1.18 },
+  genki: { rate: 1.12, pitch: 1.16 },
   gentle: { rate: 0.88, pitch: 1.06 },
-  joker: { rate: 1.06, pitch: 1.0 },
   comrade: { rate: 1.04, pitch: 1.0 },
   guide: { rate: 0.97, pitch: 1.02 },
   tsundere: { rate: 1.0, pitch: 0.94 },
@@ -8187,6 +8442,9 @@ let lastBusy = false;    // syncBusy 的边沿检测
 let workHintAt = 0;      // 久坐提醒的节流时间戳
 let startSpoken = false; // 启动台词只念一次
 let idleSpeechTimer = null;
+/* L3（真难过）冷却截止时间：这之前不再主动开任何玩笑。
+   没有这道闸，下一句又会蹦起来 —— 比一开始不安慰更伤人。 */
+let personaQuietUntil = 0;
 const IDLE_SPEECH_MS = 120000;
 
 function isNight() { const h = new Date().getHours(); return h >= 23 || h < 5; }
@@ -8245,6 +8503,78 @@ function speakText(text, opt) {
   if (opt.gesture) orbGesture(opt.gesture);
 }
 
+/* ---------- AI 台词（B + E + 批量生成） ----------
+ * 一次调用拿到整轮要用的台词：过程三句 + 成功一句 + 失败一句。
+ *   · 过程句：applyLive 发现 LIVE.lastTool 变了才放（最多 3 条、间隔 ≥6 秒）
+ *   · 收尾句：在 onTaskDone / onTaskFail 里**替代**预定台词，不叠两层
+ * 只有 charCfg.tts.ai 显式打开才会发起这次调用 —— 关着就是零额外消耗。
+ * 任何失败（超时/接口不通/没配）都静默退回预定台词，用户看到的就是旧行为。
+ */
+let pbTask = 0;      // 任务序号：连发两条时丢掉上一条迟到的结果
+let pbLines = null;  // { steps:[], done, fail }
+let pbIdx = 0;       // 过程句播到第几句
+let pbAt = 0;        // 上次播报时刻（节流）
+let pbTool = '';     // 上次播报时的工具名（同一个工具不重复说）
+
+function personaAiOn() {
+  return charCfg.persona !== 'off' && charCfg.tts.ai === true;
+}
+
+function startPersonaBundle(task) {
+  pbLines = null; pbIdx = 0; pbAt = 0; pbTool = '';
+  const my = ++pbTask;
+  if (!personaAiOn()) return;
+  post('/api/call', {
+    server: 'workbuddy',
+    tool: 'persona_bundle',
+    args: {
+      persona: charCfg.persona,
+      spec: PERSONA_SPEC[charCfg.persona] || PERSONA_SPEC.genki,
+      task: String(task || '').slice(0, 200),
+    },
+  }).then((r) => {
+    if (my !== pbTask) return;                      // 期间又派了新任务
+    const blob = JSON.stringify((r && r.result) || '');
+    const m = blob.match(/\{[\s\S]*\}/);
+    if (!m) return;
+    let o = null;
+    try { o = JSON.parse(m[0]); } catch { return; }
+    if (!o || !o.ok) return;
+    pbLines = {
+      steps: Array.isArray(o.steps) ? o.steps.slice(0, 4) : [],
+      done: typeof o.done === 'string' ? o.done : '',
+      fail: typeof o.fail === 'string' ? o.fail : '',
+    };
+  }).catch(() => { /* 静默退回预定台词 */ });
+}
+
+/* 由 applyLive 每轮调用：只有「换了工具」且间隔够久才出声 */
+function personaTick(L) {
+  if (!pbLines || !personaAiOn()) return;
+  if (!L || !L.active || L.kind !== 'workbuddy') return;
+  const tool = String(L.lastTool || '');
+  if (!tool || tool === pbTool) return;
+  if (pbIdx >= Math.min(pbLines.steps.length, 3)) return;
+  const now = Date.now();
+  if (now - pbAt < 6000) return;                    // 6 秒内不再说，免得像刷屏
+  const line = pbLines.steps[pbIdx];
+  if (!line) return;
+  pbTool = tool;
+  pbAt = now;
+  pbIdx++;
+  speakText(line);
+}
+
+/* 收尾：用上 AI 台词就返回 true，让调用方跳过预定台词 */
+function personaFinish(ok) {
+  if (!pbLines || !personaAiOn()) return false;
+  const line = ok ? pbLines.done : pbLines.fail;
+  pbLines = null;
+  if (!line) return false;
+  speakText(line);
+  return true;
+}
+
 /* 当前人格的显示名（气泡左上角那行小字）。 */
 function personaName() {
   const p = PERSONAS.find((x) => x.id === charCfg.persona);
@@ -8271,8 +8601,12 @@ function onTaskRecv(text) {
   statRounds++;
   const c = classifyUserText(text);
   if (charCfg.persona === 'off') return;
-  /* 真难过时，开心果自动收起玩笑、切温柔口吻（"绝不真伤人"）。 */
-  if (c.sad && charCfg.persona === 'joker') {
+  /* 真难过（L3）：立刻收起全部玩笑，只做两件事 —— 承认这份情绪、表明在场。
+     不建议、不解释、不追问、不鼓励（研究里有效的是承认感受，
+     无效的是淡化「别想太多」和指示「你应该…」）。
+     进入后 10 分钟内不再回到玩笑，否则下一句又蹦起来更伤人。 */
+  if (c.sad && charCfg.persona === 'genki') {
+    personaQuietUntil = Date.now() + 10 * 60 * 1000;
     speakText('（突然正经）…没事吧？我在，不急。', { gesture: 'shy' });
     return;
   }
@@ -8282,8 +8616,8 @@ function onTaskRecv(text) {
     speakSituation('praised', { gesture: g });
     return;
   }
-  /* 接梗：只开心果接，且只在这种时候开。 */
-  if (c.joke && charCfg.persona === 'joker') {
+  /* 接梗：只在冷却期外接 —— 刚安慰完人立刻来一句俏皮话是最伤的。 */
+  if (c.joke && charCfg.persona === 'genki' && Date.now() > personaQuietUntil) {
     speakText('哈哈，这个我接住了——你笑点跟我一样怪。', { gesture: 'greet' });
     return;
   }
@@ -8305,8 +8639,13 @@ function onBusyEnd() { lastBusy = false; }
 function onTaskDone() {
   if (charCfg.persona === 'off') { statDone++; return; }
   statDone++; statFail = 0;
-  /* 久坐提醒：完成一件事时顺手检查"是否连续工作太久"。 */
+  /* AI 台词优先：它按人格现编的收尾比预定句更贴这次任务。
+     有它就直接结束，避免「AI 一句 + 预定一句」连说两遍。 */
+  const aiSaid = personaFinish(true);
+  /* 久坐提醒排在自己的结束语之后 —— 它是旁白，不该抢在「任务结果」前面。
+     两条都会说，只是顺序调过来读着才通顺。 */
   maybeGrind();
+  if (aiSaid) return;
   /* 里程碑优先于普通完成台词：三连击 / 每十次连胜打卡。 */
   if (statDone === 3) {
     speakText('三连击！你今天超猛！' + (charCfg.persona === 'genki' ? ' ٩(ˊᗜˋ*)و' : ''), { gesture: 'greet' });
@@ -8323,6 +8662,8 @@ function onTaskDone() {
 function onTaskFail() {
   if (charCfg.persona === 'off') { statFail++; return; }
   statFail++; statDone = 0;
+  /* AI 台词优先：失败时说的话最忌模板化，现编的一句更像人在旁边 */
+  if (personaFinish(false)) return;
   /* 连续失败（≥2）：每个性格一句专属安慰，优先于普通失败台词。 */
   if (statFail >= 2) {
     const map = {
@@ -8330,8 +8671,7 @@ function onTaskFail() {
       tsundere: '…别灰心，我再试一次。',
       comrade: '摔了几跤而已，爬起来继续。',
       guide: '连续不顺…我们换个法子看看。',
-      genki: '连着翻车？没事，瑞个士气再来！',
-      joker: '又挂了…不过这个 bug 一定是在考验你。',
+      genki: '连着翻车？没事，瑞个士气再来——这 bug 就是在考验我们。',
     };
     speakText(map[charCfg.persona] || '没成，没关系。', { gesture: charCfg.persona === 'tsundere' ? 'shy' : 'loading' });
     return;
@@ -8347,7 +8687,7 @@ function onIdleOrAway() {
     speakSituation('night');
     return;
   }
-  if (charCfg.persona === 'joker' && weekday() === 5 && new Date().getHours() >= 17) {
+  if (charCfg.persona === 'genki' && weekday() === 5 && new Date().getHours() >= 17) {
     speakText('周五晚上啦，周末快乐！…先别加班。', { gesture: 'greet' });
     return;
   }
@@ -8393,13 +8733,15 @@ function speakStart() {
 
 /* 状态放在一坨里、整份落盘：四个 key 各自一套版本、改一半崩一半的坑踩过。 */
 let charCfg = {
-  persona: 'gentle',       // 六个人格之一，或 'off'（纯工具）
+  persona: 'gentle',       // 五个人格之一，或 'off'（纯工具）
   personaLast: 'gentle',   // 关了再开时回到哪一个
   memory: { enabled: false, source: '' },
   gif: { enabled: true, off: [] },
   /* lean = 精简念白：跳过「收到」「执行中」这两个每个任务必念的流程节点，
-     只在完成 / 失败 / 被夸 / 里程碑这类有结果、有情绪的时候出声。默认开。 */
-  tts: { enabled: false, voice: '', rate: 1, pitch: 1, volume: 1, lean: true },
+     只在完成 / 失败 / 被夸 / 里程碑这类有结果、有情绪的时候出声。默认开。
+     ai = AI 台词：每个任务多花一次模型调用，让过程与收尾的话由模型现编。
+     默认关 —— 它要额外消耗 token，必须由用户显式打开。 */
+  tts: { enabled: false, voice: '', rate: 1, pitch: 1, volume: 1, lean: true, ai: false },
 };
 
 function charNum(v, lo, hi, def) {
@@ -8436,8 +8778,14 @@ function charLoad() {
       charCfg.tts.pitch = charNum(t.pitch, 0.6, 1.6, 1);
       charCfg.tts.volume = charNum(t.volume, 0, 1, 1);
       charCfg.tts.lean = t.lean !== false;   // 精简念白默认开（老配置没有这个字段也算开）
+      charCfg.tts.ai = t.ai === true;        // AI 台词默认关：要额外出 token，必须显式开
     } catch { /* 存坏了就当没存过，用默认 —— 不能因为一份 JSON 让整个设置页打不开 */ }
   }
+  /* 'joker' 已并入 'genki'。**必须在合法性校验之前迁移** —— 否则白名单会把它
+     判成非法值、静默退回温柔守护者，用户只会觉得「设置被重置了」，而且查不到原因。 */
+  if (charCfg.persona === 'joker') charCfg.persona = 'genki';
+  if (charCfg.personaLast === 'joker') charCfg.personaLast = 'genki';
+
   /* 只认 PERSONAS 里有的 id + 'off'：老配置里残留的怪值一律退回默认 */
   const ok = charCfg.persona === 'off' || PERSONAS.some((p) => p.id === charCfg.persona);
   if (!ok) charCfg.persona = 'gentle';
@@ -8451,8 +8799,7 @@ function charLoad() {
       自己管比信它稳。 */
 const TTS_SAMPLE = {
   gentle: '我在，慢一点也没关系。',
-  genki: '来啦来啦，今天也一起冲！',
-  joker: '试音中，本机正在努力发音，表情认真。',
+  genki: '来啦来啦，今天也一起冲！任务收到，我这就去…先摸三分钟鱼。',
   comrade: '试音，试音，听得见吗？听得见就一起开工。',
   guide: '这是一条试听，语速和音调都可以在这里调。',
   tsundere: '……只是试一下音，别多想。',
@@ -8575,6 +8922,15 @@ function renderTtsUI() {
     lb.title = on
       ? '当前只在完成 / 失败 / 被夸 / 里程碑时念。点击改回完整念白（每个任务念「收到」「执行中」「完成」三句，更啰嗦也更慢）'
       : '当前每个任务都念「收到」「执行中」「完成」三句（更慢）。点击开启精简，只在有结果有情绪时念';
+  }
+  const ab = document.getElementById('ttsAi');
+  if (ab) {
+    const on = t.ai === true;
+    ab.textContent = 'AI 台词 ' + (on ? '开' : '关');
+    ab.classList.toggle('sel', on);
+    ab.title = on
+      ? '每个任务会多一次模型调用（额外消耗 token / 积分），换来这几句话是这个人格现编的。点击关闭，回到预定台词'
+      : '当前只用预定台词，零额外消耗。点击开启：助手会多调一次模型，把这一轮的过程和收尾按人格现编出来';
   }
 }
 
@@ -8774,6 +9130,20 @@ function bindPersona() {
     charCfg.tts.lean = !(charCfg.tts.lean !== false);
     renderTtsUI();
     charSave();
+  });
+
+  const aiBtn = document.getElementById('ttsAi');
+  if (aiBtn) aiBtn.addEventListener('click', () => {
+    charCfg.tts.ai = charCfg.tts.ai !== true;
+    renderTtsUI();
+    charSave();
+    /* 直接给一句反馈：让人知道这次改动会不会产生调用，而不是等下次任务才察觉 */
+    if (charCfg.tts.ai && charCfg.persona !== 'off') {
+      const hasCm = !!(cmCur && cmCur.baseUrl && cmCur.model && cmCur.hasKey);
+      addMsg('Orb', hasCm
+        ? 'AI 台词已开：会用你填的自定义模型说话，每任务多一次调用。'
+        : 'AI 台词已开：走 CodeBuddy CLI，每任务多一次调用，会消耗积分。想更省可以在「通道 › 台词模型」填自己的接口。', 'sys');
+    }
   });
 
   const vs = document.getElementById('ttsVoice');
@@ -11357,6 +11727,8 @@ function applyLive(L) {
   /* 必须是 'block'：CSS 里 #liveBar 就是 display:none 打底的，写 '' 只是删掉内联
      声明、随即回落到样式表 —— 那样这条运行条永远不会出现（只有头像在转）。 */
   bar.style.display = 'block';
+  /* 过程播报：只在 LIVE.lastTool 变化时才会真的出声（内部有节流与上限） */
+  try { personaTick(L); } catch {}
 }
 
 /* ---------- 智能接管（工作流半路失守时顶几小步） ----------

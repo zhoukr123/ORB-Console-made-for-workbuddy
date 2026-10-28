@@ -49,6 +49,11 @@ contextBridge.exposeInMainWorld("orb", {
   getBridgeToken: () => ipcRenderer.invoke("bridge-token"),
   getVisionKey: (slot) => ipcRenderer.invoke("get-vision-key", slot),
   setVision: (patch) => ipcRenderer.invoke("set-vision", patch),
+  /* 自定义模型（只用于人格台词生成）。key 只写不读：读回来的是掩码，
+     真正的明文留在主进程写的那份文件里，由 bridge 直接读。 */
+  cmGet: () => ipcRenderer.invoke("cm-get"),
+  cmSet: (patch) => ipcRenderer.invoke("cm-set", patch),
+  cmClear: () => ipcRenderer.invoke("cm-clear"),
   setVoice: (patch) => ipcRenderer.invoke("set-voice", patch),
   /* 首跑向导「已看过」标记（对应 main.js 的 set-wizard-done）。
      单独开通道而不复用 setVision：UI 标记不该混进视觉配置的写入语义。 */

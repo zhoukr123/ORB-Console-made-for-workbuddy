@@ -615,6 +615,10 @@ const WORKBUDDY_TOOLS = {
   // 包一层 metered：这次调用新产生的会话才算到 ORB 头上（详见 readCredits 的注释）
   workbuddy_execute: (a, timeoutMs) =>
     metered(() => runWorkbuddy(String(a?.task ?? ""), timeoutMs, String(a?.model ?? ""))),
+  /* 人格台词批量生成（B + E 的措辞来源）。
+     不进 metered：它本身就是「额外消耗」那一块，面板会单独标注成本，
+     不该和「会话记账」混在一起。失败一律返回 {ok:false}，不抛。 */
+  persona_bundle: (a) => runPersonaBundle(a),
 };
 
 /*
@@ -791,7 +795,296 @@ async function runWorkbuddy(task, timeoutMs = JOB_TIMEOUT_MS, model = "") {
       log("[wb-daemon] 回落到一次性子进程：", err?.message ?? err);
     }
   }
-  return spawnOnce(task, timeoutMs, model);
+  /* 进度可见：把普通后台任务也挂进 LIVE（面板每 5 秒轮询 /api/status 就能读到）。
+     total=0 时面板不画步数，只显示「最近一个工具 · 已用几秒」。
+     只有 LIVE 空闲时才接管，免得和正在跑的工作流回放抢同一个槽。 */
+  const ownLive = !LIVE.active;
+  if (ownLive) liveStart("workbuddy", String(task || "").replace(/\s+/g, " ").slice(0, 24), 0, "后台任务");
+  try {
+    /* 默认走流式：能拿到 tool_use 才能做过程播报。
+       ORB_WB_TEXT=1 可整体退回旧的纯文本路径（排障用，行为与历史完全一致）。 */
+    const r = process.env.ORB_WB_TEXT === "1"
+      ? await spawnOnce(task, timeoutMs, model)
+      : await spawnOnceStream(task, timeoutMs, model);
+    if (ownLive) liveEnd(true);
+    return r;
+  } catch (e) {
+    if (ownLive) liveEnd(false, String((e && e.message) || e).slice(0, 120));
+    throw e;
+  }
+}
+
+/** 流式版一次性执行：--output-format stream-json。
+ *
+ *  正文怎么取：**把所有 assistant 事件的 text 拼起来**。这是最稳的一条 ——
+ *  不依赖 result 事件里叫什么字段，也不受 CLI 版本改动影响；万一哪天
+ *  事件形状变了，只要还有 assistant 文本就有内容，不会把整个后台通道弄哑。
+ *  真要出问题，用 ORB_WB_TEXT=1 一键退回 spawnOnce。
+ *
+ *  顺带把每个 tool_use 的名字写进 LIVE.lastTool，供面板做过程播报。
+ */
+function spawnOnceStream(task, timeoutMs, model, cliPath = "") {
+  return new Promise(async (resolve, reject) => {
+    if (!task.trim()) return reject(new Error("workbuddy_execute 需要一个 task 参数"));
+    const cli = await resolveWbCli();
+    if (!cli.found) return reject(new Error(cli.hint || CLI_HINT_MISSING));
+    const cliExe = cliPath || cli.path;
+    const port = await freePort();
+    const viaNode = /\.(m?js)$/i.test(cliExe);
+    const file = viaNode ? NODE_EXE : cliExe;
+    const argv = [
+      ...(viaNode ? [cliExe] : []),
+      "-p", task,
+      "--port", String(port),
+      "--output-format", "stream-json",
+      // 后台无人值守，不能卡在权限确认上
+      "--permission-mode", "bypassPermissions",
+      ...((model || WB_MODEL).trim() ? ["--model", (model || WB_MODEL).trim()] : []),
+      ...(WB_EFFORT ? ["--effort", WB_EFFORT] : []),
+      ...(WB_MAX_TURNS ? ["--max-turns", WB_MAX_TURNS] : []),
+    ];
+
+    let child;
+    try {
+      child = spawn(file, argv, {
+        windowsHide: true,
+        env: cleanCliEnv(),
+        cwd: process.env.ORB_WB_CWD || path.join(HERE, ".."),
+      });
+    } catch (e) {
+      return reject(e);
+    }
+    trackProc(child);
+    registerChild(child.pid, "cli");
+
+    const MAX_BYTES = 8 * 1024 * 1024;   // 与旧 execFile 的 maxBuffer 对齐
+    let text = "";
+    let stderr = "";
+    let bytes = 0;
+    let buf = "";
+    let done = false;
+    let timedOut = false;
+    let toolSeen = 0;
+
+    /* execFile 的 timeout 只杀父进程，孙进程会成孤儿；这里自己计时 + 树杀 */
+    const timer = setTimeout(() => { timedOut = true; killProcTree(child); }, timeoutMs);
+
+    const finish = (err) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const out = text.trim();
+      if (out) {
+        wbCliAuth = "ok";
+        return resolve({ content: [{ type: "text", text: extractAnswer(out) }], isError: false });
+      }
+      const detail = String(stderr || (err && err.message) || "").trim();
+      if (/Authentication required|Please use \/login|not logged in|unauthorized/i.test(detail)) {
+        wbCliAuth = "not-logged-in";
+        return reject(new Error(CLI_HINT_LOGIN));
+      }
+      if (timedOut) return reject(new Error("CodeBuddy CLI 超时（" + Math.round(timeoutMs / 1000) + " 秒）"));
+      return reject(new Error(`CodeBuddy CLI 无输出：${detail || "exit " + ((err && err.code) ?? "?")}`));
+    };
+
+    const onLine = (line) => {
+      const s = line.trim();
+      if (!s || s.charCodeAt(0) !== 123) return;      // 只吃 JSON 行
+      let ev;
+      try { ev = JSON.parse(s); } catch { return; }
+      if (ev.type === "assistant" && ev.message && Array.isArray(ev.message.content)) {
+        for (const c of ev.message.content) {
+          if (!c) continue;
+          if (c.type === "text" && typeof c.text === "string") text += c.text;
+          else if (c.type === "tool_use" && c.name) {
+            toolSeen += 1;
+            if (LIVE.active) liveStep(toolSeen, String(c.name));
+          }
+        }
+      } else if (ev.type === "result" && ev.is_error && Array.isArray(ev.errors)) {
+        stderr += ev.errors.join("\n") + "\n";
+      }
+    };
+
+    child.stdout.on("data", (d) => {
+      bytes += d.length;
+      if (bytes > MAX_BYTES) { try { killProcTree(child); } catch {} return; }
+      buf += d.toString("utf8");
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
+    });
+    child.stderr.on("data", (d) => {
+      stderr += d.toString("utf8");
+      if (stderr.length > 64_000) stderr = stderr.slice(-32_000);
+    });
+    child.on("error", (e) => finish(e));
+    child.on("close", (code, sig) => {
+      if (buf) { onLine(buf); buf = ""; }
+      finish(sig || code ? { code, signal: sig } : null);
+    });
+  });
+}
+
+/* ---------------- 人格台词批量生成（B + E 的措辞来源） ----------------
+ * 一次调用拿到整轮要用的台词：过程三句 + 成功一句 + 失败一句。
+ * 成本等同「结尾现编一次」，却能让整个过程都有这个人自己的说法 ——
+ * 这是比「每句现调一次」便宜一个数量级的关键。
+ *
+ * 分工铁律：**事实由面板给，模型只负责措辞**。它不知道任务里发生了什么，
+ * 所以过程句只能用泛化动作，不许出现具体文件名或行号（那些由 E 的规则层补）。
+ * 任何失败都返回 {ok:false}，由面板退回预定台词，绝不抛给调用方。
+ */
+const PERSONA_TASK_MAX = 200;
+
+function buildPersonaPrompt(a) {
+  const spec = a && a.spec && typeof a.spec === "object" ? a.spec : {};
+  const L = [];
+  L.push("你现在只需要「说话」：不要调用任何工具、不要执行任务、不要读文件。");
+  L.push("");
+  L.push("[当前人格] " + String(spec.name || "元气开心果"));
+  if (spec.mechanism) L.push("[性格内核] " + String(spec.mechanism));
+  L.push("[语言规则] " + String(spec.rules || "句长 10~18 字；口语；不啰嗦。"));
+  L.push("[禁止] " + String(spec.bans || "不讽刺、不说教、不自贬。"));
+  if (Array.isArray(spec.samples) && spec.samples.length) {
+    L.push("[说话方式参考，不要照抄] " + spec.samples.join(" ／ "));
+  }
+  L.push("");
+  L.push("[本次任务] " + String((a && a.task) || "").slice(0, PERSONA_TASK_MAX));
+  L.push("");
+  L.push("一次生成四段，严格按下面的 JSON 输出，不要解释、不要代码块：");
+  L.push('{"steps":["…","…","…"],"done":"…","fail":"…"}');
+  L.push("steps：任务执行中说的三句，每句不超过 18 字，只说「正在做的事」；不知道具体文件名就不要编；");
+  L.push("done：成功后收尾一句；");
+  L.push("fail：失败后一句 —— 先承认这确实让人挫败，再给一个具体的小肯定；禁止说「没事」「小问题」「别想太多」。");
+  return L.join("\n");
+}
+
+function parsePersonaJson(raw) {
+  const s = String(raw || "");
+  const i = s.indexOf("{"), j = s.lastIndexOf("}");
+  if (i < 0 || j <= i) return null;
+  let o;
+  try { o = JSON.parse(s.slice(i, j + 1)); } catch { return null; }
+  if (!o || typeof o !== "object") return null;
+  const arr = Array.isArray(o.steps) ? o.steps : [];
+  const steps = arr
+    .filter((x) => typeof x === "string" && x.trim())
+    .slice(0, 4)
+    .map((x) => x.trim().slice(0, 60));
+  const done = typeof o.done === "string" ? o.done.trim().slice(0, 80) : "";
+  const fail = typeof o.fail === "string" ? o.fail.trim().slice(0, 80) : "";
+  if (!steps.length && !done && !fail) return null;
+  return { steps, done, fail };
+}
+
+/** 调用户自己填的 OpenAI 兼容接口。只用于台词，不接管主任务。 */
+async function callCustomChat(custom, sys, usr, timeoutMs) {
+  const base = String(custom.baseUrl || "").replace(/\/+$/, "");
+  if (!base || !custom.key || !custom.model) throw new Error("自定义模型配置不完整");
+  const url = /\/chat\/completions$/i.test(base) ? base : base + "/chat/completions";
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer " + custom.key },
+    body: JSON.stringify({
+      model: custom.model,
+      temperature: 0.75,
+      max_tokens: 500,
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: usr },
+      ],
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) {
+    let t = "";
+    try { t = (await res.text()).slice(0, 160); } catch {}
+    throw new Error("HTTP " + res.status + (t ? " " + t : ""));
+  }
+  const j = await res.json();
+  const t = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+  if (typeof t !== "string" || !t.trim()) throw new Error("自定义模型返回空内容");
+  return t;
+}
+
+/** 读主进程写入的自定义模型配置（路径由 main.js 通过 ORB_CM_FILE 注入）。
+ *  走文件而不是走参数：明文 key 因此永远不进渲染层、也不经过本地 HTTP。 */
+function readCustomModel() {
+  const f = process.env.ORB_CM_FILE;
+  if (!f) return null;
+  try {
+    const o = JSON.parse(fsSync.readFileSync(f, "utf8")) || {};
+    if (!o.baseUrl || !o.key || !o.model) return null;
+    return {
+      baseUrl: String(o.baseUrl),
+      key: String(o.key),
+      model: String(o.model),
+      name: String(o.name || ""),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function runPersonaBundle(a) {
+  const t0 = Date.now();
+  const sys = "你是一个只会说话的桌面伙伴角色。严格遵守给定人格的语言规则，只输出要求的 JSON。";
+  const usr = buildPersonaPrompt(a);
+  const custom = readCustomModel() || (a && a.custom && typeof a.custom === "object" ? a.custom : null);
+
+  /* 1) 自定义模型优先：更快、不占 CLI 会话额度 */
+  if (custom && custom.baseUrl && custom.key && custom.model) {
+    try {
+      const p = parsePersonaJson(await callCustomChat(custom, sys, usr, 9000));
+      if (p) return Object.assign({ ok: true, src: "custom", ms: Date.now() - t0 }, p);
+      return { ok: false, error: "自定义模型输出不是可解析的 JSON", src: "custom", ms: Date.now() - t0 };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e).slice(0, 200), src: "custom", ms: Date.now() - t0 };
+    }
+  }
+
+  /* 2) 退回 CLI。中文不能走 argv（Windows 下会被按 GBK 转码弄坏），
+     所以整段要求写进临时文件，用 --system-prompt-file 传。
+     cwd 指向临时目录：避免 CLI 读到项目 AGENTS.md 把人格盖掉。 */
+  const cli = await resolveWbCli();
+  if (!cli.found) return { ok: false, error: cli.hint || CLI_HINT_MISSING, src: "cli", ms: Date.now() - t0 };
+  const tmpDir = process.env.TEMP || process.env.TMP || HERE;
+  const tmp = path.join(tmpDir, "orb-persona-" + process.pid + "-" + t0 + ".txt");
+  try {
+    fsSync.writeFileSync(tmp, usr, "utf8");
+  } catch (e) {
+    return { ok: false, error: "写临时提示文件失败：" + String((e && e.message) || e), src: "cli", ms: Date.now() - t0 };
+  }
+  try {
+    const port = await freePort();
+    const text = await new Promise((resolve, reject) => {
+      const child = execFile(
+        cli.path,
+        [
+          "-p", "按系统提示的要求生成四段台词 JSON。",
+          "--port", String(port),
+          "--output-format", "text",
+          "--system-prompt-file", tmp,
+          "--permission-mode", "bypassPermissions",
+          ...((WB_MODEL || "").trim() ? ["--model", WB_MODEL.trim()] : []),
+        ],
+        { timeout: 25000, maxBuffer: 2 * 1024 * 1024, windowsHide: true, env: cleanCliEnv(), cwd: tmpDir },
+        (err, stdout) => {
+          const out = String(stdout || "").trim();
+          if (out) return resolve(out);
+          return reject(new Error(String((err && err.message) || "CLI 无输出").slice(0, 160)));
+        },
+      );
+      trackProc(child);
+    });
+    const p = parsePersonaJson(text);
+    if (p) return Object.assign({ ok: true, src: "cli", ms: Date.now() - t0 }, p);
+    return { ok: false, error: "输出不是可解析的 JSON", src: "cli", ms: Date.now() - t0 };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e).slice(0, 200), src: "cli", ms: Date.now() - t0 };
+  } finally {
+    try { fsSync.unlinkSync(tmp); } catch {}
+  }
 }
 
 /** 找一个当前空闲的本地端口，避免 codebuddy 默认去绑 58449 与正在运行的
@@ -1310,7 +1603,7 @@ function repairFront() {
 const WORKFLOW_DIR = path.join(DATA_DIR, "workflows");
 const READ_TOOLS_FOR_REC = new Set(["Snapshot", "Screenshot", "DisplayInventory", "Process"]);
 
-const REC = { on: false, name: "", steps: [], startedAt: 0 };
+const REC = { on: false, name: "", steps: [], startedAt: 0, pendingWinCaps: [] };
 
 /**
  * 去重兜底：抑制窗口之外偶尔还是会有"ORB 自己发起的操作被钩子又记一遍"。
@@ -1555,6 +1848,11 @@ function auditCleanup() {
 const LIVE = {
   active: false, kind: "", name: "", step: 0, total: 0,
   lastTool: "", note: "", startedAt: 0, finishedAt: 0, ok: null,
+  /* 智能接管请求。非 null 时说明回放正卡在某一步等视觉层接手，
+     面板轮询 /api/status 看到这个字段就去跑 runVision，跑完回调 /api/agent-done。
+     为什么绕这一圈：视觉模型的密钥存在主进程（main.js 的 get-vision-key），
+     bridge 是独立 Node 进程，拿不到 —— 所以它只能「把活儿挂出去等回答」。 */
+  pendingAgent: null,
 };
 
 function liveStart(kind, name, total, note) {
@@ -1572,11 +1870,50 @@ function liveStep(i, tool) {
 function liveEnd(ok, note) {
   LIVE.active = false; LIVE.ok = !!ok;
   LIVE.finishedAt = Date.now();
+  LIVE.pendingAgent = null;          // 回放结束必须清掉，否则面板会一直以为有活儿要接手
   if (note) LIVE.note = note;
   audit({
     source: LIVE.kind || "job", event: "end", name: LIVE.name,
     ok: LIVE.ok, ms: LIVE.finishedAt - LIVE.startedAt, note: LIVE.note,
   });
+}
+
+/* ---------------- 智能接管：bridge ⇄ 面板握手 ----------------
+ * 一次接管 = 挂出请求 → 阻塞等面板回答。阻塞是必须的：
+ * 回放正在半路停下，后面每步都依赖「现在屏幕处于什么状态」，
+ * 不能放它继续跑。所以用 promise 挂起，且**必须有超时**——
+ * 面板被用户收起时轮询会停，没人接这个活儿，不超时就永远卡死。 */
+const WAITER = { agent: null };    // { resolve, reject, timer }
+const AGENT_WAIT_MS = 180000;      // 单轮接管最长等 3 分钟（含模型往返）
+
+function askPanelForAgent(payload, timeoutMs = AGENT_WAIT_MS) {
+  return new Promise((resolve, reject) => {
+    if (WAITER.agent) {             // 上一轮没结算：先拒掉，否则两个 resolve 抢同一个 promise
+      try { clearTimeout(WAITER.agent.timer); WAITER.agent.reject(new Error("被新的接管请求覆盖")); } catch { /* ignore */ }
+      WAITER.agent = null;
+    }
+    const timer = setTimeout(() => {
+      WAITER.agent = null;
+      LIVE.pendingAgent = null;
+      reject(new Error(`接管等待超时（${Math.round(timeoutMs / 1000)}s 无回应）`
+        + `——面板可能已收起，或视觉模型还没配置`));
+    }, timeoutMs);
+    WAITER.agent = { resolve, reject, timer };
+    LIVE.pendingAgent = payload;
+    log(`[agent] 挂出接管请求：第 ${payload.stepNo}/${payload.totalNo} 步，本批 ${payload.batch} 步`);
+  });
+}
+
+/** 面板回报后结算挂起的 promise。返回是否真的有人等着（没人等就说明超时已过，丢弃即可）。 */
+function settleAgent(payload) {
+  LIVE.pendingAgent = null;
+  const w = WAITER.agent;
+  WAITER.agent = null;
+  if (!w) return false;
+  clearTimeout(w.timer);
+  if (payload && payload.ok === false) w.reject(new Error(String(payload.error || "面板接管失败").slice(0, 300)));
+  else w.resolve(payload || {});
+  return true;
 }
 
 /* ---------------- 危险操作确认 ----------------
@@ -1757,53 +2094,144 @@ async function evalWhen(when, ctx) {
 
 async function runSteps(steps, ctx, depth = 0) {
   if (depth > MAX_DEPTH) throw new Error(`嵌套层数超过上限（${MAX_DEPTH}）`);
-  for (const s of steps || []) {
+  const list = steps || [];
+  let i = 0;
+  while (i < list.length) {
     // 急停检查已下沉到 callToolRaw 入口（覆盖全部调用路径），此处不再重复。
-    await runNode(s, ctx, depth);
+    /* 智能体判定最终目标已达成：整条流程收工。
+       只 return 不够 —— 嵌套层返回只能结束本层，父层循环还会跑下一轮。 */
+    if (ctx.finished) return;
+    const sig = await runNode(list[i], ctx, depth);
+    if (sig && sig.downgraded) {
+      /* 这一步「配了锚点却找不到」——界面变了。交给接管层处理：
+         它会让视觉智能体推进几小步，再探一次是否已回到原轨道。 */
+      const back = await takeover(list, i, ctx);
+      if (back === null) {
+        throw new Error(`第 ${ctx.step} 步「${sig.anchor || sig.tool}」定位失败，智能接管也没能回到原流程`);
+      }
+      if (back === "fallback") {
+        /* once 模式没救回来：退回录制坐标把这一步做掉，同时把策略降级，
+           否则同一步会反复触发接管，一路卡在这里。 */
+        log(`[agent] 单点救援未果，第 ${ctx.step} 步改用录制坐标继续`);
+        ctx.escalate = "off";
+        continue;                       // 不 i++，重跑这一步
+      }
+      i = back;
+      continue;
+    }
+    i++;
   }
 }
 
 async function runNode(s, ctx, depth) {
-  if (!s || typeof s !== "object") return;
+  if (!s || typeof s !== "object") return null;
   const type = s.type || "action";
 
   if (type === "set") {
     ctx.vars[s.name] = interp(s.value, ctx);
-    return;
+    return null;
   }
 
   if (type === "loop") {
     const saveI = ctx.vars.i;
+    const saveScopes = ctx.scopes;
+    /* scope 栈要复制一层再压：直接用原数组的话，兄弟节点会互相踩，
+       而且 pop 之后外面那层的引用就断了。 */
+    ctx.scopes = (ctx.scopes || []).slice();
     if (s.while) {
+      /* while 型不需要轮次对齐 —— 它的退出条件是每轮重算的，
+         接管把剩下的干完了，条件自然变 false，循环自己就停了。 */
       let n = 0;
+      ctx.scopes.push({ kind: "while", iter: () => n, jumpTo: () => false, pending: null });
       while (n < MAX_WHILE && (await evalWhen(s.while, ctx))) {
+        if (ctx.finished) break;
         ctx.vars.i = n;
         await runSteps(s.body, ctx, depth + 1);
         n++;
       }
       if (n >= MAX_WHILE) console.log(`[wf] while 达到上限 ${MAX_WHILE}，已强制停止`);
+      ctx.scopes.pop();
     } else {
       const times = Math.max(0, Number(interp(s.times ?? 1, ctx)) || 0);
-      for (let i = 0; i < times; i++) {
-        ctx.vars.i = i;
+      let n = 0;
+      const mark = s.mark || null;
+      const since = Number(ctx.startedAt) || 0;
+      const scope = {
+        kind: "times", total: times, mark, pending: null, since,
+        /* 每轮几次标记动作：用户手填 > 静态数循环体 > 1。
+           静态数是主来源 —— 答案本来就写在 body 里，不用问人，也不用示范。 */
+        markPerRound: (mark && Number(mark.perRound) > 0)
+          ? Number(mark.perRound)
+          : Math.max(1, countMarkInSteps(s.body, mark) || 1),
+        lastRoundCount: 0,          // 上一轮实测点了几次，用来覆盖静态数
+        iter: () => n,
+        /* 只能往前跳，且不能超过总轮数。
+           倒退等于把已经做过的事重做一遍（可能重复提交），一律拒绝；
+           跳到 times 则表示全部做完，循环会自然退出。 */
+        jumpTo: (v) => {
+          if (!canJump(n, v, times)) return false;
+          scope.pending = v;
+          return true;
+        },
+      };
+      ctx.scopes.push(scope);
+      // 取原始次数（不除 perRound）：perRound 传 1 让 countMarks 直接返回条数
+      const rawCount = () => (mark
+        ? countMarks(AUDIT_MEM, since, Object.assign({}, mark, { perRound: 1 }))
+        : null);
+      while (n < times) {
+        if (ctx.finished) break;
+        ctx.vars.i = n;
+        scope.pending = null;
+        const rawBefore = rawCount();
         await runSteps(s.body, ctx, depth + 1);
+        /* 实测本轮点了几次。循环体里有分支时静态数会偏，
+           用实测值覆盖，下一轮自动收敛；0 次说明这轮没走那条路，不覆盖。 */
+        const rawAfter = rawCount();
+        if (rawBefore !== null && rawAfter !== null && rawAfter > rawBefore) {
+          scope.lastRoundCount = rawAfter - rawBefore;
+        }
+        // 接管对齐过轮次 → 直接跳到目标轮，不能再 +1（否则白跑一轮）
+        n = (scope.pending === null) ? n + 1 : scope.pending;
       }
+      ctx.scopes.pop();
     }
-    ctx.vars.i = saveI;   // 还原，避免嵌套循环互相污染
-    return;
+    ctx.scopes = saveScopes;   // 还原，避免嵌套循环互相污染
+    ctx.vars.i = saveI;
+    return null;
   }
 
   if (type === "if") {
     const hit = await evalWhen(s.when, ctx);
     await runSteps(hit ? s.then : s.else, ctx, depth + 1);
-    return;
+    return null;
   }
 
   // 默认：普通动作（老工作流的步骤没有 type，走这里）
   ctx.step = (ctx.step || 0) + 1;
   liveStep(ctx.step, s.tool);
-  await callTool(s.server, s.tool, interp(s.args || {}, ctx), s.timeoutMs ?? CALL_TIMEOUT_MS);
+  // 抗迁移：先按窗口锚定 / 文字锚定 / 兜底重算坐标，再回放
+  const { args: actArgs, conf } = await resolveAnchor(s);
+  ctx.lastConf = conf;
+
+  if (conf === "absolute") {
+    /* 配了锚点却落到录制坐标 = 真降级，界面上那个文字找不到了。
+       三种处置由工作流的 escalate 决定。 */
+    if (ctx.escalate === "stop") {
+      throw new Error(`第 ${ctx.step} 步「${(s.args && s.args.anchor) || s.tool}」在界面上找不到，已按「遇到意外就停」停下`);
+    }
+    /* 嵌套层（loop / if 的 body）现在也接管，但只在**同一层**回归：
+       失守发生在 body 里，就让智能体在 body 里顶，回到 body 的某一步继续。
+       父层的循环次数、分支选择、迭代变量完全不受影响 —— 这是 UiPath
+       Retry Scope 的作用域语义，也是唯一不会搞乱控制流的接法。 */
+    if (ctx.escalate === "agent" || ctx.escalate === "once") {
+      return { downgraded: true, conf, tool: s.tool, anchor: (s.args && s.args.anchor) || "" };
+    }
+  }
+
+  await callTool(s.server, s.tool, interp(actArgs, ctx), s.timeoutMs ?? CALL_TIMEOUT_MS);
   if (ctx.gap) await sleep(ctx.gap);
+  return null;
 }
 
 /** 回放：支持编排节点；失败立即停并汇报 */
@@ -1814,7 +2242,23 @@ async function wfPlay(name, opts = {}) {
   catch { throw new Error(`读不到工作流：${name}`); }
 
   const gap = Number(opts.gap ?? wf.gap ?? 700);
-  const ctx = { vars: Object.assign({}, wf.vars || {}), gap };
+  /* escalate：界面变了怎么办。
+     off   —— 老行为，直接按录制坐标点下去（默认，不改变既有工作流的语义）
+     stop  —— 立刻停并报错（宁可不做，也不乱点）
+     once  —— 先问一次视觉模型，救不回来再用录制坐标顶上
+     agent —— 交给视觉智能体分几小步推进，每批停下探一次是否回到原轨道 */
+  const escalate = ["off", "stop", "once", "agent"].includes(wf.escalate) ? wf.escalate : "off";
+  const ctx = {
+    vars: Object.assign({}, wf.vars || {}),
+    gap,
+    goal: String(wf.goal || ""),          // 给智能体看的最终目标，接管时原样拼进提示词
+    escalate,
+    agentBudget: Number(wf.agentBudget) || 0,
+    lastConf: "none",
+    startedAt: Date.now(),                // 轮次推定的时间基线：只数这次运行之后的动作
+    scopes: [],                           // 循环作用域栈：接管靠它知道「在哪一层、第几轮」
+    finished: false,                      // 智能体判定最终目标已达成 → 整条流程收工
+  };
 
   let steps = wf.steps || [];
   if (opts.skipRead) {
@@ -1830,7 +2274,11 @@ async function wfPlay(name, opts = {}) {
   try {
     await runSteps(steps, ctx, 0);
     liveEnd(true);
-    return { ok: true, total: steps.length, stoppedAt: null, results: [], vars: ctx.vars };
+    return {
+      ok: true, total: steps.length, stoppedAt: null, results: [], vars: ctx.vars,
+      // finished：智能体在接管时判定「最终目标已达成」，整条流程提前收工（不是失败）
+      finished: !!ctx.finished,
+    };
   } catch (err) {
     const msg = String(err?.message ?? err);
     liveEnd(false, msg);
@@ -1916,8 +2364,8 @@ function armTriggers() {
        不会再出现"后一条覆盖前一条、前一条永远关不掉也清不掉"。 */
     const hkey = `${t.id}#${i}`;
     if (t.type === "interval") {
-      // 下限 5 分钟：防手滑写 0 或 1 把机器跑满
-      const ms = Math.max(5, Number(t.minutes || 10)) * 60000;
+      // 下限 1 分钟：防手滑写 0 把机器跑满；1 分钟起允许用户精细调度
+      const ms = Math.max(1, Number(t.minutes || 10)) * 60000;
       triggerHandles.set(hkey, setInterval(() => fireTrigger(t, "interval"), ms));
     } else if (t.type === "file") {
       try {
@@ -2292,6 +2740,840 @@ function ocrPng(buf, lang = "zh-Hans-CN") {
       }
     );
   });
+}
+
+/* ---------- 抗迁移：窗口锚定 / 文字锚定 / 落空兜底 ----------
+ * 录制得到的点击都是「绝对屏幕坐标」。窗口一旦被拖动 / 缩放 / 重排，
+ * 原来的按钮就不在那个点了 —— 这就是「按钮迁移」导致工作流失效的根因。
+ *
+ * 三道防线（统一在 resolveAnchor 里串行裁决）：
+ *   1) 窗口相对坐标：录制时把「点落在哪个窗口、相对窗口左上角的偏移」记下来；
+ *      回放时按窗口现在的左上角重新算出绝对坐标。窗口挪了也能点准。
+ *   2) 文字锚定：用户在编辑器给某一步写上「锚定文字」（如"确定"），
+ *      回放时对该窗口截图 OCR，找到这段文字就点它中心。按钮改名不碍事，
+ *      只要文字还在就能点。
+ *   3) 落空兜底：上述都失败（窗口找不到 / 文字没认出）时，退回录制时的
+ *      绝对坐标，至少按原样试一次，而不是整步作废。
+ */
+
+const WIN_AT_POINT_PS = `
+$ErrorActionPreference='Stop'
+Add-Type @"
+using System;using System.Runtime.InteropServices;using System.Text;
+public class WAP{
+ [DllImport("user32.dll")]public static extern IntPtr WindowFromPoint(int x,int y);
+ [DllImport("user32.dll")]public static extern IntPtr GetAncestor(IntPtr h,uint ga);
+ [DllImport("user32.dll")]public static extern int GetWindowTextLength(IntPtr h);
+ [DllImport("user32.dll")]public static extern int GetWindowText(IntPtr h,StringBuilder t,int n);
+ [DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out RECT r);
+ public struct RECT{public int L,T,R,B;}
+}
+"@
+$h=[WAP]::WindowFromPoint([int]__X__,[int]__Y__)
+if($h-eq[IntPtr]::Zero){'NONE';exit}
+$h=[WAP]::GetAncestor($h,2)
+if($h-eq[IntPtr]::Zero){'NONE';exit}
+$len=[WAP]::GetWindowTextLength($h)
+$sb=New-Object System.Text.StringBuilder($len+1)
+[WAP]::GetWindowText($h,$sb,$len+1)|Out-Null
+$r=New-Object WAP+RECT
+[WAP]::GetWindowRect($h,[ref]$r)|Out-Null
+$ox=[int]__X__-$r.L
+$oy=[int]__Y__-$r.T
+($sb.ToString())+'|'+($r.L)+','+($r.T)+','+($r.R-$r.L)+','+($r.B-$r.T)+'|'+$ox+','+$oy
+`;
+
+const WIN_BY_TITLE_PS = `
+$ErrorActionPreference='Stop'
+Add-Type @"
+using System;using System.Runtime.InteropServices;using System.Text;
+public class WFT{
+ [DllImport("user32.dll")]public static extern bool EnumWindows(EnumProc e,IntPtr l);
+ [DllImport("user32.dll")]public static extern int GetWindowTextLength(IntPtr h);
+ [DllImport("user32.dll")]public static extern int GetWindowText(IntPtr h,StringBuilder t,int n);
+ [DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out RECT r);
+ [DllImport("user32.dll")]public static extern bool IsWindowVisible(IntPtr h);
+ public delegate bool EnumProc(IntPtr h,IntPtr l);
+ public struct RECT{public int L,T,R,B;}
+}
+"@
+$t=__TITLE__
+$t=[System.Management.Automation.WildcardPattern]::Escape($t)
+$script:m=$null
+$p=[WFT+EnumProc]{param($h,$l)
+ if(-not [WFT]::IsWindowVisible($h)){return $true}
+ $len=[WFT]::GetWindowTextLength($h)
+ if($len-le 0){return $true}
+ $sb=New-Object System.Text.StringBuilder($len+1)
+ [WFT]::GetWindowText($h,$sb,$len+1)|Out-Null
+ if($sb.ToString()-like "*$t*"){
+  $rr=New-Object WFT+RECT
+  [WFT]::GetWindowRect($h,[ref]$rr)|Out-Null
+  $script:m=(($rr.L)+','+($rr.T)+','+($rr.R-$rr.L)+','+($rr.B-$rr.T))
+  return $false
+ }
+ return $true
+}
+[WFT]::EnumWindows($p,[IntPtr]::Zero)|Out-Null
+$script:m
+`;
+
+const OCR_WORDS_PS = `
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Runtime.WindowsRuntime|Out-Null
+$asTaskGeneric=([System.WindowsRuntimeSystemExtensions].GetMethods()|Where-Object{$_.Name-eq 'AsTask'-and$_.GetParameters().Count-eq 1-and$_.GetParameters()[0].ParameterType.Name-eq 'IAsyncOperation\`1'})[0]
+function Await($op,$t){$m=$asTaskGeneric.MakeGenericMethod($t);$task=$m.Invoke($null,@($op));$task.Wait(-1)|Out-Null;$task.Result}
+[Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime]|Out-Null
+[Windows.Graphics.Imaging.BitmapDecoder,Windows.Graphics.Imaging,ContentType=WindowsRuntime]|Out-Null
+[Windows.Media.Ocr.OcrEngine,Windows.Media.Ocr,ContentType=WindowsRuntime]|Out-Null
+[Windows.Globalization.Language,Windows.Globalization,ContentType=WindowsRuntime]|Out-Null
+$path='__PATH__'
+$file=Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($path))([Windows.Storage.StorageFile])
+$stream=Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read))([Windows.Storage.Streams.IRandomAccessStream])
+$decoder=Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream))([Windows.Graphics.Imaging.BitmapDecoder])
+$bmp=Await ($decoder.GetSoftwareBitmapAsync())([Windows.Graphics.Imaging.SoftwareBitmap])
+$engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage((New-Object Windows.Globalization.Language('__LANG__')))
+if(-not $engine){$engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()}
+if(-not $engine){throw '本机没有可用的 OCR 语言'}
+$r=Await ($engine.RecognizeAsync($bmp))([Windows.Media.Ocr.OcrResult])
+$lines=@()
+foreach($line in $r.Lines){foreach($w in $line.Words){$b=$w.BoundingRect;$lines+=(($w.Text)+'|'+($b.X)+','+($b.Y)+','+($b.Width)+','+($b.Height))}}
+$lines-join [char]10
+`;
+
+const SHOT_PS = `
+$ErrorActionPreference='Stop'
+Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+$x=[int]__X__;$y=[int]__Y__;$w=[int]__W__;$h=[int]__H__
+if($w-le 0){$w=10}if($h-le 0){$h=10}
+$bmp=New-Object System.Drawing.Bitmap($w,$h)
+$g=[System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($x,$y,0,0,$bmp.Size)
+$bmp.Save('__PATH__',[System.Drawing.Imaging.ImageFormat]::Png)
+$g.Dispose();$bmp.Dispose()
+'OK'
+`;
+
+/* 虚拟桌面范围 + 前台窗口标题，一次 PowerShell 拿全。
+   用虚拟桌面（76~79）而不是主屏（0/1）：目标窗口很可能被拖到副屏上，
+   只截主屏会让「锚点明明在屏幕上却探不到」，从而白白多跑一轮接管。
+   DPI 提示：这个进程是 DPI-unaware 的，取到的是逻辑尺寸，
+   但 CopyFromScreen 用的也是逻辑坐标，两者一致，所以截图范围不会错。
+   归一化后的小数由系统缩放，不影响「文字在不在」这个判断。 */
+const SCREEN_PS = `
+$ErrorActionPreference='Stop'
+Add-Type @"
+using System;using System.Runtime.InteropServices;using System.Text;
+public class SFG{
+ [DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();
+ [DllImport("user32.dll")]public static extern int GetWindowTextLength(IntPtr h);
+ [DllImport("user32.dll")]public static extern int GetWindowText(IntPtr h,StringBuilder t,int n);
+ [DllImport("user32.dll")]public static extern int GetSystemMetrics(int i);
+}
+"@
+$h=[SFG]::GetForegroundWindow()
+$len=[SFG]::GetWindowTextLength($h)
+$sb=New-Object System.Text.StringBuilder($len+1)
+[SFG]::GetWindowText($h,$sb,$len+1)|Out-Null
+$vx=[SFG]::GetSystemMetrics(76)
+$vy=[SFG]::GetSystemMetrics(77)
+$vw=[SFG]::GetSystemMetrics(78)
+$vh=[SFG]::GetSystemMetrics(79)
+if($vw-le 0){$vx=0;$vy=0;$vw=[SFG]::GetSystemMetrics(0);$vh=[SFG]::GetSystemMetrics(1)}
+($vx.ToString()+','+$vy.ToString()+','+$vw.ToString()+','+$vh.ToString()+'|'+$sb.ToString())
+`;
+
+/** 跑一段 PowerShell（UTF-16LE 编码走 -EncodedCommand），返回 stdout。 */
+function psRun(script, timeout = 15000) {
+  return new Promise((resolve, reject) => {
+    const b64 = Buffer.from(script, "utf16le").toString("base64");
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", b64],
+      { timeout, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) return reject(new Error(String(stderr || err.message || "").trim().slice(0, 300) || "PowerShell 失败"));
+        resolve(String(stdout || ""));
+      });
+  });
+}
+
+/** 录制时：取某点的「所在窗口」信息（标题 + 矩形 + 相对左上角偏移）。 */
+async function captureWinAt(x, y) {
+  try {
+    const out = await psRun(WIN_AT_POINT_PS.replace("__X__", String(Math.round(x))).replace("__Y__", String(Math.round(y))));
+    const s = (out || "").trim();
+    if (!s || s === "NONE") return null;
+    const parts = s.split("|");
+    if (parts.length < 3) return null;
+    const rect = parts[1].split(",").map(Number);
+    const off = parts[2].split(",").map(Number);
+    if (rect.length !== 4 || off.length !== 2 || rect.some(isNaN) || off.some(isNaN)) return null;
+    return { title: parts[0] || "", rect, off };
+  } catch (e) {
+    console.log("[anchor] 录制取窗口失败:", e?.message ?? e);
+    return null;
+  }
+}
+
+/** 回放时：按标题（子串）找可见窗口当前矩形。找不到返回 null（触发兜底）。 */
+async function findWinRectByTitle(title) {
+  if (!title) return null;
+  try {
+    const out = (await psRun(WIN_BY_TITLE_PS.replace("__TITLE__", title))).trim();
+    if (!out || out === "NONE") return null;
+    const r = out.split(",").map(Number);
+    if (r.length !== 4 || r.some(isNaN)) return null;
+    return r;
+  } catch (e) {
+    console.log("[anchor] 找窗口失败:", e?.message ?? e);
+    return null;
+  }
+}
+
+/** 截图指定区域为 PNG 缓冲（GDI，离线）。 */
+async function screenshotRegion(x, y, w, h) {
+  const tmpDir = path.join(DATA_DIR, "tmp");
+  try { fsSync.mkdirSync(tmpDir, { recursive: true }); } catch {}
+  const tmp = path.join(tmpDir, `.shot-${Date.now()}-${process.pid}.png`);
+  const script = SHOT_PS
+    .replace("__X__", String(Math.round(x))).replace("__Y__", String(Math.round(y)))
+    .replace("__W__", String(Math.round(w))).replace("__H__", String(Math.round(h)))
+    .replace("__PATH__", tmp);
+  try {
+    await psRun(script, 20000);
+    return fsSync.readFileSync(tmp);
+  } catch (e) {
+    console.log("[anchor] 截图失败:", e?.message ?? e);
+    return null;
+  } finally {
+    try { fsSync.unlinkSync(tmp); } catch {}
+  }
+}
+
+/** OCR 取词框：返回 [{text,x,y,w,h}]（坐标相对截图左上角）。 */
+async function ocrWords(buf, lang = "zh-Hans-CN") {
+  if (!buf) return [];
+  const tmpDir = path.join(DATA_DIR, "tmp");
+  try { fsSync.mkdirSync(tmpDir, { recursive: true }); } catch {}
+  const tmp = path.join(tmpDir, `.ocw-${Date.now()}-${process.pid}.png`);
+  try { fsSync.writeFileSync(tmp, buf); } catch (e) { return []; }
+  const script = OCR_WORDS_PS.replace("__PATH__", tmp).replace("__LANG__", lang);
+  const b64 = Buffer.from(script, "utf16le").toString("base64");
+  return new Promise((resolve) => {
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", b64],
+      { timeout: 40000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout) => {
+        try { fsSync.unlinkSync(tmp); } catch {}
+        if (err) { console.log("[anchor] OCR 失败:", err?.message ?? err); return resolve([]); }
+        const words = [];
+        for (const line of String(stdout || "").split("\n")) {
+          const i = line.lastIndexOf("|");
+          if (i < 0) continue;
+          const text = line.slice(0, i);
+          const box = line.slice(i + 1).split(",").map(Number);
+          if (box.length === 4 && box.every((n) => !isNaN(n))) words.push({ text, x: box[0], y: box[1], w: box[2], h: box[3] });
+        }
+        resolve(words);
+      });
+  });
+}
+
+/** 单点工具集合：这些工具的坐标是「一个点」，可以用文字锚定直接覆盖。 */
+const ANCHORABLE = new Set([
+  "windows|Click", "windows|Move",
+  "orb|long_press", "orb|mouse_press", "orb|move_to", "orb|scroll_at", "orb|cursor_position",
+]);
+
+/** 取步骤的「主坐标点」（绝对坐标，未变换）。 */
+function primaryPoint(step) {
+  const a = step.args || {};
+  if (Array.isArray(a.loc)) return [Number(a.loc[0]) || 0, Number(a.loc[1]) || 0];
+  if (a.x !== undefined) return [Number(a.x) || 0, Number(a.y) || 0];
+  return null;
+}
+
+/** 把一个位移应用到 args 的所有坐标字段（loc / x,y / 含 x2,y2 的拖动）。 */
+function addDeltaToArgs(args, dx, dy) {
+  if (Array.isArray(args.loc)) args.loc = [args.loc[0] + dx, args.loc[1] + dy];
+  if (args.x !== undefined) args.x += dx;
+  if (args.y !== undefined) args.y += dy;
+  if (args.x2 !== undefined) args.x2 += dx;
+  if (args.y2 !== undefined) args.y2 += dy;
+}
+
+/** 文字锚定：对目标窗口截图 OCR，找锚定文字中心。找不到返回 null。 */
+async function anchorByText(step) {
+  const a = step.args || {};
+  if (!a.anchor) return null;
+  const target = String(a.anchor).trim().toLowerCase();
+  if (!target) return null;
+  try {
+    let rx = 0, ry = 0, rw = 0, rh = 0;
+    if (step.win && step.win.title) {
+      const r = await findWinRectByTitle(step.win.title);
+      if (r) { rx = r[0]; ry = r[1]; rw = r[2]; rh = r[3]; }
+    }
+    if (!rw || !rh) {                       // 没窗口信息就裁一小块围住录制点
+      const pp = primaryPoint(step);
+      if (!pp) return null;
+      rx = Math.max(0, pp[0] - 200); ry = Math.max(0, pp[1] - 100); rw = 400; rh = 200;
+    }
+    const buf = await screenshotRegion(rx, ry, rw, rh);
+    const words = await ocrWords(buf, "zh-Hans-CN");
+    const pp = primaryPoint(step);
+    let best = null, bestD = Infinity;
+    for (const w of words) {
+      if (w.text.toLowerCase().includes(target)) {
+        const cx = w.x + w.w / 2, cy = w.y + w.h / 2;     // 相对截图
+        const d = pp ? Math.hypot(cx - (pp[0] - rx), cy - (pp[1] - ry)) : 0;
+        if (d < bestD) { bestD = d; best = { x: rx + cx, y: ry + cy }; }
+      }
+    }
+    if (best) { console.log(`[anchor] 文字「${a.anchor}」命中 (${best.x},${best.y})`); return best; }
+    console.log(`[anchor] 文字「${a.anchor}」未识别，转兜底`);
+  } catch (e) {
+    console.log("[anchor] 文字锚定异常:", e?.message ?? e);
+  }
+  return null;
+}
+
+/**
+ * 统一裁决抗迁移策略，返回 { args, conf }（不改动原 step）。
+ * 顺序：① 文字锚定 → ② 窗口相对坐标 → ③ 绝对坐标兜底。
+ *
+ * conf 记录「这次定位到底有多可信」，上层据此决定要不要升级到视觉层：
+ *   text     文字锚定命中 —— 最可信，界面改版也常能活
+ *   window   窗口相对命中 —— 可信，窗口被拖动/换位置也跟得上
+ *   absolute 配了锚点却落到录制坐标 —— ⚠️ **真降级**，说明锚点没找到
+ *   none     本来就没配锚点，只有录制坐标 —— 正常路径，不算降级
+ *
+ * absolute 与 none 必须分开：只有 absolute 才值得叫视觉模型。
+ * 混成一个「兜底」的话，没配锚点的步骤每步都会触发升级，成本和延迟直接崩。
+ */
+async function resolveAnchor(step) {
+  const a = step.args || {};
+  const args = JSON.parse(JSON.stringify(a));   // 克隆，避免回放多次后位移被反复叠加
+  const tool = `${step.server}|${step.tool}`;
+  const hadAnchor = !!(a.anchor && String(a.anchor).trim());
+
+  // ① 文字锚定（仅单点工具）
+  if (ANCHORABLE.has(tool) && args.anchor) {
+    const pt = await anchorByText(step);
+    if (pt) {
+      if (Array.isArray(args.loc)) args.loc = [pt.x, pt.y];
+      else { args.x = pt.x; args.y = pt.y; }
+      delete args.anchor;
+      return { args, conf: "text" };
+    }
+  }
+
+  // ② 窗口相对坐标
+  if (step.win && step.win.title && Array.isArray(step.win.off)) {
+    const r = await findWinRectByTitle(step.win.title);
+    if (r) {
+      const pp = primaryPoint(step);             // 用原始绝对点算位移
+      if (pp) {
+        const dx = r[0] + step.win.off[0] - pp[0];
+        const dy = r[1] + step.win.off[1] - pp[1];
+        addDeltaToArgs(args, dx, dy);
+        console.log(`[anchor] 窗口相对重定位（${step.win.title}）Δ=${dx},${dy}`);
+        delete args.anchor;
+        return { args, conf: "window" };
+      }
+    } else {
+      console.log(`[anchor] 窗口「${step.win.title}」未找到，退回绝对坐标（兜底）`);
+    }
+  }
+
+  // ③ 兜底：原样（即录制时的绝对坐标）
+  delete args.anchor;
+  return { args, conf: hadAnchor ? "absolute" : "none" };
+}
+
+/* ---------------- 回归探测 + 智能接管 ----------------
+ * 这两块是「录制一遍，正常情况下纯回放，界面变了才请模型帮忙」的核心。
+ * 关键判断都写在各自注释里，因为这里的每一处取舍都是拿事故换的。
+ */
+
+/** 取虚拟桌面范围 + 当前前台窗口标题。失败返回 null。 */
+async function screenAndForeground() {
+  try {
+    const out = String((await psRun(SCREEN_PS, 10000)) || "");
+    const i = out.indexOf("|");
+    if (i < 0) return null;
+    const box = out.slice(0, i).split(",").map(Number);
+    if (box.length !== 4 || box.some(isNaN) || !box[2] || !box[3]) return null;
+    return { x: box[0], y: box[1], w: box[2], h: box[3], title: out.slice(i + 1).trim() };
+  } catch (e) {
+    console.log("[probe] 取屏幕信息失败:", e?.message ?? e);
+    return null;
+  }
+}
+
+/**
+ * 把逐词 OCR 结果合并成「行」，行内按 x 排序后直接拼接。
+ *
+ * 两件事都必须做：
+ *   ① 合并 —— WinRT OCR 会把「确定」切成「确」「定」两个独立词，
+ *      不合并的话锚点文字哪怕就在屏幕正中间也永远匹配不上。
+ *   ② 行内重排 —— 同一行文字的 y 会有一两个像素的基线抖动，
+ *      直接按 y 排序会把「确(100) 定(102) 取消(101)」排成「确取消定」，
+ *      于是 "确定" 这个词在屏幕上是断开的，匹配照样失败。
+ *      （这个 bug 是单测抓出来的，肉眼评审看不出来。）
+ */
+function ocrLines(words) {
+  const sorted = (words || []).slice().sort((a, b) => (a.y - b.y) || (a.x - b.x));
+  const rows = [];
+  for (const w of sorted) {
+    const last = rows[rows.length - 1];
+    const tol = Math.max(6, (w.h || 12) * 0.6);       // 行高的一半内算同一行
+    // 已按 y 升序，同一行的词必然连续，所以只跟最后一个桶比就够；
+    // baseY 用均值而不是首词的 y，否则一行内 y 慢慢爬升时后半截会被切成新行。
+    if (last && Math.abs(w.y - last.baseY) <= tol) {
+      last.items.push(w);
+      last.baseY = (last.baseY * (last.items.length - 1) + w.y) / last.items.length;
+    } else {
+      rows.push({ baseY: w.y, items: [w] });
+    }
+  }
+  return rows.map((r) => r.items
+    .sort((a, b) => a.x - b.x)
+    .map((w) => w.text)
+    .join("")
+    .toLowerCase());
+}
+
+/**
+ * 回归探测：判断「现在这块屏幕对应原流程的第几步」。
+ *
+ * 为什么不问智能体「你干到第几步了」：模型没有步骤计数的内部状态，
+ * 只是在看屏幕猜，而且倾向于给一个看起来合理的数字。拿它去对齐重放，
+ * 等于把「点错位置」换成「跳错步骤」——后者难查得多。
+ * 所以这里只认客观证据：屏幕上的文字、前台窗口标题。
+ *
+ * 返回 { resumeAt, via } 或 null（未回归）。
+ */
+/**
+ * 纯判定：给定「剩余步骤 + 屏幕上的文字行 + 前台窗口标题」，算出回归点。
+ * 单独抽出来是为了能脱离 PowerShell 单测 —— 这段逻辑判错了比慢更难发现：
+ * 它不报错，只是让流程从错的地方接着跑。
+ *
+ * lines 已经过 ocrLines 合并（行内无分隔），所以「确 定」能匹配「确定」。
+ */
+function pickResumePoint(rest, lines, foregroundTitle, from) {
+  const onScreen = (s) => {
+    const t = String(s || "").trim().toLowerCase();
+    if (!t) return false;
+    return lines.some((l) => l.includes(t));
+  };
+
+  // ① 文字锚点：按序号从小到大扫，第一个命中的就是断点。
+  // 不能按屏幕位置扫——第 6 步和第 9 步都叫「确定」时，按位置会命中错的那个；
+  // 按序号取最小才符合「流程往前走」的语义。命中即停，不收集全部：
+  // 收全部再取最靠后的，会把智能体多干的那几步误判成「还没干」。
+  for (let i = 0; i < rest.length; i++) {
+    const s = rest[i] || {};
+    const a = s.args && s.args.anchor;
+    if (!a || !ANCHORABLE.has(`${s.server}|${s.tool}`)) continue;   // 没配锚点 → 探测里隐形
+    if (!onScreen(a)) continue;
+    /* 隐形步骤不能被跨过：中间夹着没配锚点的步骤就拒绝回归。
+       因为无法确认那一步到底做没做——跳过去可能漏动作或做两遍。
+       宁可多跑一轮智能体，也不能跳步。 */
+    const skipped = rest.slice(0, i).some((x) => !(x && x.args && x.args.anchor));
+    if (skipped) {
+      console.log(`[probe] 第 ${from + i + 1} 步命中「${a}」，但中间有未配锚点的步骤，拒绝回归`);
+      continue;
+    }
+    console.log(`[probe] 回归点 = 第 ${from + i + 1} 步（文字「${a}」在屏幕上）`);
+    return { resumeAt: from + i, via: "anchor" };
+  }
+
+  // ② 窗口标题：文字全对不上时退一步，看前台窗口是不是某一步的目标窗口
+  if (foregroundTitle) {
+    const ft = String(foregroundTitle).toLowerCase();
+    for (let i = 0; i < rest.length; i++) {
+      const w = rest[i] && rest[i].win && rest[i].win.title;
+      if (w && ft.includes(String(w).toLowerCase())) {
+        console.log(`[probe] 窗口命中：前台「${foregroundTitle}」≈ 第 ${from + i + 1} 步`);
+        return { resumeAt: from + i, via: "window" };
+      }
+    }
+  }
+
+  return null;
+}
+
+async function probeAnchors(steps, from) {
+  const rest = (steps || []).slice(from);
+  if (!rest.length) return null;
+
+  const scr = await screenAndForeground();
+  if (!scr) return null;
+
+  let words = [];
+  try {
+    /* 超宽桌面（双 4K 拼接能到 7680）直接跳过文字探测：
+       这种图 OCR 要么超时要么糊成一团，拿它做判断比不做还糟。
+       跳过之后上层会继续交给智能体，慢一点但不会判错。 */
+    if (scr.w > 6000 || scr.h > 6000) {
+      console.log(`[probe] 桌面 ${scr.w}x${scr.h} 过大，跳过文字探测`);
+    } else {
+      const buf = await screenshotRegion(scr.x, scr.y, scr.w, scr.h);
+      if (buf) words = await ocrWords(buf, "zh-Hans-CN");
+    }
+  } catch (e) {
+    console.log("[probe] 全屏 OCR 失败:", e?.message ?? e);
+  }
+
+  return pickResumePoint(rest, ocrLines(words), scr.title, from);
+}
+
+/** 把剩余步骤压成可读清单，给接管时的智能体当上下文。
+ *  它必须知道「本来打算干什么」，否则只能盯着当前画面瞎猜下一步。 */
+function summarizeSteps(steps, limit = 8) {
+  const out = [];
+  const list = steps || [];
+  list.slice(0, limit).forEach((s, i) => {
+    const t = (s && s.type) || "action";
+    if (t !== "action") { out.push(`${i + 1}. [${t}] 编排节点`); return; }
+    const a = (s && s.args) || {};
+    const bits = [];
+    if (a.anchor) bits.push(`目标「${a.anchor}」`);
+    if (a.text) bits.push(`输入「${String(a.text).slice(0, 24)}」`);
+    if (a.keys) bits.push(`按键 ${Array.isArray(a.keys) ? a.keys.join("+") : a.keys}`);
+    if (Array.isArray(a.loc)) bits.push(`录制坐标 ${a.loc[0]},${a.loc[1]}`);
+    out.push(`${i + 1}. ${(s && s.tool) || "?"} ${bits.join(" ")}`.trim());
+  });
+  if (list.length > limit) out.push(`… 还有 ${list.length - limit} 步未列出`);
+  return out.join("\n");
+}
+
+const AGENT_BATCH = 3;          // 每轮让智能体推进几步就停下重新探测
+const AGENT_MAX_STEPS = 15;     // 一次接管累计最多借给它多少步
+const AGENT_MAX_ROUNDS = 5;     // 一次回放最多允许「接管→回归」来回几趟
+
+/* ---------------- 轮次推定 ----------------
+ * 嵌套循环里失守时，光知道「回到子单元第几步」不够 —— 还得知道「回到第几轮」。
+ * 三个来源，按可信度从硬到软。都做成纯函数，因为判错了不会报错，
+ * 只会让循环多跑一轮或少跑一轮（重复提交 / 漏提交），这种错最难查。
+ */
+
+/**
+ * 校验模型自报的轮次有没有自证。
+ * 规则：evidence 里必须真的出现那个数字。
+ *
+ * 为什么不能只信 roundSeen：模型没有轮次计数器，它就是看屏幕猜，
+ * 而且倾向于给一个「看起来合理」的数。但让它把原文抄下来，
+ * 它就很难既编数字又编出处 —— 这是最便宜的防幻觉手段。
+ */
+function verifyRoundClaim(seen, evidence) {
+  const n = Number(seen);
+  // 必须是正整数：小数（3.5 条）和负数都不该出现在轮次计数里，直接判为无效
+  if (!Number.isInteger(n) || n < 0 || n > 100000) return null;
+  const ev = String(evidence || "").trim();
+  if (ev.length < 2) return null;
+  // 数字必须以「独立数字」的形式出现：前面不能紧贴别的数字，后面同理。
+  // 否则 "已处理 30 条" 会把 3 也判成命中。
+  const re = new RegExp(`(^|\\D)0*${n}(\\D|$)`);
+  if (!re.test(ev)) return null;
+  return Math.floor(n);
+}
+
+/**
+ * 数「轮次标记动作」被成功执行了几次。
+ * 数据源是审计表 —— callTool 每调一次工具就写一条，所以这里零成本，
+ * 不用额外埋点。传 entries 而不是直接读全局，是为了能单测。
+ *
+ * perRound：每轮对应几次该动作（默认 1）。这一项故意留给用户配，
+ * 因为「点了 3 次提交 ≠ 完成了 3 轮」——有一次点了没生效时，
+ * 只有用户知道该按几次算一轮。程序不该假装能自动推断。
+ */
+function countMarks(entries, since, mark, perOverride) {
+  if (!mark || typeof mark !== "object") return null;
+  const tool = String(mark.tool || "Click");
+  const anchor = String(mark.anchor || "").toLowerCase();
+  // perOverride 用来传「每轮几次」：优先实测值，其次静态数，最后用户手填
+  const per = Math.max(1, Number(perOverride) || Number(mark.perRound) || 1);
+  let n = 0;
+  for (const e of entries || []) {
+    if (Number(e.ts) < since) continue;         // 只看本次运行
+    if (!e.ok) continue;                        // 调用就直接失败的不能算
+    if (String(e.tool) !== tool) continue;
+    if (anchor && !String(e.args || "").toLowerCase().includes(anchor)) continue;
+    n++;
+  }
+  return Math.floor(n / per);
+}
+
+/**
+ * 数「循环体里这个标记动作出现了几次」——也就是每轮应该点几次。
+ *
+ * 为什么直接数而不问用户：循环体是静态的步骤数组，答案本来就写在里面。
+ * 让用户再填一遍「每轮几次」纯属重复劳动，而且他会填错。
+ *
+ * if 的两支用 max 不是相加：分支只会走一支。
+ * loop 的 body 递归进去，但只算一次（内层循环的重复次数不叠乘 ——
+ * 标记动作基本都是「提交」这种收尾动作，不会藏在内层循环里；
+ * 叠乘反而会在嵌套循环下炸出离谱的分母）。
+ */
+function countMarkInSteps(body, mark) {
+  if (!mark || typeof mark !== "object") return 0;
+  const tool = String(mark.tool || "Click");
+  const anchor = String(mark.anchor || "").toLowerCase();
+  const hit = (s) => {
+    if (String(s.tool) !== tool) return false;
+    if (!anchor) return true;
+    let t = "";
+    try { t = JSON.stringify(s.args || {}); } catch { t = ""; }
+    return t.toLowerCase().includes(anchor);
+  };
+  let n = 0;
+  for (const s of body || []) {
+    if (!s || typeof s !== "object") continue;
+    const t = s.type || "action";
+    if (t === "action") { if (hit(s)) n++; continue; }
+    if (t === "loop") { n += countMarkInSteps(s.body, mark); continue; }
+    if (t === "if") { n += Math.max(countMarkInSteps(s.then, mark), countMarkInSteps(s.else, mark)); continue; }
+  }
+  return n;
+}
+
+/**
+ * 步骤签名：用来判断「这两段录制是不是同一个循环体的重复」。
+ * 关键是把坐标按 40px 量化后收进签名 —— 不收的话，所有纯点击的签名都是
+ * `Click|{}`，任何两段都会「看起来一样」；量化后同一位置的重复才算相同，
+ * 不同位置的点击不会混为一谈。
+ */
+function stepSig(s) {
+  const a = (s && s.args) || {};
+  const keep = {};
+  for (const k of ["anchor", "text", "keys", "shortcut", "button", "clicks", "direction", "wheel_times", "durationMs"]) {
+    if (a[k] !== undefined) keep[k] = a[k];
+  }
+  const q = (v) => Math.round(Number(v) / 40) || 0;
+  if (Array.isArray(a.loc)) keep.loc = [q(a.loc[0]), q(a.loc[1])];
+  else if (a.x !== undefined) keep.xy = [q(a.x), q(a.y)];
+  return `${(s && s.type) || "action"}:${(s && s.tool) || ""}:${JSON.stringify(keep)}`;
+}
+
+/** 比较 arr[a..a+len) 与 arr[b..b+len) 是否逐位相同 */
+function sameRange(arr, a, b, len) {
+  for (let i = 0; i < len; i++) if (arr[a + i] !== arr[b + i]) return false;
+  return true;
+}
+
+/**
+ * 检测录制产物里有没有「同一段操作重复了 k 次」。
+ *
+ * 录制是平的：用户实际处理了 3 条数据，录下来就是 3 段一模一样的步骤，
+ * 工作流里却看不出一丝「循环」的意思。这个函数把那段找出来，
+ * 让面板能问一句「要不要折叠成重复 3 次的循环」。
+ *
+ * 只认**完全相同**的重复。每轮输入内容不同（读第 1/2/3 行数据填进去）
+ * 时签名就不相等，检测会失败 —— 那是「参数化录制」该管的事，不在这。
+ *
+ * 返回 { count, unitLen, start, tail } 或 null。
+ */
+function detectRepeat(steps) {
+  const list = (steps || []).filter((s) => s && typeof s === "object");
+  const n = list.length;
+  if (n < 4) return null;                      // 至少两轮、每轮两步，否则不值得折
+
+  const arr = list.map(stepSig);
+  // 全是同一个签名（比如连点四下同一处）说明根本没有「一段操作」，
+  // 折成循环只会变成「循环点 4 次」，没有意义
+  if (new Set(arr).size < 2) return null;
+
+  let best = null;
+  // 开头可能有一两个一次性步骤（打开软件、点菜单），所以起点允许偏移
+  for (let start = 0; start < Math.min(3, n); start++) {
+    const room = n - start;
+    /* 单元至少两步：单步重复不是循环。
+       「连点两次保存」在录制里到处都是，按循环处理纯属误报 ——
+       真需要连点 N 次，用户直接多录几下就行，折成「循环 1 步」反而更难改。 */
+    for (let L = 2; L <= Math.floor(room / 2); L++) {
+      let k = 1;
+      while (start + (k + 1) * L <= n && sameRange(arr, start, start + k * L, L)) k++;
+      if (k < 2) continue;
+      const covered = k * L;
+      if (!best || covered > best.covered) {
+        best = { count: k, unitLen: L, start, covered, tail: n - start - covered };
+      }
+    }
+  }
+  if (!best) return null;
+  // 覆盖不到一半就不提 —— 说明只是零散地撞了几次，不是真循环
+  if (best.covered < n * 0.5) return null;
+  return { count: best.count, unitLen: best.unitLen, start: best.start, tail: best.tail };
+}
+
+/**
+ * 三轮推定，返回「已完成的轮数」（= 下一轮应有的索引），拿不到返回 null。
+ *   ① 模型自证 —— 有原文，最可信
+ *   ② 审计动作计数 —— 客观但可能虚高
+ * ③（纯自报无原文）不走这里，在调用方就被 verifyRoundClaim 挡掉了。
+ * 两者冲突时信 ①（它有原文），但记日志，方便事后对账。
+ */
+function deduceRound(res, scope, entries, since) {
+  if (!scope || scope.kind !== "times") return null;
+  const byClaim = verifyRoundClaim(res && res.roundSeen, res && res.roundEvidence);
+  /* perRound 优先用「上一轮实测值」：循环体里有分支时静态数不准
+     （有的轮次走复核分支多点一次），实测能自动收敛。
+     第一轮还没有实测值，退回静态数。 */
+  const per = Number(scope.lastRoundCount) > 0
+    ? Number(scope.lastRoundCount)
+    : Number(scope.markPerRound) || 1;
+  const byMark = scope.mark ? countMarks(entries, since, scope.mark, per) : null;
+
+  if (byClaim !== null && byMark !== null && byClaim !== byMark) {
+    log(`[round] 自证 ${byClaim} 与动作计数 ${byMark}（每轮按 ${per} 次算）不一致，采信自证（有原文）`);
+  }
+  if (byClaim !== null) return byClaim;
+  if (byMark !== null) return byMark;
+  return null;
+}
+
+/** 给智能体看的「你现在在哪一层」。null = 顶层线性流程。 */
+function scopeInfo(ctx) {
+  const st = (ctx && ctx.scopes) || [];
+  const top = st[st.length - 1];
+  if (!top) return null;
+  return {
+    depth: st.length,
+    kind: top.kind,
+    round: top.iter() + 1,
+    total: top.kind === "times" ? top.total : 0,
+  };
+}
+
+/**
+ * 循环游标能不能跳到 to（to = 已完成轮数，也是下一轮应有的索引）。
+ * 只允许往前：倒退等于把已经做过的事重做一遍，可能重复提交。
+ * to === total 表示全部做完，允许 —— 循环会自然退出。
+ * 抽成纯函数只为一件事：这段判断一旦写错，后果是重复提交或漏提交，
+ * 现场看不出来，必须能单独测。
+ */
+function canJump(from, to, total) {
+  if (!Number.isInteger(from) || !Number.isInteger(to) || !Number.isInteger(total)) return false;
+  return to > from && to <= total;
+}
+
+/**
+ * 轮次对齐：把「已经做到第几轮」写回当前循环的游标。
+ * 只对 times 型有意义 —— while 型靠条件决定要不要继续，改游标没用
+ * （它的条件每轮都会重算，接管把剩下的干完了，条件自然就 false 了）。
+ */
+function alignRound(res, ctx) {
+  const st = (ctx && ctx.scopes) || [];
+  const scope = st[st.length - 1];
+  if (!scope || scope.kind !== "times") return;
+  const done = deduceRound(res, scope, AUDIT_MEM, Number(scope.since) || Number(ctx.startedAt) || 0);
+  if (done === null) {
+    log("[round] 拿不到可信轮次，游标不动");
+    return;
+  }
+  const before = scope.iter();
+  if (scope.jumpTo(done)) {
+    log(`[round] 轮次对齐：第 ${before + 1} 轮 → 已完成 ${done} 轮，下一轮从第 ${done + 1} 轮开始`);
+  } else {
+    // 倒退或越界：宁可不动。倒退会把已经做过的事重做一遍。
+    log(`[round] 推定已完成 ${done} 轮（当前第 ${before + 1} 轮 / 共 ${scope.total} 轮），不可用，游标不动`);
+  }
+}
+
+/**
+ * 预算式智能接管：分批推进，每批停下就探一次「是否已回到原轨道」。
+ *
+ * 分批而不是「让它一路跑到结束」，理由很硬：跑过头的步骤没法回退
+ * （比如已经点了提交），只有每批都停下来探一次，才可能及早抓回确定性轨道。
+ *
+ * 返回：可继续的步骤索引；'fallback' 表示 once 模式没救回来（用录制坐标顶上）；
+ *       null 表示放弃。
+ */
+async function takeover(steps, from, ctx) {
+  const list = steps || [];
+  const once = ctx.escalate === "once";
+
+  /* 全局次数守卫：回归之后又在下游失守，会再一次进来。
+     不设上限的话，一条到处都失守的流程会不停「接管→回归→再失守」，
+     token 烧光了还停不下来。 */
+  ctx.agentRuns = (Number(ctx.agentRuns) || 0) + 1;
+  if (ctx.agentRuns > AGENT_MAX_ROUNDS) {
+    log(`[agent] 本次回放已接管 ${ctx.agentRuns - 1} 次，达到上限，不再接管`);
+    return once ? "fallback" : null;
+  }
+
+  const budget = once ? 1 : Math.max(1, Math.min(AGENT_MAX_STEPS, Number(ctx.agentBudget) || AGENT_MAX_STEPS));
+  let used = 0;
+
+  while (used < budget) {
+    const batch = Math.min(AGENT_BATCH, budget - used);
+    let res;
+    try {
+      res = await askPanelForAgent({
+        stepNo: from + 1,
+        totalNo: list.length,
+        goal: String(ctx.goal || "").trim(),
+        batch,
+        remain: summarizeSteps(list.slice(from)),
+        conf: ctx.lastConf || "absolute",
+        // 嵌套结构里必须告诉它「你在哪一层、第几轮」，否则它会把这轮当成唯一的一轮
+        scope: scopeInfo(ctx),
+      });
+    } catch (e) {
+      log("[agent] 接管失败：", e?.message ?? e);
+      return once ? "fallback" : null;
+    }
+
+    // 面板回报用了多少步。用 max(1,…) 保证一定推进计数，否则失败回报 0 步会死循环。
+    const did = Math.max(1, Number(res.steps) || 1);
+    used += did;
+
+    /* 整条流程结束 —— 只认 finished。
+       done 的含义是「这一批做完了」，finished 才是「最终目标达成了」。
+       混为一谈会让接管在第一批就收工，后面所有步骤静默丢掉。
+       置 ctx.finished 而不是只 return：嵌套层返回只能结束本层，
+       父层的循环还会照样跑下一轮。 */
+    if (res.done && res.finished) {
+      ctx.finished = true;
+      log("[agent] 智能体判定最终目标已达成，整条流程结束");
+      return list.length;
+    }
+
+    // 先看屏幕证据（客观，优先）
+    const back = await probeAnchors(list, from);
+    if (back && back.resumeAt > from) {
+      alignRound(res, ctx);
+      log(`[agent] 回归轨道：从第 ${back.resumeAt + 1} 步继续（依据 ${back.via}）`);
+      return back.resumeAt;
+    }
+
+    /* 屏幕证据说「没往前走」。最常见的原因是：按钮点完还留在原处，
+       于是 from 那一步的锚点一直在，探测永远原地打转。
+       这时用智能体自报的进度做**交叉验证**：只有它说的那一步的目标
+       确实出现在屏幕上（说明它真走到了那儿），才采信这个数字。
+       自报不能单独用 —— 模型没有步骤计数器，那个数字是猜的。
+
+       编号基准要小心：智能体看到的是 summarizeSteps 给的那份清单，
+       编号从 1 起、对应 from 开头。所以全局索引 = from + 自报 - 1。
+       （第一版忘了 −1，导致自报永远对不上，被探测一路否掉。） */
+    const claim = from + Number(res.resumeAt) - 1;
+    if (Number.isFinite(claim) && claim > from && claim < list.length) {
+      const at = await probeAnchors(list, claim);
+      if (at && at.resumeAt === claim) {
+        alignRound(res, ctx);
+        log(`[agent] 采信自报进度：第 ${claim + 1} 步（探测已确认该步目标在屏幕上）`);
+        return claim;
+      }
+      log(`[agent] 自报第 ${claim + 1} 步，但探测不认（该步目标没出现），继续推进`);
+    }
+
+    if (back) log(`[agent] 探测仍指向第 ${from + 1} 步，视为未推进`);
+    log(`[agent] 本轮推进 ${did} 步仍未回归（已用 ${used}/${budget}）`);
+  }
+
+  log(`[agent] 接管累计 ${used} 步仍未回归，放弃`);
+  return once ? "fallback" : null;
 }
 
 /* ---------- ASR 服务（本地 Whisper）：进程管理 + CPU/GPU 切换 ---------- */
@@ -2829,6 +4111,7 @@ async function handle(req, res) {
           REC.on = true;
           REC.name = body.name || ("workflow_" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-"));
           REC.steps = [];
+          REC.pendingWinCaps = [];       // 抗迁移：清空上一次的窗口抓取队列
           REC.startedAt = Date.now();
           /* 挂上全局鼠标钩子：这样"你手动在别的软件里点的/拖的/滚的"也能录进来。
              挂不上（缺模块 / 权限 / 杀软）就静默降级，面板的 F9 打点仍在。 */
@@ -2850,6 +4133,15 @@ async function handle(req, res) {
                   };
                   if (s.holdMs) step.holdMs = s.holdMs;
                   REC.steps.push(step);
+                  /* 抗迁移：异步抓「点落在哪个窗口」，抓到了就把 step.win 挂上。
+                     不影响录制节奏（fire-and-forget），rec-stop 会等它们收尾。 */
+                  const pp = primaryPoint(step);
+                  if (pp) {
+                    const p = captureWinAt(pp[0], pp[1])
+                      .then((anchor) => { if (anchor) step.win = anchor; })
+                      .catch(() => {});
+                    REC.pendingWinCaps.push(p);
+                  }
                 },
               });
               hook = !!(r && r.ok);
@@ -2870,7 +4162,15 @@ async function handle(req, res) {
           if (!REC.on) { send(res, 200, { ok: false, error: "当前没有在录制" }); break; }
           const tool = String(body.tool || "Click");
           const server = String(body.server || "windows");
-          REC.steps.push({ server, tool, args: body.args ?? {}, wait: 0 });
+          const step = { server, tool, args: body.args ?? {}, wait: 0 };
+          REC.steps.push(step);
+          const pp = primaryPoint(step);
+          if (pp) {
+            const p = captureWinAt(pp[0], pp[1])
+              .then((anchor) => { if (anchor) step.win = anchor; })
+              .catch(() => {});
+            REC.pendingWinCaps.push(p);
+          }
           console.log(`[rec] 打点 +1（${tool} ${JSON.stringify(body.args ?? {})}），共 ${REC.steps.length} 步`);
           send(res, 200, { ok: true, steps: REC.steps.length });
           break;
@@ -2880,6 +4180,9 @@ async function handle(req, res) {
           REC.on = false;
           // 先卸钩子，再结算步骤 —— 否则卸载瞬间的事件会漏进正在保存的数组
           try { const m = await getMouseHook(); if (m) m.stopMouseHook(); } catch { /* ignore */ }
+          // 抗迁移：等窗口锚定抓取收尾，避免保存时 step.win 还没挂上
+          try { await Promise.allSettled(REC.pendingWinCaps || []); } catch { /* ignore */ }
+          REC.pendingWinCaps = [];
           const name = REC.name;
           const steps = dedupeRecSteps(REC.steps);
           if (!steps.length) {
@@ -2890,7 +4193,12 @@ async function handle(req, res) {
              那类写入，写坏一半 = 用户录了半天的工作流打不开。 */
           writeJsonAtomic(wfFile(name), { name, savedAt: Date.now(), gap: 700, steps });
           REC.steps = [];
-          send(res, 200, { ok: true, name, steps: steps.length });
+          /* 顺带看一眼录制里有没有「同一段操作重复了 k 次」。
+             只提示、不改结构 —— 用户录 3 段不一定是想循环，
+             也可能就是三份内容不同的表。检测失败不影响录制结果。 */
+          let repeatHint = null;
+          try { repeatHint = detectRepeat(steps); } catch { /* 忽略 */ }
+          send(res, 200, { ok: true, name, steps: steps.length, repeatHint });
           break;
         }
 
@@ -3113,6 +4421,17 @@ async function handle(req, res) {
     } catch (err) {
       send(res, 200, { ok: false, error: String(err?.message ?? err) });
     }
+    return;
+  }
+
+  /* 智能接管回报：面板跑完一轮视觉会话后回到这里，结算挂起的 promise。
+     没人在等（超时已过 / 两轮撞车）就返回 stale，让面板知道这一轮白跑了，
+     不必再重试——重试只会把已经走远的流程再拉回来一次。 */
+  if (req.method === "POST" && url.pathname === "/api/agent-done") {
+    const body = await readBody(req);
+    const ok = settleAgent(body);
+    if (!ok) log("[agent] 收到迟到的接管回报，已丢弃");
+    send(res, 200, { ok: true, stale: !ok });
     return;
   }
 

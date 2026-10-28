@@ -2597,6 +2597,9 @@ app.whenReady().then(async () => {
       env: Object.assign({}, process.env, {
         ELECTRON_RUN_AS_NODE: "1",
         ORB_DATA_DIR: DATA_ROOT,
+        /* 自定义模型配置的绝对路径（与 cm-set 写的同一个文件）。
+           bridge 自己读它发请求 —— 明文 key 因此不必经过渲染层，也不进 HTTP。 */
+        ORB_CM_FILE: cmFile(),
       }),
     });
     bridgeProc.stdout.on("data", (d) => log("[bridge]", String(d).trim()));
@@ -4543,6 +4546,75 @@ function slotInfo(s) {
 }
 
 /* 密钥单独走通道：只在需要发起请求时取。slot 为 "primary" | "backup" */
+/* ---------- 自定义模型（人格台词用） ----------
+ * 存在 userData/custom-model.json，**只服务于 persona_bundle 这条轻链路**。
+ *
+ * 为什么不能接管主任务：后台任务要读文件、跑命令、改代码，靠的是 CLI 的
+ * 工具编排；一个裸的 OpenAI 兼容接口给不了这些。所以这里的模型只决定
+ * 「人格怎么说」，不决定「任务怎么做」。界面上必须写清楚，否则用户会以为
+ * 换模型就能让后台换脑子。
+ *
+ * key 只落本机、只回掩码：面板永远拿不到明文，实际请求由 bridge 直接读文件发。
+ */
+/* 必须用 function 声明：spawnBridge 在模块更早处就会调它（注入 ORB_CM_FILE），
+   写成 const 箭头函数会撞 TDZ —— 那是最典型的「顶层一次 ReferenceError
+   静默掐掉后面整段」事故，表现为窗口起了但功能全残。 */
+function cmFile() {
+  return path.join(app.getPath("userData"), "custom-model.json");
+}
+const CM_MASK = "••••";
+
+function cmRead() {
+  try {
+    const o = JSON.parse(fs.readFileSync(cmFile(), "utf8")) || {};
+    return {
+      name: String(o.name || ""),
+      baseUrl: String(o.baseUrl || ""),
+      model: String(o.model || ""),
+      key: String(o.key || ""),
+    };
+  } catch {
+    return { name: "", baseUrl: "", model: "", key: "" };
+  }
+}
+
+safeHandle("cm-get", () => {
+  const c = cmRead();
+  return {
+    ok: true,
+    name: c.name,
+    baseUrl: c.baseUrl,
+    model: c.model,
+    hasKey: !!c.key,
+    keyMask: c.key ? CM_MASK + c.key.slice(-4) : "",
+  };
+}, { ok: false });
+
+safeHandle("cm-set", (_e, patch) => {
+  const cur = cmRead();
+  const p = patch && typeof patch === "object" ? patch : {};
+  const next = {
+    name: String(p.name ?? cur.name).slice(0, 40),
+    baseUrl: String(p.baseUrl ?? cur.baseUrl).trim().slice(0, 300),
+    model: String(p.model ?? cur.model).trim().slice(0, 120),
+    /* key 传空 / 不传 = 保持原值。这样「只改模型名」不必重填 key。 */
+    key: typeof p.key === "string" && p.key.trim() ? p.key.trim() : cur.key,
+  };
+  try {
+    fs.mkdirSync(path.dirname(cmFile()), { recursive: true });
+    fs.writeFileSync(cmFile(), JSON.stringify(next), "utf8");
+    try { fs.chmodSync(cmFile(), 0o600); } catch { /* Windows 下可能不支持，忽略 */ }
+    return { ok: true, hasKey: !!next.key };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}, { ok: false });
+
+safeHandle("cm-clear", () => {
+  try { fs.unlinkSync(cmFile()); } catch { /* 本来就没有 */ }
+  return { ok: true };
+}, { ok: false });
+
 safeHandle("get-vision-key", (_e, slot) => state.vision?.[slot || "primary"]?.apiKey ?? "", "");
 
 /* 首跑向导「已看过」标记落盘。
