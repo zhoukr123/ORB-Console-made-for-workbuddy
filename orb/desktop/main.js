@@ -305,6 +305,10 @@ const state = {
   x: null, y: null, docked: null, pinned: false,
   coordMode: "pixel", border: true, avatar: null,
   autoSelect: true, autoSelectClipboard: true,
+  /* 录屏 / 截屏期间要不要把控制台真的藏起来（详见「隐藏控制台」那一段注释）。
+     录屏默认开：录屏时用户就是要它消失；截屏默认关：面板收起是额外动作，
+     有人就喜欢截完还能直接粘贴进对话框。 */
+  recHideConsole: true, snipHideConsole: false,
   // 视觉决策循环：主力 + 备选，主力失败自动切备选。
   // apiKey 只存在本机 .orbdata 下，不上传任何地方。
   vision: {
@@ -439,6 +443,8 @@ function normalizeScalars() {
   state.border = bool(state.border, true);
   state.autoSelect = bool(state.autoSelect, true);
   state.autoSelectClipboard = bool(state.autoSelectClipboard, true);
+  state.recHideConsole = bool(state.recHideConsole, true);
+  state.snipHideConsole = bool(state.snipHideConsole, false);
   state.envWizardDone = bool(state.envWizardDone, false);
   state.snipGuideDone = bool(state.snipGuideDone, false);
   state.coordMode = state.coordMode === "permille" ? "permille" : "pixel";
@@ -677,6 +683,7 @@ function beginShotShield() {
   shieldWin(subWin, "subtitle", true);
   shieldWin(borderWin, "border", true);
   shieldWin(recbarWin, "recbar", true);
+  shieldWin(pickWin, "pick", true);   // 取词覆盖层：它压在整屏上，不排除就拍到满屏暗色
 }
 
 /** 抓图后：计数减一，归零才恢复到基线状态（录屏中则仍保持排除）。 */
@@ -689,6 +696,7 @@ function endShotShield() {
   shieldWin(subWin, "subtitle", captureShieldOn);
   shieldWin(borderWin, "border", captureShieldOn);
   shieldWin(recbarWin, "recbar", captureShieldOn);
+  shieldWin(pickWin, "pick", captureShieldOn);
 }
 
 function createBall() {
@@ -1118,6 +1126,9 @@ function closePanel() {
 }
 
 function togglePanel() {
+  /* 录屏中被"真隐藏"了 → 这是**唤回**，不是普通的开合：
+     球要跟着回来，而且之后录屏结束不再强行弹开面板。 */
+  if (consoleHiddenByRec) { summonConsole(); return; }
   if (panel && panel.isVisible()) closePanel();
   else openPanel();
 }
@@ -1826,6 +1837,9 @@ let fgBroken = false;          // true = 永久退回 PowerShell（避免反复�
 let fgRestarts = 0;
 let fgBuf = "";
 let fgPending = null;          // 当前在途请求 { settle, id }
+/* 直连槽：id → settle。**不参与单槽抢占**（见 nativeSnapDirect 的注释）。
+ * 截屏基线查询走这条，避免被观察边框/截屏态轮询抢掉。 */
+const fgDirect = new Map();
 let fgSpawnAt = 0;             // 本次进程启动时刻，用来算"就绪宽限期"
 let fgReqId = 0;               // 请求 id 自增：用来识别"孤儿响应"（见 fgDrain）
 
@@ -1853,6 +1867,9 @@ function fgDrop() {
   fgProc = null;
   fgReady = false;
   fgBuf = "";
+  /* 直连槽里在途的请求也要结算掉，否则端口换了它们只能等自己的超时 */
+  for (const s of Array.from(fgDirect.values())) { try { s(null); } catch { /* 单个失败不影响其它 */ } }
+  fgDirect.clear();
   if (p) p.settle(null);
 }
 
@@ -1865,7 +1882,28 @@ function fgDrain() {
     if (!line) continue;
     let j = null;
     try { j = JSON.parse(line); } catch { continue; }   // 半行/杂行直接丢
-    if (j && j.ready) { fgReady = true; continue; }
+    /* ⚠️ 握手行只能按「没有 id」来认，绝不能按 j.ready 判（2026-10-29 修）。
+     *
+     * 探针的 snap / snip 应答**本身就带 ready 字段**：
+     *   {"ok":true,"id":1,"snipping":false,"ready":true,"seq":146}
+     * 而原生侧只有启动握手那一行是不带 id 的：{"ok":true,"ready":true}。
+     * 原来这里写 `if (j && j.ready)` 且排在 id 分派之前 —— 结果是
+     * **每一次查询的应答都被当成握手吞掉**，一个都投递不到等待方：
+     *   · 截屏基线查询 9 次全撞满 1500ms 超时 → 9×1.5s ≈ 13.5s
+     *     → 实测「点下截屏到浮层就绪」14.9 秒，用户体感"点了没反应"；
+     *   · 更糟的是基线取不到 → 直接放弃本次截屏，截图根本不落盘；
+     *   · nativeSnipping / nativeSnapState 同样永远超时 → "Snipaste
+     *     已在框选中"守卫失效、取消判定失效（要等满 180 秒）。
+     * 前台窗口查询（fg）的应答**不含 ready**，所以观察边框一直是好的 ——
+     * 这也是这个 bug 藏得住、只表现为"截屏慢"的原因。 */
+    if (j && j.id === undefined && j.ready) { fgReady = true; continue; }
+    /* 直连槽优先：它的 id 一定在自己的表里，按 id 精确交付，不走单槽。 */
+    if (j && typeof j.id === "number" && fgDirect.has(j.id)) {
+      const s = fgDirect.get(j.id);
+      fgDirect.delete(j.id);
+      try { s(j); } catch { /* 回调内部异常不影响管道 */ }
+      continue;
+    }
     if (!fgPending) continue;
     /* ⚠️ 按 id 匹配，不要把**任意**响应行塞给当前占槽者（2026-10-24 修）。
      *
@@ -2069,6 +2107,37 @@ function nativeSnapState() {
     if (fgPending) { const p = fgPending; fgPending = null; p.settle(null); }
     const id = fgSend("snap");
     fgPending = { settle, id };
+  });
+}
+
+/**
+ * 同样的 snap 查询，但走**直连槽**（按 id 精确交付，不抢不打断）。
+ *
+ * 为什么需要：nativeSnapState 是单槽设计 —— 后到的查询会把先到的
+ * settle(null) 打断。观察边框（500ms）与截屏态轮询（600ms）同时在跑，
+ * 截屏键点下去那一刻，**基线查询几乎必然被别人抢掉**：
+ * 响应确实回来了（日志里能看到带 seq 的那一行），但占槽者已经换成
+ * 别人的请求 → 按 id 判定成孤儿响应丢弃 → 基线取不到 →
+ * 「放弃本次截屏」。用户看到的就是「点了截屏，Snipaste 弹出来了，
+ * 但截图没存」。改成直连槽后基线查询独占自己的 id，谁也抢不走。
+ *
+ * @returns {Promise<object|null>} 原样返回探针应答；超时/探针不可用给 null
+ */
+function nativeSnapDirect(timeoutMs = 600) {
+  return new Promise((resolve) => {
+    if (!fgEnsure() || !fgReady) return resolve(null);
+    let done = false;
+    let id = -1;
+    const settle = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      fgDirect.delete(id);
+      resolve(v || null);
+    };
+    const timer = setTimeout(() => settle(null), timeoutMs);
+    id = fgSend("snap");
+    fgDirect.set(id, settle);
   });
 }
 
@@ -2877,6 +2946,29 @@ ipcMain.on("voice-start", () => {
   sendToPanel("voice-start");
 });
 ipcMain.on("pin", (_e, v) => { saveState({ pinned: !!v }); if (!v) scheduleClose(300); });
+/* 划词工具条总开关：来自「设置 › 通道」面板拨杆。语义与右键菜单的
+   划词自动弹出完全一致 —— 落盘 + 启停监听 + 隐藏已弹出的工具条。 */
+/* 录屏 / 截屏「隐藏控制台」开关：语义同 set-autoselect —— 落盘 + 立即生效。
+   key 只认 "rec" / "snip" 两个值，其它一律忽略（不给自己留通用写状态的口子）。 */
+ipcMain.on("set-hide-console", (_e, key, v) => {
+  const on = !!v;
+  if (key === "rec") saveState({ recHideConsole: on });
+  else if (key === "snip") saveState({ snipHideConsole: on });
+  else return;
+  log("[hide-console]", key, "=", on);
+});
+/* 录屏开始 / 结束：面板报过来，由主进程决定到底藏不藏、还还不还。
+   返回"是否真的整窗隐藏了"，面板据此改提示文案。 */
+safeHandle("rec-hide-console", async (_e, on) => {
+  if (on) return { hidden: hideConsoleForRec() };
+  return { restored: restoreConsoleAfterRec() };
+}, () => ({ hidden: false, restored: false }));
+ipcMain.on("set-autoselect", (_e, v) => {
+  const on = !!v;
+  saveState({ autoSelect: on });
+  if (on) startSelectionWatch();
+  else { stopSelectionWatch(); if (toolbar && !toolbar.isDestroyed()) toolbar.hide(); }
+});
 ipcMain.on("busy", (_e, v) => sendToBall("busy", !!v));
 /* 动效总开关（面板「外观 › 动效」）。主进程留一份，是因为面板报过来的时候
    悬浮球未必加载完了 —— createBall 的 did-finish-load 里会再补推一次。
@@ -3157,14 +3249,72 @@ ipcMain.on("toolbar-action", (_e, action, text) => {
     shell.openExternal("https://www.bing.com/search?q=" + encodeURIComponent(text));
     return;
   }
-  const payload = action === "translate" ? `把下面这段翻译成中文，只给译文：\n${text}` : text;
+  /* ⚠️ 这里**没有** translate 分支了：划词工具条的「翻译」不再把文字塞进对话框
+     （那正是用户抱怨的"只是把选中的文字添加进控制台对话框"），而是走下面这条
+     轻量翻译通道，译文直接回给工具条显示成一张可复制的小卡。
+     这一支现在只服务「搜索 / 发给 Agent」。 */
+  const payload = text;
   if (panel && panel.isVisible()) {
     sendToPanel("prefill", payload);
-    sendToPanel("focus-route", action === "translate" ? "back" : "auto");
+    sendToPanel("focus-route", "auto");
   } else {
     prefillQueue.push(payload);
     openPanel();
   }
+});
+
+/* 划词「翻译」：一条**纯翻译**的旁路 —— 不派任务、不调工具、不碰输入框。
+   自定义模型优先，没配就退回后台 CLI（桥里同一个套路，见 bridge 的 runTranslate）。
+   工具条拿到译文后把自己变成一张小卡（见 toolbar.html）。 */
+safeHandle("toolbar-translate", async (_e, text) => {
+  try {
+    const token = bridgeTokenSync();
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["X-Orb-Token"] = token;
+    const r = await fetch(`http://127.0.0.1:${PORT}/api/translate`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: String(text || "").slice(0, 2000) }),
+      signal: AbortSignal.timeout(35000),
+    });
+    const j = await r.json();
+    return j && typeof j === "object" ? j : { ok: false, error: "桥返回了非 JSON" };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}, () => ({ ok: false, error: "翻译通道不可用（桥没起来）" }));
+
+/* 「打开文件夹」键：弹系统的选文件夹对话框。
+ *
+ * 以前这个键点下去是 `OPEN_DIR` + 空 value → 落到 state.workspace（控制台
+ * 自己的目录），于是它看起来"只能打开控制台所在文件夹"。那是**兜底值**，
+ * 不是设定：Agent 说「打开文件夹 D:\xxx」时它会带 value 直达，
+ * 但工具栏那颗键从来没有让人选过目录 —— 是漏了，不是有意的。
+ *
+ * ⚠️ 面板是 screen-saver 级置顶，比系统对话框还高：不先降下来，
+ *    选夹窗口会被压在面板后面，看着就像"点了没反应"。 */
+safeHandle("pick-dir", async () => {
+  const lower = () => { if (panel && !panel.isDestroyed()) { try { panel.setAlwaysOnTop(false); } catch { /* ignore */ } } };
+  const raise = () => { if (panel && !panel.isDestroyed()) { try { panel.setAlwaysOnTop(true, "screen-saver"); } catch { /* ignore */ } } };
+  lower();
+  try {
+    const r = await dialog.showOpenDialog({ properties: ["openDirectory"], title: "选择要打开的文件夹" });
+    if (!r || r.canceled || !r.filePaths || !r.filePaths.length) return { ok: false, cancelled: true };
+    return { ok: true, path: r.filePaths[0] };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  } finally {
+    raise();
+  }
+}, () => ({ ok: false, error: "选文件夹通道不可用" }));
+
+/* 工具条显示译文时要变大：宽度拉到能读一行英文，高度给译文留几行。
+   尺寸在**主进程**钳死（渲染层给多少都不信），免得一个坏数值把窗口撑到屏幕外。 */
+ipcMain.on("toolbar-resize", (_e, w, h) => {
+  if (!toolbar || toolbar.isDestroyed()) return;
+  const nw = Math.max(180, Math.min(460, Math.round(Number(w) || 216)));
+  const nh = Math.max(44, Math.min(360, Math.round(Number(h) || 44)));
+  try { toolbar.setSize(nw, nh); } catch { /* 窗口正在销毁 */ }
 });
 
 /* ---------------- 会话历史落盘 ----------------
@@ -3277,6 +3427,326 @@ safeHandle("storage-migrate", () => {
 
 safeHandle("storage-open", async (_e, kind) => storage.openSubdir(kind), () => ({ ok: false, path: null, error: "打开目录失败" }));
 
+/* ---------------- 录屏 / 截屏期间「隐藏控制台」 ----------------
+ * 两条开关（设置 › 通道）：
+ *   recHideConsole  录屏开始时把控制台**真的关掉**（不是只从采集里排除）
+ *   snipHideConsole 截屏前先把面板收起，别挡着要截的内容
+ *
+ * 为什么"排除出采集"不够：setContentProtection 只是骗过采集器，窗口本身
+ * 还戳在那儿 —— 抢鼠标、抢焦点、用户自己看得见。录屏时用户要的是
+ * "控制台消失"，而不是"录出来的视频里没有控制台"。
+ *
+ * ⚠️ 悬浮录屏控制条（recbar）**不参与隐藏**：它是录制期间暂停 / 取消 /
+ *    完成的唯一入口，跟着一起藏起来用户就"停不下来"了。设置项说明里写清楚。
+ *
+ * ⚠️ 唤回必须留两条路（键 + 鼠），否则"隐藏"就变成"卡死"：
+ *    键 = Ctrl+Space（togglePanel 里分流到 summonConsole）
+ *    鼠 = 点托盘图标（tray.on("click") 同样走 togglePanel）
+ */
+let consoleHiddenByRec = false;
+let snipPanelHidden = false;
+
+/** 录屏开始：按偏好真隐藏。返回是否真的隐藏了（面板据此改文案）。 */
+function hideConsoleForRec() {
+  if (!state.recHideConsole) return false;
+  if (consoleHiddenByRec) return true;
+  consoleHiddenByRec = true;
+  for (const w of [panel, ball, toolbar, subWin, borderWin]) {
+    if (!w || w.isDestroyed()) continue;
+    try { if (w.isVisible()) w.hide(); } catch { /* 正在销毁，跳过 */ }
+  }
+  log("[rec] 已按偏好隐藏控制台（球 / 面板 / 划词条 / 字幕窗），悬浮控制条保留");
+  return true;
+}
+
+/** 录屏结束：把藏起来的还回去。 */
+function restoreConsoleAfterRec() {
+  if (!consoleHiddenByRec) return false;
+  consoleHiddenByRec = false;
+  try { if (ball && !ball.isDestroyed()) ball.show(); } catch { /* ignore */ }
+  /* 面板：录屏开始时它是开着的（用户在面板上点的「录屏」），所以录完要还回去。 */
+  try { if (panel && !panel.isDestroyed()) openPanel(); } catch { /* ignore */ }
+  log("[rec] 录制结束，控制台已恢复显示");
+  return true;
+}
+
+/** 键鼠唤回：一旦唤回就视为"控制台回来了"，录屏结束不再强行弹开面板。 */
+function summonConsole() {
+  if (!consoleHiddenByRec) return false;
+  consoleHiddenByRec = false;
+  try { if (ball && !ball.isDestroyed()) ball.show(); } catch { /* ignore */ }
+  try { if (panel && !panel.isDestroyed()) openPanel(); } catch { /* ignore */ }
+  log("[rec] 录制中被唤回，控制台恢复显示");
+  return true;
+}
+
+/** 截屏前收面板（开关开着才做）。录屏已隐藏时不做 —— 别抢它的状态。 */
+function hidePanelForSnip() {
+  if (!state.snipHideConsole || consoleHiddenByRec) return;
+  if (!panel || panel.isDestroyed() || !panel.isVisible()) return;
+  closePanel();
+  snipPanelHidden = true;
+  log("[snip] 已按偏好收起面板（截屏期间不挡屏幕）");
+}
+
+/** 截屏会话结束（落盘 / 取消 / 超时）后把面板还回去。 */
+function restorePanelAfterSnip() {
+  if (!snipPanelHidden) return;
+  snipPanelHidden = false;
+  if (consoleHiddenByRec) return;      // 录屏中：面板归录屏那边管
+  try { if (panel && !panel.isDestroyed()) openPanel(); } catch { /* ignore */ }
+}
+
+/* ---------------- 框选取词（OCR） ----------------
+ *
+ * 原来「取词」是**整屏截一张 → 全屏 OCR → 把一屏的字全倒进对话框**
+ * （用户原话："并没有出现过框选，而是将所有的文字都直接呈现在对话区域"）。
+ * 那既慢又脏：整屏 OCR 会把任务栏、别的窗口、ORB 自己的界面文字一起念出来。
+ *
+ * 现在改成和截屏一样的交互：拖一块区域 → 只识别这块。
+ * 流程：铺一块全屏透明覆盖层（pick.html）→ 用户拖框 → 覆盖层退场
+ *      → 自家窗口临时排除后抓一次屏 → 按矩形裁出来 → 交本地 OCR。
+ *
+ * ⚠️ 覆盖层**不截屏、不碰文件**：它只产出"哪块区域"，剩下的都在主进程。
+ * ⚠️ 坐标是覆盖层内的 CSS 像素（相对该显示器左上角），裁剪前按 scaleFactor 换算。
+ */
+let pickWin = null;
+let pickResolve = null;
+let pickTimer = null;
+let pickPhase = "idle";   // "rect" = 等框选 / "confirm" = 等确认 / "idle" = 没有在等
+let pickHiddenWins = [];
+
+function createPickWin() {
+  if (pickWin && !pickWin.isDestroyed()) return pickWin;
+  pickWin = new BrowserWindow({
+    show: false, frame: false, transparent: true,
+    resizable: false, movable: false, focusable: true, hasShadow: false,
+    skipTaskbar: true, alwaysOnTop: true, backgroundColor: "#00000000",
+    webPreferences: {
+      contextIsolation: true,
+      preload: path.join(__dirname, "pick-preload.js"),
+    },
+  });
+  pickWin.setAlwaysOnTop(true, "screen-saver");   // 与球/面板同级，谁在上面不确定 → 期间把它们藏掉
+  pickWin.on("closed", () => { pickWin = null; });
+  pickWin.loadFile(path.join(__dirname, "pick.html"));
+  log("[pick] 取词覆盖层已创建");
+  return pickWin;
+}
+
+/** 覆盖层还在就把自家窗口藏掉：同级置顶，留在屏幕上会盖住覆盖层，那块就框不了。 */
+function hideForPick() {
+  pickHiddenWins = [];
+  for (const w of [panel, ball, toolbar, subWin, borderWin]) {
+    if (!w || w.isDestroyed()) continue;
+    try { if (w.isVisible()) { pickHiddenWins.push(w); w.hide(); } } catch { /* 正在销毁 */ }
+  }
+}
+function restoreAfterPick() {
+  for (const w of pickHiddenWins) {
+    if (!w || w.isDestroyed()) continue;
+    try { w.show(); } catch { /* ignore */ }
+  }
+  pickHiddenWins = [];
+}
+
+function closePickWin() {
+  if (pickWin && !pickWin.isDestroyed()) { try { pickWin.hide(); } catch { /* ignore */ } }
+}
+
+function sendToPick(channel, payload) {
+  if (pickWin && !pickWin.isDestroyed() && pickWin.webContents && !pickWin.webContents.isDestroyed()) {
+    try { pickWin.webContents.send(channel, payload); return true; } catch { /* 正在销毁 */ }
+  }
+  return false;
+}
+
+/** 起一次「等覆盖层回话」的等待，并挂上挂死兜底。 */
+function awaitPick(phase) {
+  return new Promise((resolve) => {
+    const win = createPickWin();
+    if (!win || win.isDestroyed()) { resolve(null); return; }
+    pickPhase = phase;
+    pickResolve = resolve;
+    /* 挂死兜底：用户切走了、忘了这层还压在屏幕上 → 60 秒自己撤。
+       没有它，整屏会一直盖着一层暗色，看起来就像死机。 */
+    clearTimeout(pickTimer);
+    pickTimer = setTimeout(() => {
+      pickTimer = null;
+      if (!pickResolve) return;
+      const r = pickResolve; pickResolve = null;
+      pickPhase = "idle";
+      closePickWin();
+      restoreAfterPick();
+      r(null);
+    }, 60000);
+  });
+}
+
+/** 阶段一：铺覆盖层，等用户框一块。返回 CSS 像素矩形；取消 / 超时返回 null。 */
+function pickRect(disp) {
+  hideForPick();
+  const win = createPickWin();
+  if (!win || win.isDestroyed()) return Promise.resolve(null);
+  win.setBounds({ x: disp.bounds.x, y: disp.bounds.y, width: disp.bounds.width, height: disp.bounds.height });
+  win.show();
+  win.focus();
+  return awaitPick("rect");
+}
+
+/* 阶段二：把「抓下来的那块图 + 每行文字的框」发回覆盖层，让用户看着确认。
+ *
+ * 为什么要有这一阶段（2026-10-29 加）：取词最常见的事故不是"没识别出来"，
+ * 是**框歪了** —— 多框了一行菜单、少框了半句。以前只能整段重框一次；
+ * 现在识别完先把每行文字用荧光框标出来，用户点掉不要的那几块即可。
+ *
+ * @param {{dataUrl:string,kx:number,ky:number}} shot 抓下来的区域图与缩放比
+ * @param {Array<{text:string,x:number,y:number,w:number,h:number}>} boxes 覆盖层窗口坐标（CSS px）
+ */
+function confirmPick(shot, boxes, fullText) {
+  const p = awaitPick("confirm");
+  if (!sendToPick("ocr-result", { img: shot.dataUrl, boxes, text: fullText || "" })) {
+    // 覆盖层没了（被关 / 创建失败）：别把流程卡死，按"整块都要"走
+    clearTimeout(pickTimer); pickTimer = null;
+    pickResolve = null; pickPhase = "idle";
+    return Promise.resolve({ text: fullText || "" });
+  }
+  return p;
+}
+
+ipcMain.on("pick-done", (_e, msg) => {
+  if (!pickResolve) return;
+  const r = pickResolve;
+  const kind = msg && msg.kind;
+  /* 阶段一 → 阶段二**不关窗**：覆盖层还要接着当确认台用，
+     关了再开会有一次闪烁，而且位置/状态都得重建。 */
+  if (kind === "rect") {
+    pickResolve = null;
+    pickPhase = "idle";
+    const rect = msg.rect;
+    const ok = rect && typeof rect.x === "number" && typeof rect.width === "number";
+    r(ok ? rect : null);
+    return;
+  }
+  pickResolve = null;
+  pickPhase = "idle";
+  if (pickTimer) { clearTimeout(pickTimer); pickTimer = null; }
+  closePickWin();
+  restoreAfterPick();
+  if (kind === "text") r({ text: String((msg && msg.text) || "") });
+  else r(null);
+});
+
+/* 「重框」：确认台上点的。它**不是一次结束** —— 覆盖层还开着、只是退回框选态，
+   所以这里只把"确认"这一轮的等待结束掉（带 redo 标记），让 ocr-pick 再转一圈。
+   关窗 / 恢复自家窗口都留给真正结束的那一轮。 */
+ipcMain.on("pick-redo", () => {
+  if (!pickResolve || pickPhase !== "confirm") return;
+  const r = pickResolve;
+  pickResolve = null;
+  pickPhase = "idle";
+  r({ redo: true });
+});
+
+/** 抓一次屏，按矩形裁出来。返回 { dataUrl, kx, ky }（kx/ky = 图像像素 ÷ CSS 像素）。 */
+async function grabRegion(disp, rect) {
+  const sf = disp.scaleFactor || 1;
+  const physW = Math.max(2, Math.round(disp.size.width * sf));
+  const physH = Math.max(2, Math.round(disp.size.height * sf));
+  let sources = null;
+  /* 自家窗口（含覆盖层本身）必须临时从截图里消失，否则拍到的是 ORB 自己 */
+  beginShotShield();
+  try {
+    sources = await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize: { width: physW, height: physH },
+    });
+  } finally {
+    endShotShield();
+  }
+  if (!sources || !sources.length) return null;
+  const src = sources.find((s) => String(s.display_id) === String(disp.id)) || sources[0];
+  const img = src && src.thumbnail;
+  if (!img || img.isEmpty()) return null;
+  /* 缩略图的实际像素未必精确等于请求值（Electron 按屏幕比例给），
+     所以按**实际尺寸**反推缩放比，别拿 sf 硬乘 —— 那会在多屏不同 DPI 时裁偏。 */
+  const size = img.getSize();
+  const kx = size.width / Math.max(1, disp.size.width);
+  const ky = size.height / Math.max(1, disp.size.height);
+  const x = Math.max(0, Math.round(rect.x * kx));
+  const y = Math.max(0, Math.round(rect.y * ky));
+  const w = Math.max(1, Math.min(size.width - x, Math.round(rect.width * kx)));
+  const h = Math.max(1, Math.min(size.height - y, Math.round(rect.height * ky)));
+  log(`[pick] 区域 ${rect.width}×${rect.height}@${sf} → 裁 ${w}×${h}（缩略图 ${size.width}×${size.height}）`);
+  let dataUrl = "";
+  try {
+    dataUrl = img.crop({ x, y, width: w, height: h }).toDataURL();
+  } catch (e) {
+    log("[pick] 裁剪失败:", (e && e.message) || String(e));
+    dataUrl = img.toDataURL();   // 退化成整屏：至少还能识别，只是会带上别处的字
+  }
+  return { dataUrl, kx, ky };
+}
+
+/** 主进程代发 OCR（面板不碰令牌）。 */
+async function ocrViaBridge(dataUrl) {
+  const token = bridgeTokenSync();
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers["X-Orb-Token"] = token;
+  const r = await fetch(`http://127.0.0.1:${PORT}/api/ocr`, {
+    method: "POST", headers,
+    body: JSON.stringify({ dataUrl }),
+    signal: AbortSignal.timeout(45000),
+  });
+  const j = await r.json();
+  return j && typeof j === "object" ? j : { ok: false, error: "桥返回了非 JSON" };
+}
+
+safeHandle("ocr-pick", async () => {
+  try {
+    /* 从**鼠标所在的**那块屏弹覆盖层：多屏时不能在别处弹。 */
+    const disp = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    /* 整轮 = 框选 → 抓图 → OCR → 确认；点「重框」就再转一圈（覆盖层始终不关）。 */
+    for (;;) {
+      const rect = await pickRect(disp);
+      if (!rect) return { ok: false, cancelled: true };
+      const shot = await grabRegion(disp, rect);
+      if (!shot || !shot.dataUrl) return { ok: false, error: "没拿到屏幕图像（桌面捕获失败）" };
+      const done = await ocrOnce(shot, rect);
+      if (done.redo) continue;
+      return done;
+    }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}, () => ({ ok: false, error: "取词通道不可用" }));
+
+/** 一次「抓图 → OCR → 确认」。返回 { ok, text?, dataUrl?, cancelled?, redo? }。 */
+async function ocrOnce(shot, rect) {
+  const ocr = await ocrViaBridge(shot.dataUrl).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    const text = String((ocr && ocr.text) || "").trim();
+    /* 一个字都没认出来：没有可画的框，进确认台只是白点一次 —— 直接告诉用户。 */
+    if (!text) return { ok: true, text: "", dataUrl: shot.dataUrl, empty: true };
+
+    /* 行坐标（图像像素）→ 覆盖层窗口坐标（CSS px，相对整屏窗口左上角） */
+    const lines = Array.isArray(ocr.lines) ? ocr.lines : [];
+    const boxes = lines.map((l) => ({
+      text: String(l.text || ""),
+      x: rect.x + (Number(l.x) || 0) / shot.kx,
+      y: rect.y + (Number(l.y) || 0) / shot.ky,
+      w: (Number(l.w) || 1) / shot.kx,
+      h: (Number(l.h) || 1) / shot.ky,
+    }));
+    if (!boxes.length) {   // 老环境没坐标：无从"筛选"，直接整块拿走
+      return { ok: true, text, dataUrl: shot.dataUrl };
+    }
+
+    const chosen = await confirmPick(shot, boxes, text);
+    if (!chosen) return { ok: false, cancelled: true };
+    if (chosen.redo) return { redo: true };
+    return { ok: true, text: String(chosen.text || "").trim(), dataUrl: shot.dataUrl };
+}
+
 /* ---------------- Snipaste（截屏） ----------------
  * 三条通道都只做「一件具体的事」，不暴露 fs、不暴露通用 spawn：
  *   snip-detect     装没装 / 在不在跑（设置页状态行、首跑引导卡、聚焦重查都用它）
@@ -3289,6 +3759,7 @@ safeHandle("snip-detect", async () => {
 }, () => ({ ok: false, installed: false, running: false, path: "", source: "" }));
 
 safeHandle("snip-run", async () => {
+  const t0 = Date.now();
   try {
     /* ⚠️ Snipaste 已经在框选/标注中，就**不要再发一次 snip 命令**。
        实测（用户反馈）：连着发第二次会让 Snipaste 状态错乱 ——
@@ -3297,13 +3768,23 @@ safeHandle("snip-run", async () => {
        ⚠️ 探针必须**先就绪**再问 —— nativeSnipping() 在探针未就绪时
           返回 false（保守兜底，否则整个截屏功能不可用），
           那个 false 会让本守卫失效 → 重复发 snip → 状态错乱。 */
-    await waitFgReady();
+    /* 700ms 而不是原来的 2000ms：探针正常是毫秒级就绪，真等满 2 秒
+       说明它已经坏了 —— 那种情况下守卫失效（多一次重复唤起的概率）
+       也比让用户干等两秒划算。这条等待**直接压在"点了截屏到浮层弹出"
+       的观感上**，是当初"响应极长"的主要来源之一。 */
+    await waitFgReady(700);
+    const t1 = Date.now();
+    /* ⚠️ 3 次 × 60ms 空转压到 2 次 × 40ms（2026-10-29 改）：
+       探针应答是 0.2ms 级，一次查询就够准；多出来的重试是为了防"探针刚好
+       抖一下"。而**没在框选**才是常态 —— 那时这 120ms 是纯白等，
+       直接叠在"点了截屏到浮层弹出"上。留一次重试（40ms）足够兜住抖动。 */
     let busy = false;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 2; i++) {
       busy = await nativeSnipping().catch(() => false);
       if (busy) break;
-      await new Promise((r) => setTimeout(r, 60));
+      await new Promise((r) => setTimeout(r, 40));
     }
+    const t2 = Date.now();
     if (busy) {
       log("[snip] Snipaste 已在框选中，不重复唤起（避免状态错乱）");
       return { ok: true, launched: true, file: "", reason: "already-snipping" };
@@ -3314,7 +3795,19 @@ safeHandle("snip-run", async () => {
      * 可能在基线查询到达之前就已经把图写进剪贴板 → 基线取到的是"写完之后"的
      * 序列号 → 之后序列号再不变 → 判定永远不成立 → 截图丢失。 */
     const base = await takeClipSeqBaseline();
+    const t3 = Date.now();
+    /* 面板挡着屏幕就截不到下面的内容 —— 开关开着时先收起来，会话结束再还回去。 */
+    hidePanelForSnip();
     const r = await snipaste.runSnip();
+    const t4 = Date.now();
+    if (!r || !r.ok) restorePanelAfterSnip();   // 唤起失败：别把面板晾在收起状态
+    /* ⚠️ 分段耗时必须打出来（2026-10-29 加）。
+       「点截屏到浮层弹出」这条链上有四段：等探针就绪 / 查是否已在框选 /
+       取剪贴板基线 / 唤起 Snipaste。之前只有一条总耗时，出问题时根本
+       定位不到是哪一段 —— 14.9 秒那次最后是靠算出来的（5×...），不是看出来的。
+       现在每段都留痕：+fg就绪 / +查框选 / +取基线 / +唤起。 */
+    log("[snip] 分段耗时：等探针 " + (t1 - t0) + "ms，查框选 " + (t2 - t1)
+      + "ms，取基线 " + (t3 - t2) + "ms(seq=" + base.seq + ")，唤起 " + (t4 - t3) + "ms");
     /* 产物走剪贴板（裸 snip 的正常行为），所以盯剪贴板而不是盯文件。
        落盘文件名在这里生成 —— 目录此刻就要在（用户可能刚改过存储根）。 */
     if (r && r.ok) {
@@ -3322,8 +3815,10 @@ safeHandle("snip-run", async () => {
       const file = snipaste.snipFile(dir);
       duckForSnip(true);
       watchSnipClipboard(file, base.seq, base.hash);
+      log("[snip] 唤起完成，从点下到浮层就绪 " + (Date.now() - t0) + "ms");
       return { ok: true, launched: true, file, reason: "" };
     }
+    log("[snip] 唤起失败 " + (Date.now() - t0) + "ms：" + (r && r.reason));
     return r;
   }
   catch (e) { return { ok: false, launched: false, file: "", reason: "exception: " + String((e && e.message) || e) }; }
@@ -3482,18 +3977,30 @@ function bufFingerprint(buf) {
  * @returns {Promise<{seq: number, hash: string}>} seq=-1 表示取不到
  */
 async function takeClipSeqBaseline(attempt = 0) {
-  const st = await nativeSnapState().catch(() => ({ known: false, seq: -1 }));
-  if (st && st.known && st.seq >= 0) {
+  /* 走直连槽（不会被观察边框 / 截屏态轮询抢掉），见 nativeSnapDirect 的注释。 */
+  const raw = await nativeSnapDirect().catch(() => null);
+  const st = raw && typeof raw.seq === "number"
+    ? { known: true, seq: raw.seq }
+    : { known: false, seq: -1 };
+  if (st.known && st.seq >= 0) {
     /* 顺带记下"此刻剪贴板里的图"的指纹，用来识别"读到的其实是旧图" */
     const cur = await readClipboardImage().catch(() => null);
     return { seq: st.seq, hash: cur ? bufFingerprint(cur.buf) : "" };
   }
-  if (attempt < 20) {
-    await new Promise((r) => setTimeout(r, 150));
+  /* 重试窗口：8×80ms → 4×60ms。走直连槽之后"取不到"基本只剩"探针真的没起来"
+     这一种情况，那种情况下干等只是把"点了没反应"拉长，对用户没任何好处。
+     ⚠️ 单次超时也从 1500ms 压到 600ms（见 nativeSnapDirect）—— 探针应答是
+        0.2ms 级，600ms 已经是 3000 倍余量；而一旦真超时，每多一次重试就
+        多一秒"点了没反应"，这正是当初 14.9 秒的构成方式。 */
+  if (attempt < 4) {
+    await new Promise((r) => setTimeout(r, 60));
     return takeClipSeqBaseline(attempt + 1);
   }
   log("[snip] 取不到剪贴板序列号基线（native 探针未就绪）");
-  return { seq: -1, hash: "" };
+  /* 序列号没了不代表彻底没救 —— 顺手取一次指纹，让 watchSnipClipboard
+     能降级到"剪贴板里出现不同于基线的图"（见那里的 mode === "hash"）。 */
+  const cur = await readClipboardImage().catch(() => null);
+  return { seq: -1, hash: cur ? bufFingerprint(cur.buf) : "" };
 }
 
 /**
@@ -3599,17 +4106,35 @@ function watchSnipClipboard(file, baseSeqIn, baseHashIn) {
     if (snipWatchTimer === pollTimer) snipWatchTimer = null;
     duckForSnip(false);
     log("[snip] 截图落盘 ->", path || "(无)");
+    restorePanelAfterSnip();   // 因截屏收起的面板，在这里还回去（录屏中则跳过）
     sendToPanel("snip-done", { file: path || "" });
   };
 
-  /* 基线彻底取不到 → 明确失败，不要硬撑。
-     硬撑（拿 -1 当基线）的后果是"序列号永远等于基线" → 判定恒不成立 →
-     截图永远不落盘，用户还以为存下来了。宁可这次不存，也不能存错。 */
+  /* 基线取不到时的**降级**，不再直接放弃（2026-10-29 改）。
+   *
+   * 原来这里「剪贴板基线不可用 → 放弃本次截屏」，而基线走的是 native 探针 ——
+   * 探针一旦不可用（exe 缺失 / 启动失败 / 被 3 次重启判死），整条截屏链路
+   * 就全废了：用户点了截屏、Snipaste 也弹了、辛苦框完点复制，结果一张不存。
+   * 实测就是这么丢的（fgDrain 吞应答那次，14.9 秒 + 零落盘）。
+   *
+   * 降级链：序列号 → 指纹 → 放弃
+   *   · seq 不可用但拿到了基线指纹 → 退到「剪贴板里出现一张**不同于基线**的图」
+   *     （丢的是"两张图字节完全相同"这种极端情况，比整个功能死掉划算得多）；
+   *   · 指纹也没有（连剪贴板都读不出来）→ 那确实没有任何判据可用，才放弃。
+   */
+  let mode = "seq";                       // seq | hash
   if (baseSeq < 0) {
-    log("[snip] 剪贴板基线不可用，放弃本次截屏");
-    setTimeout(() => finish(""), 0);
-    return;
+    if (!baseHash) {
+      log("[snip] 剪贴板基线与指纹都取不到，放弃本次截屏");
+      setTimeout(() => finish(""), 0);
+      return;
+    }
+    mode = "hash";
+    log("[snip] 序列号基线不可用，降级为指纹判定（探针不可用）");
   }
+  /* 指纹模式下没有 snipping 可看，取消无从判断 —— 用更短的总时限收场，
+     免得面板一直锁着（正常路径 180 秒那条兜底对它是浪费）。 */
+  const hardDeadline = mode === "hash" ? startAt + 90000 : deadline;
 
   const tick = async () => {
     if (inflight) return;
@@ -3622,9 +4147,26 @@ function watchSnipClipboard(file, baseSeqIn, baseHashIn) {
        *   没有别的出口 —— 这个 deadline 是唯一的救命绳。
        *   漏掉它 → 轮询永不结束 → duckForSnip(false) 永不执行 →
        *   ORB 的球/面板/字幕窗**永久停在普通层**（不再置顶），面板锁死。 */
-      if (Date.now() >= deadline) {
+      if (Date.now() >= hardDeadline) {
         log("[snip] 等待截图超时");
         finish("");
+        return;
+      }
+
+      /* 指纹模式（探针不可用）：不看 snipping，直接盯剪贴板里有没有"新图"。
+         baseHash 是唤起前那张图 —— 与它不同才认作本次截图。 */
+      if (mode === "hash") {
+        const rr = await readClipboardImage().catch(() => null);
+        if (rr) {
+          if (bufFingerprint(rr.buf) === baseHash) return;   // 还是唤起前那张旧图
+          try {
+            fs.writeFileSync(file, rr.buf);
+            finish(file);
+          } catch (e) {
+            log("[snip] 剪贴板图片写盘失败:", (e && e.message) || String(e));
+            finish("");
+          }
+        }
         return;
       }
 
@@ -4527,6 +5069,10 @@ ipcMain.handle("get-state", () => ({
   /* 截屏引导卡（第一档）：没装 Snipaste 时首启弹一次，看完 snip-guide-done 落盘。
      和 envWizardDone 同一个套路：主进程落盘为准，localStorage 只是保底。 */
   snipGuideDone: !!state.snipGuideDone,
+  /* 划词工具条总开关：面板「设置 › 通道」里的拨杆直接读它、改它 */
+  autoSelect: !!state.autoSelect,
+  /* 录屏 / 截屏隐藏控制台：面板「设置 › 通道」里的两枚拨杆 */
+  recHideConsole: !!state.recHideConsole, snipHideConsole: !!state.snipHideConsole,
   display: (() => {
     try {
       const d = screen.getPrimaryDisplay();
@@ -4767,12 +5313,24 @@ ipcMain.handle("asr-transcribe", async (_e, { endpoint, apiKey, model, audioB64,
  * （installed + modelDownloaded + running）就用本地，否则静默回落浏览器。
  * 与 asr-transcribe 同一套路：主进程带令牌代发，渲染层不碰请求头。
  */
-ipcMain.handle("asr-status", async () => {
+/* opt.wake = true → 让 bridge 在回状态前先把识别服务拉起来（见 voice.js 的注释：
+   服务空闲 5 分钟会被回收，点麦克风时它是睡着的，只探活会误判成"没装"）。
+   ⚠️ 必须带超时：加载 medium 权重在 GPU 冷启动 / 回落 CPU 时要几秒到几十秒，
+      没有超时的话面板会一直挂在"正在启动本地识别服务…"。 */
+ipcMain.handle("asr-status", async (_e, opt) => {
   try {
     const token = bridgeTokenSync();
     const headers = {};
     if (token) headers["X-Orb-Token"] = token;
-    const r = await fetch(`http://127.0.0.1:${PORT}/api/asr`, { headers });
+    const q = (opt && opt.wake) ? "?wake=1" : "";
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), (opt && opt.wake) ? 95000 : 5000);
+    let r;
+    try {
+      r = await fetch(`http://127.0.0.1:${PORT}/api/asr${q}`, { headers, signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!r.ok) return { ok: false, error: "bridge HTTP " + r.status };
     const j = await r.json();
     return { ok: true, ...j };

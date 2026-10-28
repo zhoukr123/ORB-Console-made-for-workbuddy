@@ -613,8 +613,12 @@ const ORB_TOOL_LIST = Object.keys(LOCAL_TOOLS);
  */
 const WORKBUDDY_TOOLS = {
   // 包一层 metered：这次调用新产生的会话才算到 ORB 头上（详见 readCredits 的注释）
-  workbuddy_execute: (a, timeoutMs) =>
-    metered(() => runWorkbuddy(String(a?.task ?? ""), timeoutMs, String(a?.model ?? ""))),
+  /* sink = 流式正文的增量出口（见 startJob 的 partial）。
+     后台任务真正耗的是 CLI 那一轮，等它跑完才回显的话，
+     用户要对着「排队中」干等几十秒 —— 把已经生成的正文时不时吐出来，
+     体感上的"反应速度"是另一个量级。不传就等于没有，行为与原来完全一致。 */
+  workbuddy_execute: (a, timeoutMs, sink) =>
+    metered(() => runWorkbuddy(String(a?.task ?? ""), timeoutMs, String(a?.model ?? ""), sink)),
   /* 人格台词批量生成（B + E 的措辞来源）。
      不进 metered：它本身就是「额外消耗」那一块，面板会单独标注成本，
      不该和「会话记账」混在一起。失败一律返回 {ok:false}，不抛。 */
@@ -792,7 +796,7 @@ function extractAnswer(out) {
   return typeof j === "object" ? JSON.stringify(j).slice(0, 4000) : raw;
 }
 
-async function runWorkbuddy(task, timeoutMs = JOB_TIMEOUT_MS, model = "") {
+async function runWorkbuddy(task, timeoutMs = JOB_TIMEOUT_MS, model = "", sink = null) {
   // 前置校验：CLI 不在就直接给「去安装」的中文提示，绝不 spawn 一个不存在的可执行文件。
   // 这里是后台派发的唯一入口（面板 /api/call → WORKBUDDY_TOOLS.workbuddy_execute），
   // 放在最前面可以让「没装」和「没登录」走两条完全不同的文案。
@@ -829,7 +833,7 @@ async function runWorkbuddy(task, timeoutMs = JOB_TIMEOUT_MS, model = "") {
        ORB_WB_TEXT=1 可整体退回旧的纯文本路径（排障用，行为与历史完全一致）。 */
     const r = process.env.ORB_WB_TEXT === "1"
       ? await spawnOnce(task, timeoutMs, useModel)
-      : await spawnOnceStream(task, timeoutMs, useModel);
+      : await spawnOnceStream(task, timeoutMs, useModel, "", sink);
     tokEnd(true);
     if (ownLive) liveEnd(true);
     return r;
@@ -849,7 +853,7 @@ async function runWorkbuddy(task, timeoutMs = JOB_TIMEOUT_MS, model = "") {
  *
  *  顺带把每个 tool_use 的名字写进 LIVE.lastTool，供面板做过程播报。
  */
-function spawnOnceStream(task, timeoutMs, model, cliPath = "") {
+function spawnOnceStream(task, timeoutMs, model, cliPath = "", sink = null) {
   return new Promise(async (resolve, reject) => {
     if (!task.trim()) return reject(new Error("workbuddy_execute 需要一个 task 参数"));
     const cli = await resolveWbCli();
@@ -891,6 +895,14 @@ function spawnOnceStream(task, timeoutMs, model, cliPath = "") {
     let done = false;
     let timedOut = false;
     let toolSeen = 0;
+    let lastSinkPush = 0;
+    const sinkPush = (force) => {
+      if (!sink) return;
+      const now = Date.now();
+      if (!force && now - lastSinkPush < 350) return;   // 节流：最多 ~3 次/秒
+      lastSinkPush = now;
+      try { sink(text); } catch {}
+    };
 
     /* execFile 的 timeout 只杀父进程，孙进程会成孤儿；这里自己计时 + 树杀 */
     const timer = setTimeout(() => { timedOut = true; killProcTree(child); }, timeoutMs);
@@ -925,7 +937,7 @@ function spawnOnceStream(task, timeoutMs, model, cliPath = "") {
       if (ev.type === "assistant" && ev.message && Array.isArray(ev.message.content)) {
         for (const c of ev.message.content) {
           if (!c) continue;
-          if (c.type === "text" && typeof c.text === "string") text += c.text;
+          if (c.type === "text" && typeof c.text === "string") { text += c.text; sinkPush(false); }
           else if (c.type === "tool_use" && c.name) {
             toolSeen += 1;
             if (LIVE.active) liveStep(toolSeen, String(c.name));
@@ -953,6 +965,7 @@ function spawnOnceStream(task, timeoutMs, model, cliPath = "") {
     child.on("error", (e) => finish(e));
     child.on("close", (code, sig) => {
       if (buf) { onLine(buf); buf = ""; }
+      sinkPush(true);   // 收尾再推一次，确保最后一段不丢
       finish(sig || code ? { code, signal: sig } : null);
     });
   });
@@ -980,6 +993,16 @@ function buildPersonaPrompt(a) {
   L.push("[禁止] " + String(spec.bans || "不讽刺、不说教、不自贬。"));
   if (Array.isArray(spec.samples) && spec.samples.length) {
     L.push("[说话方式参考，不要照抄] " + spec.samples.join(" ／ "));
+  }
+  if (spec.actions) {
+    /* 动作语言：一句末尾用全角括号补一个动作（「做好了…辛苦你啦。（轻轻笑了笑）」）。
+       它不占口播时长，却让人"看见"这个人在做什么 —— 是这类陪伴角色最省字的一招。
+       与颜文字**可以同时出现**，但顺序固定：正文 → 颜文字 →（动作）。
+       颜文字是语气，动作是舞台指示，两个各管一段，叠起来也不会读成字幕。 */
+    L.push("[动作] 每句末尾用一个全角括号括一个动作，例如（轻轻笑了笑）。只许一个，"
+      + "放在句子最末；允许与颜文字同现，但颜文字必须排在动作之前；"
+      + "动作不计入上面的字数限制；失败与深夜只许用收着做的动作。"
+      + "从这些里挑或按同样风格自造：" + String(spec.actions));
   }
   L.push("");
   L.push("[本次任务] " + String((a && a.task) || "").slice(0, PERSONA_TASK_MAX));
@@ -1012,17 +1035,21 @@ function parsePersonaJson(raw) {
 
 /** 调用户自己填的 OpenAI 兼容接口。这是一条「纯说话」的旁路 ——
  *  要让它干活走的是 CLI 的 custom-local 通道（见 ensureCliModel）。 */
-async function callCustomChat(custom, sys, usr, timeoutMs) {
+async function callCustomChat(custom, sys, usr, timeoutMs, opts) {
   const base = String(custom.baseUrl || "").replace(/\/+$/, "");
   if (!base || !custom.key || !custom.model) throw new Error("自定义模型配置不完整");
   const url = /\/chat\/completions$/i.test(base) ? base : base + "/chat/completions";
+  /* opts 只给"翻译"这类要稳定输出、可能偏长的旁路用；
+     台词那一路不传，行为与原来完全一致（温度 0.75 / 500 tokens）。 */
+  const temperature = (opts && typeof opts.temperature === "number") ? opts.temperature : 0.75;
+  const maxTokens = (opts && Number(opts.maxTokens)) || 500;
   const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer " + custom.key },
     body: JSON.stringify({
       model: custom.model,
-      temperature: 0.75,
-      max_tokens: 500,
+      temperature,
+      max_tokens: maxTokens,
       messages: [
         { role: "system", content: sys },
         { role: "user", content: usr },
@@ -1281,6 +1308,84 @@ async function runPersonaBundle(a) {
     return { ok: false, error: "输出不是可解析的 JSON", src: "cli", ms: Date.now() - t0 };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e).slice(0, 200), src: "cli", ms: Date.now() - t0 };
+  } finally {
+    try { fsSync.unlinkSync(tmp); } catch {}
+  }
+}
+
+/* ---------------- 划词翻译（轻量旁路，不进 Agent 循环） ----------------
+ *
+ * 划词工具条上的「翻译」原来只是把选中文字塞进对话框并预填一句"翻译成中文"，
+ * 用户点了根本没翻译（原话："只是将选中的文字添加进控制台对话框"）。
+ *
+ * 这里走一条**纯翻译**的旁路：自己配的接口 / CLI 各调一次，只带一段待译文本，
+ * 不派任务、不调工具、不碰输入框 —— 译文直接回给工具条显示成一张可复制的小卡。
+ *
+ * ⚠️ 方向自动，不额外调一次"语言检测"：含中日韩字符就译成英文，否则译成中文。
+ *    绝大多数场景就这两向，多一次调用只会让"划一下看个词"变慢。
+ */
+const TRANSLATE_MAX = 1500;
+
+async function runTranslate(text) {
+  const t0 = Date.now();
+  const src = String(text || "").slice(0, TRANSLATE_MAX);
+  if (!src.trim()) return { ok: false, error: "没有选中文字", ms: 0 };
+  const cjk = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(src);
+  const target = cjk ? "English" : "简体中文";
+  const dir = cjk ? "zh→en" : "en→zh";
+  const sys = "你是翻译器。只输出译文：不要解释、不要加引号、不要加任何前后缀或代码块；"
+    + "保留原文的换行与段落结构；专有名词、代码标识符、命令保持原样。";
+  const usr = "把下面这段翻译成" + target + "：\n\n" + src;
+
+  /* 1) 自定义模型优先：快、不占 CLI 会话额度 */
+  const custom = readCustomModel();
+  if (custom && custom.baseUrl && custom.key && custom.model) {
+    try {
+      const r = await callCustomChat(custom, sys, usr, 20000, { temperature: 0.2, maxTokens: 1200 });
+      const out = String(r.text || "").trim();
+      if (!out) throw new Error("模型返回空内容");
+      return { ok: true, text: out, dir, src: "custom", ms: Date.now() - t0 };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e).slice(0, 200), dir, src: "custom", ms: Date.now() - t0 };
+    }
+  }
+
+  /* 2) 退回 CLI。中文不能走 argv（Windows 下会被按 GBK 转码弄坏），
+        整段要求写进临时文件，用 --system-prompt-file 传（与台词同一招）。 */
+  const cli = await resolveWbCli();
+  if (!cli.found) return { ok: false, error: cli.hint || CLI_HINT_MISSING, dir, src: "cli", ms: Date.now() - t0 };
+  const tmpDir = process.env.TEMP || process.env.TMP || HERE;
+  const tmp = path.join(tmpDir, "orb-translate-" + process.pid + "-" + t0 + ".txt");
+  try {
+    fsSync.writeFileSync(tmp, sys + "\n\n" + usr, "utf8");
+  } catch (e) {
+    return { ok: false, error: "写临时提示文件失败：" + String((e && e.message) || e), dir, src: "cli", ms: Date.now() - t0 };
+  }
+  try {
+    const port = await freePort();
+    const out = await new Promise((resolve, reject) => {
+      const child = execFile(
+        cli.path,
+        [
+          "-p", "按系统提示的要求翻译，只输出译文。",
+          "--port", String(port),
+          "--output-format", "text",
+          "--system-prompt-file", tmp,
+          "--permission-mode", "bypassPermissions",
+          ...((WB_MODEL || "").trim() ? ["--model", WB_MODEL.trim()] : []),
+        ],
+        { timeout: 30000, maxBuffer: 2 * 1024 * 1024, windowsHide: true, env: cleanCliEnv(), cwd: tmpDir },
+        (err, stdout) => {
+          const s = String(stdout || "").trim();
+          if (s) return resolve(s);
+          return reject(new Error(String((err && err.message) || "CLI 无输出").slice(0, 160)));
+        },
+      );
+      trackProc(child);
+    });
+    return { ok: true, text: out, dir, src: "cli", ms: Date.now() - t0 };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e).slice(0, 200), dir, src: "cli", ms: Date.now() - t0 };
   } finally {
     try { fsSync.unlinkSync(tmp); } catch {}
   }
@@ -2774,7 +2879,7 @@ function stopExempt(key, tool) {
   return STOP_EXEMPT.has(`${key}|${tool}`);
 }
 
-async function callToolRaw(key, tool, args, timeoutMs) {
+async function callToolRaw(key, tool, args, timeoutMs, sink = null) {
   /* 急停检查点：放在 callToolRaw 的入口，一次覆盖全部四条路 ——
    *   回放（runSteps → callTool）、单次调用（/api/call → callTool）、
    *   后台任务（startJob → callTool）、危险确认（WaitFor → callTool）。
@@ -2797,7 +2902,7 @@ async function callToolRaw(key, tool, args, timeoutMs) {
   if (key === "workbuddy") {
     const fn = WORKBUDDY_TOOLS[tool];
     if (!fn) throw new Error(`workbuddy 没有工具 ${tool}（可用：${WORKBUDDY_TOOL_LIST.join(", ")}）`);
-    return fn(args ?? {}, timeoutMs);
+    return fn(args ?? {}, timeoutMs, sink);
   }
 
   // 危险操作：挂起等人确认；超时按拒绝处理（绝不自动放行）。
@@ -2856,10 +2961,10 @@ function auditArgs(args) {
   } catch { return "(无法序列化)"; }
 }
 
-async function callTool(key, tool, args, timeoutMs) {
+async function callTool(key, tool, args, timeoutMs, sink = null) {
   const t0 = Date.now();
   try {
-    const r = await callToolRaw(key, tool, args, timeoutMs);
+    const r = await callToolRaw(key, tool, args, timeoutMs, sink);
     audit({ source: CURRENT_SOURCE, server: key, tool, args: auditArgs(args), ok: true, ms: Date.now() - t0 });
     return r;
   } catch (err) {
@@ -2909,9 +3014,16 @@ function trimJobResult(r) {
   };
 }
 
-function startJob(key, tool, args, timeoutMs) {
+function startJob(key, tool, args, timeoutMs, sink = null) {
   const id = String(++jobSeq);
-  jobs.set(id, { id, server: key, tool, status: "running", startedAt: Date.now() });
+  // partial：后台任务把已生成的正文体不时写回这里，面板轮询时能看到"正在长出来"的答案。
+  const job = { id, server: key, tool, status: "running", startedAt: Date.now(), partial: "" };
+  jobs.set(id, job);
+  // 增量正文出口：节流写回 job.partial（最多 ~3 次/秒，不拖慢 CLI 主流程）。
+  const jobSink = (s) => { job.partial = typeof s === "string" ? s : ""; };
+  const finalSink = sink
+    ? (s) => { jobSink(s); try { sink(s); } catch {} }
+    : jobSink;
   /* 原来的淘汰条件是 `find(status !== "running")`，找不到就 break：
      60 个全是 running 时 jobs 再也不淘汰，而每条 result 是工具的**完整返回**
      （一张截图就几 MB）—— 内存只涨不降。这里保证上限一定生效。
@@ -2925,7 +3037,7 @@ function startJob(key, tool, args, timeoutMs) {
   }
   (async () => {
     try {
-      const raw = await callTool(key, tool, args, timeoutMs ?? JOB_TIMEOUT_MS);
+      const raw = await callTool(key, tool, args, timeoutMs ?? JOB_TIMEOUT_MS, finalSink);
       const { result, truncated } = trimJobResult(raw);
       const cur = jobs.get(id);
       if (cur) jobs.set(id, { ...cur, status: "done", finishedAt: Date.now(), result, truncated });
@@ -2990,7 +3102,38 @@ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage((New-Object Windo
 if (-not $engine) { $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
 if (-not $engine) { throw '本机没有可用的 OCR 语言（需在系统语言里装中文/英文 OCR）' }
 $r = Await ($engine.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult])
-$r.Text
+/* 除了整段文本，还要**每行文字的位置** —— 取词要拿它给用户画高亮框，
+   让用户一眼看出"框对了没有 / 有没有多框一行"。
+   坐标取自 OcrWord.BoundingRect（词级），再按行取外接矩形：
+   ⚠️ 不能直接用词级框 —— 中文被按"词"切得极碎，一个词一个框会画成一地碎格子。
+   单位是**送进来的这张图的像素**，调用方不用再换算。 */
+$boxes = @()
+foreach ($L in $r.Lines) {
+  $x1 = $null; $y1 = $null; $x2 = $null; $y2 = $null
+  foreach ($w in $L.Words) {
+    $b = $w.BoundingRect
+    if ($null -eq $b) { continue }
+    $wx1 = [double]$b.X; $wy1 = [double]$b.Y
+    $wx2 = $wx1 + [double]$b.Width; $wy2 = $wy1 + [double]$b.Height
+    if ($null -eq $x1) { $x1 = $wx1; $y1 = $wy1; $x2 = $wx2; $y2 = $wy2 }
+    else {
+      if ($wx1 -lt $x1) { $x1 = $wx1 }
+      if ($wy1 -lt $y1) { $y1 = $wy1 }
+      if ($wx2 -gt $x2) { $x2 = $wx2 }
+      if ($wy2 -gt $y2) { $y2 = $wy2 }
+    }
+  }
+  if ($null -eq $x1) { continue }
+  $boxes += [pscustomobject]@{
+    t = [string]$L.Text
+    x = [int][math]::Floor($x1)
+    y = [int][math]::Floor($y1)
+    w = [int][math]::Ceiling($x2 - $x1)
+    h = [int][math]::Ceiling($y2 - $y1)
+  }
+}
+$out = [pscustomobject]@{ text = [string]$r.Text; lines = $boxes }
+$out | ConvertTo-Json -Depth 5 -Compress
 `;
 
 /** 对 PNG 缓冲做 OCR，返回识别到的文字。 */
@@ -3017,10 +3160,34 @@ function ocrPng(buf, lang = "zh-Hans-CN") {
         if (err) {
           return reject(new Error(String(stderr || err.message || "").trim().slice(0, 300) || "OCR 失败"));
         }
-        resolve(String(stdout || "").replace(/^\uFEFF/, "").trim());
+        resolve(parseOcrOut(String(stdout || "").replace(/^\uFEFF/, "").trim()));
       }
     );
   });
+}
+
+/**
+ * OCR 输出解析。新版脚本吐 JSON（{text, lines:[{t,x,y,w,h}]}），
+ * 但**任何异常都必须退回纯文本**：老系统 / 语言包装不上 / 输出被截断时，
+ * 取词只是"没有高亮框"，绝不能因为没有框就整个不可用。
+ */
+function parseOcrOut(raw) {
+  try {
+    const j = JSON.parse(raw);
+    if (j && typeof j.text === "string") {
+      const lines = (Array.isArray(j.lines) ? j.lines : [])
+        .filter((l) => l && typeof l.t === "string" && String(l.t).trim())
+        .map((l) => ({
+          text: String(l.t),
+          x: Math.max(0, Math.round(Number(l.x) || 0)),
+          y: Math.max(0, Math.round(Number(l.y) || 0)),
+          w: Math.max(1, Math.round(Number(l.w) || 1)),
+          h: Math.max(1, Math.round(Number(l.h) || 1)),
+        }));
+      return { text: j.text, lines };
+    }
+  } catch { /* 不是 JSON —— 按纯文本处理 */ }
+  return { text: raw, lines: [] };
 }
 
 /* ---------- 抗迁移：窗口锚定 / 文字锚定 / 落空兜底 ----------
@@ -4923,6 +5090,17 @@ async function handle(req, res) {
   }
 
   /* 截屏取词：截图（或面板传入 dataUrl）→ Windows 自带 OCR → 文字。离线、免安装、不限流。 */
+  /* 划词翻译：轻量旁路，见 runTranslate 的注释 */
+  if (req.method === "POST" && url.pathname === "/api/translate") {
+    const body = await readBody(req);
+    try {
+      send(res, 200, await runTranslate(String((body && body.text) || "")));
+    } catch (err) {
+      send(res, 200, { ok: false, error: String(err?.message ?? err) });
+    }
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/ocr") {
     const body = await readBody(req);
     try {
@@ -4938,18 +5116,33 @@ async function handle(req, res) {
         send(res, 200, { ok: false, error: "没有拿到图像（截图失败）" });
         return;
       }
-      const text = await ocrPng(png, String(body.lang || "zh-Hans-CN"));
-      send(res, 200, { ok: true, text });
+      const r = await ocrPng(png, String(body.lang || "zh-Hans-CN"));
+      /* lines 给取词的"确认态"画高亮框用；没有坐标的老环境就是空数组，
+         那时取词退回"整块一次性拿走"，功能不残废。 */
+      send(res, 200, { ok: true, text: r.text, lines: r.lines });
     } catch (err) {
       send(res, 200, { ok: false, error: String(err?.message ?? err) });
     }
     return;
   }
 
-  /* 本地语音识别服务：查询状态 / 切换 CPU-GPU（改 asr.conf 并重启服务） */
+  /* 本地语音识别服务：查询状态 / 切换 CPU-GPU（改 asr.conf 并重启服务）
+   *
+   * ?wake=1 → **先确保服务在跑**再回状态。
+   * 为什么需要：服务空闲 5 分钟会被回收（见 ASR_IDLE_MS），而这一支原来只探活
+   * （asrHealth），不唤醒 —— 面板拿到的 running 恒 false，auto 模式于是静默
+   * 降级到浏览器引擎，用户看到的就是"装了 Whisper 却永远识别失败"。
+   * 代价：唤醒要重新加载权重（small 约 1 秒、medium 约 3 秒，回落 CPU 更久），
+   * 所以调用方必须给足超时并在 UI 上说明"正在启动本地识别服务"。 */
   if (req.method === "GET" && url.pathname === "/api/asr") {
     const conf = readAsrConf();
-    const h = await asrHealth();
+    let h = await asrHealth();
+    if (url.searchParams.get("wake") === "1") {
+      if (asrInstalled() && asrModelDownloaded()) {
+        if (!h) { await asrEnsure(90000); h = await asrHealth(); }
+        else asrTouch();          // 服务在跑：续一次"最近使用"，别刚要用就被回收
+      }
+    }
     const installed = asrInstalled();
     const modelOk = asrModelDownloaded();
     const eff = (h && h.effective) || null;
@@ -4984,6 +5177,8 @@ async function handle(req, res) {
     if (!asrInstalled() || !asrModelDownloaded()) {
       send(res, 200, {
         ok: false, needDownload: true,
+        // 面板会拿这个响应渲染状态行，字段必须和 GET 对齐，否则"已安装"被误判成"未安装"
+        installed: asrInstalled(), modelDownloaded: asrModelDownloaded(),
         error: "还没安装本地识别。请先点「安装本地离线识别」（约 700 MB），装完即可离线转写；不装也能用浏览器引擎语音。",
       });
       return;
@@ -5013,6 +5208,7 @@ async function handle(req, res) {
       // running 必须给：面板靠它决定按钮显示"启动"还是"重启"。
       // 原来只给 health，面板读 running 永远是 undefined → 按钮文案永远停在"启动"。
       running: !!h, health: !!h,
+      installed: asrInstalled(), modelDownloaded: asrModelDownloaded(), needDownload: false,
       modelsAvailable: (h && h.modelsAvailable) || asrModelsAvailable(),
       model: (h && h.model) || readAsrConf().model || "small",
       device: (h && h.device) || readAsrConf().device || "auto",

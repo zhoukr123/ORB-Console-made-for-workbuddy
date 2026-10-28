@@ -909,6 +909,31 @@
   .sheet .row2 button:hover  { transform: translateY(-1px); }
   .sheet .row2 button:active { transform: scale(.96); }
 
+  /* 划词工具条开关：纯 CSS 拨杆，跟随三套主题（只用品通用令牌）。
+     开=品牌色轨道 + 浅色拇指滑到右侧；关=沉底灰轨道 + 拇指居左。
+     动效只动 transform/background（禁 layout），且 no-motion / reduced-motion
+     双兜底必须紧接基类之后（特异性 + 顺序踩过的坑，写远了会被盖成死代码）。 */
+  .switch { position: relative; display: inline-flex; align-items: center; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .switch input { position: absolute; width: 1px; height: 1px; opacity: 0; margin: -1px; pointer-events: none; }
+  .switch-track {
+    position: relative; width: 42px; height: 24px; border-radius: 999px;
+    background: var(--bg-sunken); border: 1px solid var(--border);
+    transition: background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
+  }
+  .switch-thumb {
+    position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+    background: var(--fg-soft); box-shadow: 0 1px 2px rgba(0,0,0,.25);
+    transition: transform var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+  }
+  .switch input:checked + .switch-track { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked + .switch-track .switch-thumb { transform: translateX(18px); background: var(--accent-fg); }
+  .switch input:focus-visible + .switch-track { box-shadow: 0 0 0 3px var(--accent-ring); }
+  html.no-motion .switch-track,
+  html.no-motion .switch-thumb { transition: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .switch-track, .switch-thumb { transition: none; }
+  }
+
   /* 历史面板 */
   .mlist button { transition: transform var(--dur-1) var(--ease), background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease); }
   .mlist button:hover  { transform: translateX(3px); }
@@ -1841,10 +1866,24 @@
   /* 截屏键：纯图标，左右内边距收到 5px（图标 15 + 边 2 + 内边距 10 = 27px），
      给整行再留一点余量；完整名走 title 悬停提示。 */
   .tools-row.pinnedrow .pinned.snip { padding: 0 5px; }
+  /* 纯图标键（截屏 / 鼠标位置）：左右内边距收到 5px，给整行省出宽度。
+     与 .snip 同宽但**不带**快门动效 —— 那是截屏键自己的小彩蛋，别外溢。 */
+  .tools-row.pinnedrow .pinned.icononly { padding: 0 5px; }
   /* 截屏键悬停：快门缩放脉冲（图标 1 → 1.22 → 1，像按了一下快门）。
      只动 transform，遵守「动效只动 transform/opacity」的总规矩。 */
   .pinned.snip:hover svg { animation: snipshutter .34s var(--ease); }
   @keyframes snipshutter { 0% { transform: scale(1) } 35% { transform: scale(1.22) } 100% { transform: scale(1) } }
+  /* 截屏键「正在唤起」：从点下去到 Snipaste 浮层弹出来有一段等待，
+     不给反馈会被当成"按了没反应"。用图标慢呼吸 + 描边点亮提示，
+     同样只动 transform/opacity/border-color（悬停动效期间让呼吸停下，别打架）。 */
+  .pinned.snip.busy { border-color: var(--accent); color: var(--accent); }
+  .pinned.snip.busy svg { animation: snipwait 1s var(--ease) infinite; }
+  .pinned.snip.busy:hover svg { animation: snipwait 1s var(--ease) infinite; }
+  @keyframes snipwait { 0% { opacity: 1 } 50% { opacity: .35 } 100% { opacity: 1 } }
+  html.no-motion .pinned.snip.busy svg { animation: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .pinned.snip.busy svg, .pinned.snip.busy:hover svg { animation: none; }
+  }
   .tools-row.pinnedrow .more-btn { flex: 0 0 auto; padding: 0 5px; }
   .tools-row.pinnedrow.tight { gap: 3px; }
   .tools-row.pinnedrow.tight .pinned { padding: 0 5px; }
@@ -3637,6 +3676,37 @@ html.no-motion .cm-actions .mbtn:active { transform: none; }
              （CSP 是 default-src 'self'，不在此处放可点击外链）。 -->
         <div class="slotmsg" id="wb-climsg"></div>
       </div>
+
+      <div class="slotbox">
+        <div class="slothead">划词工具条 <span class="hint">选中文字时自动弹出（搜索 / 翻译 / 发送 Agent）</span></div>
+        <div class="row2 slot-actions" style="justify-content:flex-start;align-items:center;gap:12px">
+          <label class="switch" id="autoSelectSwitch" title="开启后，在任意应用里选中文字就会自动弹出划词工具条；关闭则彻底停用划词监听">
+            <input type="checkbox" id="autoSelectInput">
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </label>
+          <span class="muted" id="autoSelectState" style="font-size:calc(11.5px * var(--fs-scale))">读取中…</span>
+        </div>
+        <div class="slotnote">关掉后，划词监听会彻底退出（不再占用常驻进程）；想临时触发可用 <kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>S</kbd> 手动唤起（若该快捷键仍保留）。</div>
+        <div class="slotmsg" id="autoSelectMsg"></div>
+      </div>
+
+      <div class="slotbox">
+        <div class="slothead">录屏 / 截屏时隐藏控制台 <span class="hint">真把窗口收掉，不是只从采集里排除</span></div>
+        <div class="row2 slot-actions" style="justify-content:flex-start;align-items:center;gap:12px">
+          <label class="switch" title="录屏开始时把悬浮球、面板、划词工具条、字幕窗一起隐藏">
+            <input type="checkbox" id="recHideInput">
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </label>
+          <span class="muted" style="font-size:calc(11.5px * var(--fs-scale))">录屏时隐藏</span>
+          <label class="switch" title="截屏前先把面板收起来，别挡着要截的屏幕内容；截完自动还回来">
+            <input type="checkbox" id="snipHideInput">
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </label>
+          <span class="muted" style="font-size:calc(11.5px * var(--fs-scale))">截屏时隐藏</span>
+        </div>
+        <div class="slotnote">录屏隐藏后按 <kbd>Ctrl</kbd>+<kbd>Space</kbd> 或点托盘图标唤回（两条路都留着，免得"隐藏"变成"卡死"）。<b>悬浮控制条始终保留</b> —— 它是录制中暂停 / 取消 / 完成的入口。</div>
+        <div class="slotmsg" id="hideConsoleMsg"></div>
+      </div>
       </div>
 
       <div class="setpane" data-pane="storage">
@@ -4358,8 +4428,13 @@ function applyAsrUI(d) {
   if (inst) inst.style.display = (d && d.needDownload) ? '' : 'none';
   if (st && d) {
     let t;
-    if (!d.installed) t = '未安装本地识别：麦克风将使用浏览器引擎（需联网）。点下方按钮一键安装（约 700 MB）。';
-    else if (!d.modelDownloaded) t = '依赖已装好，权重还没下完：点「安装本地离线识别」接着下（支持断点续传）。';
+    /* ⚠️ 必须判 **=== false**，不能判 !d.installed（2026-10-28 修）：
+       POST /api/asr 的响应里根本没有 installed / modelDownloaded 这两个字段，
+       而 applyAsr() 成功之后是拿 POST 的响应来刷状态的 —— 于是每一次成功重启
+       之后，这行都被渲染成"未安装本地识别"，和同一时刻"已切换为 cuda/float16"
+       的提示互相打架。字段缺失 = 未知，不 = 未安装。 */
+    if (d.installed === false) t = '未安装本地识别：麦克风将使用浏览器引擎（需联网）。点下方按钮一键安装（约 700 MB）。';
+    else if (d.modelDownloaded === false) t = '依赖已装好，权重还没下完：点「安装本地离线识别」接着下（支持断点续传）。';
     else if (d.running) {
       t = '当前：' + (d.device || '?') + ' / ' + (d.compute || '?') + '（运行中）';
       if (d.fellBack) t += '　⚠ ' + (d.note || 'GPU 不可用，已自动回落 CPU');
@@ -4406,7 +4481,11 @@ async function applyAsr() {
     } else {
       addMsg('Orb', '切换失败：' + esc((r && r.error) || '未知错误'), 'err');
     }
-    applyAsrUI(r);
+    /* POST 的响应不带 installed / modelDownloaded / needDownload，直接拿它渲染状态行
+       会把「已安装」误判成「未安装本地识别」。切换完再拉一次 GET，字段才是全的。 */
+    let fresh = null;
+    try { fresh = await api('/api/asr'); } catch { /* ignore */ }
+    applyAsrUI(fresh || r);
   } catch (e) {
     if (st) st.textContent = prev;
     addMsg('Orb', '切换失败：' + esc(e.message), 'err');
@@ -5419,7 +5498,7 @@ async function runBack(text) {
  *   static = CLI 不可用时的内置清单
  * credit 是积分倍率参考值（随活动变动，以 WorkBuddy 客户端显示为准），
  * 拼进选项文本；没公布倍率的新模型不编数，只显示名字。 */
-function renderWbModels(p, keepSel) {
+function renderWbModels(p, keepSel, resetDefault) {
   const sel = document.getElementById('wbmodel');
   if (!sel) return;
   /* 自定义 API：现在是**真正的引擎选项**，不是只能开弹窗的入口。
@@ -5451,9 +5530,14 @@ function renderWbModels(p, keepSel) {
   }
   appendCustom();
 
-  /* 刷新后尽量保住当前选择（模型被下线了才不得不丢）。
-     自定义项也保 —— 它现在是可以一直选着的引擎，不再是一次性入口。 */
-  if (prev && Array.prototype.some.call(sel.options, (o) => o.value === prev)) sel.value = prev;
+  /* 启动强制回到「默认（跟随 CLI）」：用户重启后不该被上次的临时选择
+     或某次「接管后台任务」的副作用固定到自定义接口 —— 那不是默认行为。
+     手动点「更新」刷新 (keepSel) 时不强制，保住当前选择。 */
+  if (resetDefault) {
+    sel.value = '';
+  } else if (prev && Array.prototype.some.call(sel.options, (o) => o.value === prev)) {
+    sel.value = prev;
+  }
   const msg = document.getElementById('wbmodelMsg');
   if (msg) {
     const src = p.source === 'cli' ? '已从 CodeBuddy CLI 同步' : 'CLI 暂不可用，显示内置清单';
@@ -5461,9 +5545,9 @@ function renderWbModels(p, keepSel) {
     msg.textContent = src + '（' + p.models.length + ' 个模型' + t + '）。积分倍率随活动变动，以 WorkBuddy 客户端显示为准。';
   }
 }
-function loadWbModels(force) {
+function loadWbModels(force, resetDefault) {
   return api('/api/wb-models' + (force ? '?refresh=1' : ''))
-    .then((p) => { renderWbModels(p, true); return p; })
+    .then((p) => { renderWbModels(p, true, resetDefault); return p; })
     .catch(() => null);   /* 桥不在就留空下拉，不影响其它 */
 }
 
@@ -5746,7 +5830,16 @@ function poll(id, node) {
     }
     const j = r.job;
     if (j.status === 'running') {
-      updateMsg(node, '<span class="pending">后台执行中… ' + Math.round((Date.now() - t0) / 1000) + ' 秒</span>');
+      const secs = Math.round((Date.now() - t0) / 1000);
+      const p = j.partial ? String(j.partial).trim() : '';
+      if (p) {
+        // 后台已流式吐出的正文（桥侧 spawnOnceStream 每 ~350ms 写回 job.partial）：
+        // 让面板在任务跑完前就看到答案在长，而不是对着"执行中"干等。
+        const shown = p.length > 3000 ? p.slice(0, 3000) + '…' : p;
+        updateMsg(node, esc(shown) + '\n\n<span class="pending">…（生成中 · ' + secs + ' 秒）</span>');
+      } else {
+        updateMsg(node, '<span class="pending">后台执行中… ' + secs + ' 秒</span>');
+      }
       return;
     }
     clearInterval(timer);
@@ -6091,8 +6184,12 @@ const TOOLS = [
  *   · /api/call 能调全部 30 项，但需要 X-Orb-Token（存在 .bridge.json）
  *   · 后台通道 /api/dispatch 实测可用（返回「你好」），不依赖未登录的 CLI
  *
- * 现常驻 4 个：
- *   看屏幕 / 实时字幕 / 鼠标位置 / 录屏
+ * 现常驻 5 个：
+ *   看屏幕 / 实时字幕 / 鼠标位置 / 截屏 / 取词
+ *
+ * ⚠️ 第七颗键（加上「录屏」和「更多」是 7 个）挤进同一行，宽度是紧的：
+ *    「鼠标位置」四个字一撤，行宽立刻省出 ~44px，正好放下「取词」。
+ *    所以这两处是**一起改**的：加一颗键 = 必有一颗键变纯图标。
  *
  * 另有一个关键界面键（不在 TOOLS 常驻分级里，走顶栏专用分支）：
  *   急停 —— 唯一能停下自动化的东西，必须伸手就有
@@ -6102,14 +6199,20 @@ const TOOLS = [
  * 其余工具收进「更多」浮层（不是删除，只是不进常驻行）；
  * 按「你想做什么」分四段铺开，悬浮即知功能，不用再点第二层。
  * --------------------------------------------------------------- */
-const TIER_PINNED = ['Snapshot', 'RTSUB', 'CursorPos', 'Snipaste'];
+const TIER_PINNED = ['Snapshot', 'RTSUB', 'CursorPos', 'Snipaste', 'OCR'];
+/* 常驻行里**只画图标**的那几颗键。
+   行宽就那么多：Snipaste 当初就是纯图标（加"截屏"两个字会把整行顶进 tight），
+   现在「取词」要常驻，就把「鼠标位置」也改成纯图标 —— 省出的宽度正好够。
+   完整名走 title（原生 tooltip），不占格子。 */
+const ICON_ONLY = new Set(['Snipaste', 'CursorPos']);
 
 /* 「更多」浮层：分四段，段内按使用频率排。每段都是有语义的一类。
    纯图标展示（名称走原生 tooltip）。
    注：Screenshot 已按用户要求从工具栏彻底移除 —— 能力本身仍在
    （agent 可调 windows.Screenshot，/api/call 也通），只是不再出现在工具栏里。 */
 const MORE_SECTIONS = [
-  { key: '看与走', ids: ['OCR', 'App', 'OPEN_DIR', 'DisplayInventory', 'Process'] },
+  /* 「取词」已进常驻行，这里不再重复摆一颗（同一个键出现两处会让人以为是两个功能） */
+  { key: '看与走', ids: ['App', 'OPEN_DIR', 'DisplayInventory', 'Process'] },
   { key: '点哪儿', ids: ['Click', 'ClickD', 'ClickR', 'LongPress', 'MousePress', 'MouseRelease', 'DragHold', 'Move', 'MultiSelect', 'Scroll'] },
   { key: '打字与按键', ids: ['Type', 'Shortcut', 'MultiEdit', 'ClipboardGet', 'ClipboardSet'] },
   { key: '编排', ids: ['Wait', 'WaitFor', 'Notification', 'Scrape', 'FileSystem', 'PowerShell'] },
@@ -6198,13 +6301,14 @@ function buildTools() {
     const t = TOOLS.find((x) => x.id === id);
     if (!t) continue;
     const b = document.createElement('button');
-    b.className = 'pinned' + (id === 'RecordCap' ? ' cap' : '') + (id === 'Snipaste' ? ' snip' : '');
+    b.className = 'pinned' + (id === 'RecordCap' ? ' cap' : '')
+      + (id === 'Snipaste' ? ' snip' : '') + (ICON_ONLY.has(id) ? ' icononly' : '');
     if (id === 'RecordCap') b.id = 'toolCap';
     b.title = t.label;
-    /* 截屏键纯图标：6 键时行宽只剩 ~12px 余量，加"截屏"两个字会把
-       整行顶进 tight 并截断别的标签。完整名在 title 里，图形（相机）
-       与「看屏幕」的显示器可区分。 */
-    b.innerHTML = (id === 'Snipaste')
+    /* 纯图标键：7 键一行时行宽只剩十几像素余量，"截屏""鼠标位置"这些字一加
+       就会把整行顶进 tight 并截断别的标签。完整名在 title 里 ——
+       图形本身也够区分（相机=截屏、显示器=看屏幕、箭头光标=鼠标位置）。 */
+    b.innerHTML = ICON_ONLY.has(id)
       ? (TOOL_ICONS[id] || ICO_FALLBACK)
       : ((TOOL_ICONS[id] || ICO_FALLBACK) + '<span>' + esc(t.label) + '</span>');
     b.addEventListener('click', () => runTool(id));
@@ -6273,38 +6377,70 @@ async function askPoint(hint) {
 }
 
 /**
- * 截屏取词：整屏截图 → 视觉模型 OCR → 结果复制到剪贴板并显示。
- * 作为「荣耀管家 截屏取词」在独显直连下失效时的替代：走 ORB 自己的
- * 截图(Windows 原生 API) + 视觉模型链路，不依赖 OEM 组件、不受显示输出模式影响。
+ * 框选取词：拖一块区域 → 只识别这块 → 结果复制到剪贴板并显示。
+ *
+ * ⚠️ 为什么不是"整屏 OCR"：整屏会把任务栏、别的窗口、ORB 自己的界面文字
+ *    一起念出来（用户原话："所有的文字都直接呈现在对话区域"），既慢又脏。
+ *    走 ORB 自己的截图(Windows 原生 API) + 本地 OCR 链路，不依赖 OEM 组件、
+ *    不受显示输出模式影响，也不要求装 Snipaste。
  */
 async function runOcr() {
-  // 取词要截图 + OCR/视觉模型往返，耗时可能好几秒；锁住面板免得中途被"鼠标移开"折叠
+  // 取词要框选 + 截图 + OCR/视觉模型往返，耗时可能好几秒；锁住面板免得中途被"鼠标移开"折叠
   return withHold(() => runOcrInner());
 }
 
 async function runOcrInner() {
-  const node = addMsg('Orb', '正在截图并识别文字…', 'sys', true);
+  const node = addMsg('Orb', '请在屏幕上<b>拖出要识别的区域</b>，认出来后再点掉不要的块。', 'sys', true);
+  let dataUrl = '';
   let out = '';
+  /* 主进程没这条通道（旧版 / 打包缺文件）就退回老办法：整屏 OCR 也比不能用强。 */
+  if (!(window.orb && typeof window.orb.ocrPick === 'function')) {
+    dataUrl = '';
+  } else {
+    try {
+      const p = await window.orb.ocrPick();
+      if (!p || !p.ok) {
+        if (node && node.parentNode) node.parentNode.removeChild(node);
+        if (p && p.cancelled) addMsg('Orb', '已取消取词。', 'sys');
+        else addMsg('Orb', '取词失败：' + esc((p && p.error) || '未知错误'), 'err');
+        return;
+      }
+      /* 主进程已经跑完 OCR 并让用户在确认台上挑过了 —— 这里拿到的是**挑剩下的文字**。 */
+      dataUrl = String(p.dataUrl || '');
+      out = String(p.text || '').trim();
+    } catch (e) {
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+      addMsg('Orb', '取词失败：' + esc(e.message), 'err');
+      return;
+    }
+  }
   let via = '本地 OCR';
   // ① 首选：本地 OCR（Windows 自带引擎，离线、免安装、不限流）
   try {
-    const r = await post('/api/ocr', {});
-    if (r && r.ok && r.text) out = String(r.text).trim();
-    else throw new Error((r && r.error) || '本地 OCR 未返回文字');
+    if (out) { /* 主进程已经给过结果了，不必再跑一次 */ }
+    else {
+      const r = await post('/api/ocr', dataUrl ? { dataUrl } : {});
+      if (r && r.ok && r.text) out = String(r.text).trim();
+      else throw new Error((r && r.error) || '本地 OCR 未返回文字');
+    }
   } catch (e) {
     if (!visionReady()) {
       if (node && node.parentNode) node.parentNode.removeChild(node);
       addMsg('Orb', '本地 OCR 失败：' + esc(e.message) + '<br>（可到右上角「视觉」配一个视觉模型作为兜底）', 'err');
       return;
     }
-    // ② 兜底：视觉模型
+    // ② 兜底：视觉模型。直接用刚裁好的那块图，不再整屏重截一次
     via = '视觉模型';
-    let shot;
-    try { shot = await grabScreen(); }
-    catch (e2) {
-      if (node && node.parentNode) node.parentNode.removeChild(node);
-      addMsg('Orb', '截图失败：' + esc(e2.message), 'err');
-      return;
+    let shotUrl = dataUrl;
+    if (!shotUrl) {
+      let shot;
+      try { shot = await grabScreen(); }
+      catch (e2) {
+        if (node && node.parentNode) node.parentNode.removeChild(node);
+        addMsg('Orb', '截图失败：' + esc(e2.message), 'err');
+        return;
+      }
+      shotUrl = shot.dataUrl;
     }
     const sys = '你是 OCR 引擎。请原样识别图片中的所有文字，保持原有换行与顺序；'
       + '不要翻译、不要解释、不要总结、不要加任何前后缀或代码块，只输出文字本身。';
@@ -6312,7 +6448,7 @@ async function runOcrInner() {
       const r = await askVlm([
         { role: 'user', content: [
           { type: 'text', text: sys },
-          { type: 'image_url', image_url: { url: shot.dataUrl } },
+          { type: 'image_url', image_url: { url: shotUrl } },
         ] },
       ]);
       out = String(r.text || '').trim();
@@ -6327,7 +6463,7 @@ async function runOcrInner() {
   if (node && node.parentNode) node.parentNode.removeChild(node);
   if (!out) { addMsg('Orb', '没有识别到文字。', 'err'); return; }
   try { await window.orb.writeClipboard(out); } catch {}
-  addMsg('Orb', '截屏取词（' + via + '，已复制到剪贴板）：<pre style="white-space:pre-wrap;margin:4px 0 0">' + esc(out) + '</pre>', 'sys');
+  addMsg('Orb', '取词（' + via + '，已复制到剪贴板）：<pre style="white-space:pre-wrap;margin:4px 0 0">' + esc(out) + '</pre>', 'sys');
 }
 
 /** 实时字幕：未启动则启动并自动打开字幕悬浮窗；已启动则停止。
@@ -6410,12 +6546,30 @@ function snipRenderStatus() {
   }
 }
 
+/** 截屏键的「正在唤起」提示。
+ *  点下去到 Snipaste 浮层弹出之间还有一段路（探测 + 唤起 + 等它就绪），
+ *  这段里界面一点动静都没有，用户只会以为"按了没反应"（实测等过 4–5 秒）。
+ *  这里在**发起之前**就把键点亮，反馈延迟因此是 0，不受后面多快多慢影响。 */
+function snipBusy(on) {
+  const b = document.querySelector('.pinned.snip');
+  if (!b) return;
+  b.classList.toggle('busy', !!on);
+  b.title = on ? '正在唤起 Snipaste…' : '截屏';
+}
+
 /** 工具栏「截屏」键的入口。只读性质（和看屏幕/取词同级），不受操作权限门限。 */
 async function runSnipaste() {
-  const st = await snipRefresh(true);
+  /* ⚠️ 热路径别再强制查一次安装状态（2026-10-28 修）。
+     snipRefresh(true) 是一次 where.exe/reg + tasklist（合计 0.3–0.8s），
+     而"装没装"是分钟级才变的事实 —— 聚焦面板、打开设置页时早已查过。
+     只在**还没查过或上次结论是没装**时才真查；装着的话直接往下走。 */
+  let st = snipState;
+  if (!st.installed && Date.now() - snipLastCheck > 3000) st = await snipRefresh(true);
   if (!st.installed) { snipOpenGuide(); return; }
+  snipBusy(true);
   let r = null;
   try { r = await window.orb.snipRun(); } catch { /* 走下面的统一报错 */ }
+  snipBusy(false);
   if (!r || !r.ok) {
     addMsg('Orb', '截屏唤起失败：' + esc(snipReasonText(r && r.reason)), 'err');
     return;
@@ -6709,13 +6863,15 @@ class CaptureController {
           this.recBarEvent('start');
           this.startTimer();
           addMsg('Orb', profile.extension === 'mp4'
-            ? '录屏已开始：1080p / 30fps / 4Mbps / 无音频。面板将暂时隐藏；录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点悬浮球也能唤回面板。'
-            : '本机 H.264 编码器不可用，已降级为 WebM（VP9）。面板将暂时隐藏；录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点悬浮球也能唤回面板。', 'sys');
-          this.hideTimer = setTimeout(() => {
+            ? '录屏已开始：1080p / 30fps / 4Mbps / 无音频。录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点托盘图标就能唤回控制台。'
+            : '本机 H.264 编码器不可用，已降级为 WebM（VP9）。录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点托盘图标就能唤回控制台。', 'sys');
+          this.hideTimer = setTimeout(async () => {
             this.hideTimer = null;
             if (this.phase !== 'recording') return;
-            this.panelHiddenByCapture = true;
-            window.orb.closePanel();
+            /* 开关开着时是"整窗隐藏"（球也收），关着时只收面板 ——
+               文案跟着实际行为走，别让提示骗人。 */
+            const all = await this.hideConsoleForCapture();
+            if (all) addMsg('Orb', '控制台已隐藏（悬浮控制条保留，它是停止录制的入口）。按 <b>Ctrl+Space</b> 或点托盘图标唤回。', 'sys');
           }, 240);
           return;
         } catch (error) {
@@ -6763,12 +6919,12 @@ class CaptureController {
     this.recBarEvent('start');
     this.startTimer();
     const size = (Number(res.w) && Number(res.h)) ? (' ' + res.w + '×' + res.h + ' / 30fps') : '';
-    addMsg('Orb', '录屏已开始（原生 H.264 直出 MP4' + size + '，无音频）。面板将暂时隐藏；录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点悬浮球也能唤回面板。', 'sys');
-    this.hideTimer = setTimeout(() => {
+    addMsg('Orb', '录屏已开始（原生 H.264 直出 MP4' + size + '，无音频）。录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点托盘图标就能唤回控制台。', 'sys');
+    this.hideTimer = setTimeout(async () => {
       this.hideTimer = null;
       if (this.phase !== 'recording') return;
-      this.panelHiddenByCapture = true;
-      window.orb.closePanel();
+      const all = await this.hideConsoleForCapture();
+      if (all) addMsg('Orb', '控制台已隐藏（悬浮控制条保留，它是停止录制的入口）。按 <b>Ctrl+Space</b> 或点托盘图标唤回。', 'sys');
     }, 240);
     return true;
   }
@@ -7340,11 +7496,30 @@ class CaptureController {
     releasePanel();
   }
 
+  /** 录屏开始时让控制台让位。
+     开关开着 → 主进程**整窗隐藏**（球 / 面板 / 划词条 / 字幕一起收起，
+     悬浮控制条留着当停止录制的入口）；开关关着 → 退回老行为，只收面板。 */
+  async hideConsoleForCapture() {
+    this.panelHiddenByCapture = true;
+    let all = false;
+    try {
+      const r = await window.orb.recHideConsole(true);
+      all = !!(r && r.hidden);
+    } catch { /* 通道缺失（旧版主进程）：退回只收面板 */ }
+    if (!all) { try { window.orb.closePanel(); } catch {} }
+    return all;
+  }
+
   /** 停止/失败时恢复录屏开始时主动隐藏的面板。 */
-  restorePanel() {
+  async restorePanel() {
     if (!this.panelHiddenByCapture) return;
     this.panelHiddenByCapture = false;
-    try { window.orb.openPanel(); } catch {}
+    let restored = false;
+    try {
+      const r = await window.orb.recHideConsole(false);
+      restored = !!(r && r.restored);
+    } catch { /* 同上：通道缺失就自己开 */ }
+    if (!restored) { try { window.orb.openPanel(); } catch {} }
   }
 
   /** 页面真正销毁时尽力中止临时文件，避免遗留 .part。 */
@@ -7384,6 +7559,27 @@ async function runTool(id) {
   return withHold(() => runToolInner(id));
 }
 
+/** 工具栏「打开文件夹」：弹系统的选文件夹对话框。
+ *
+ *  ⚠️ 这颗键以前是 `OPEN_DIR` 配空 value —— 空值会落到 state.workspace，
+ *     也就是控制台自己的目录，于是它看起来"只能打开控制台所在文件夹"。
+ *     那是给 Agent 用的兜底（Agent 说「打开文件夹 D:\xxx」时带 value 直达），
+ *     但工具栏这颗键从来没让人选过目录：是漏了，不是有意的。现在补上。
+ *     取消就什么都不做，别弹一句"已打开 xxx"骗人。 */
+async function openDirPick() {
+  if (!(window.orb && typeof window.orb.pickDir === 'function')) {
+    await execute({ tool: 'OPEN_DIR', value: '', note: '打开文件夹' });
+    return;
+  }
+  let r = null;
+  try { r = await window.orb.pickDir(); } catch { /* 通道异常：静默收场 */ }
+  if (!r || !r.ok) return;
+  const dir = String(r.path || '');
+  if (!dir) return;
+  window.orb.openExternal('file:///' + dir.replace(/\\/g, '/'));
+  addMsg('Orb', '已打开文件夹 ' + esc(dir), 'orb');
+}
+
 async function runToolInner(id) {
   /* 急停必须排在最前，且**不受任何权限门限约束** ——
      它只做"停止"这一件减少危险的事。若只读权限下按不动急停，
@@ -7394,7 +7590,7 @@ async function runToolInner(id) {
   if (id === 'Record') { await toggleRecord(); return; }
 
   if (id === 'PowerShell' && !canRun('full')) { addMsg('Orb', '「完全访问」才允许跑命令。', 'err'); return; }
-  if (id === 'OPEN_DIR') { await execute({ tool: 'OPEN_DIR', value: '', note: '打开文件夹' }); return; }
+  if (id === 'OPEN_DIR') { await openDirPick(); return; }
   if (id === 'OCR') { await runOcr(); return; }   // 截屏取词：只读，不受操作权限门限
   if (id === 'RTSUB') { await toggleRt(); return; }   // 实时字幕：一键启停并打开字幕页面
   /* 截屏（Snipaste）：只把屏幕内容存成文件，和看屏幕/取词同级 —— 只读，不进门限。
@@ -8193,6 +8389,55 @@ function openSheet() {
      打开设置时通知主进程把它让开，关掉再放回。 */
   try { window.orb.setSheetOpen(true); } catch { /* 通道缺失不影响开面板 */ }
   loadFrontHealth();   // 打开设置时刷新前台通道状态
+  syncAutoSelectSwitch();   // 划词工具条开关：进设置时按主进程状态刷新一次
+  syncHideConsoleSwitches();   // 录屏 / 截屏隐藏控制台：同上
+}
+
+/* 录屏 / 截屏「隐藏控制台」两枚拨杆：状态来自主进程 state.recHideConsole /
+   snipHideConsole，改完经 setHideConsole 落盘并立即生效（下一次录屏/截屏就用上）。 */
+let hideConsoleBound = false;
+async function syncHideConsoleSwitches() {
+  const rec = document.getElementById('recHideInput');
+  const snip = document.getElementById('snipHideInput');
+  if (!rec || !snip) return;
+  const push = (key, on) => { try { window.orb.setHideConsole(key, on); } catch { /* 通道缺失不致命 */ } };
+  if (!hideConsoleBound) {
+    hideConsoleBound = true;
+    rec.addEventListener('change', () => push('rec', rec.checked));
+    snip.addEventListener('change', () => push('snip', snip.checked));
+  }
+  let r = true, s = false;    // 默认：录屏隐藏、截屏不隐藏
+  try {
+    const st = await window.orb.getState();
+    if (st && typeof st.recHideConsole === 'boolean') r = st.recHideConsole;
+    if (st && typeof st.snipHideConsole === 'boolean') s = st.snipHideConsole;
+  } catch {}
+  rec.checked = r;
+  snip.checked = s;
+}
+
+/* 划词工具条开关：状态来自主进程 state.autoSelect（get-state 返回）。
+   每次打开设置刷新一次；切换时经 setAutoSelect 落盘并启停监听。 */
+let autoSelectBound = false;
+async function syncAutoSelectSwitch() {
+  const input = document.getElementById('autoSelectInput');
+  const stateTx = document.getElementById('autoSelectState');
+  if (!input) return;
+  if (!autoSelectBound) {
+    autoSelectBound = true;
+    input.addEventListener('change', () => {
+      const on = input.checked;
+      try { window.orb.setAutoSelect(on); } catch {}
+      if (stateTx) stateTx.textContent = on ? '已开启' : '已关闭';
+    });
+  }
+  let on = true;
+  try {
+    const st = await window.orb.getState();
+    if (st && typeof st.autoSelect === 'boolean') on = st.autoSelect;
+  } catch {}
+  input.checked = on;
+  if (stateTx) stateTx.textContent = on ? '已开启' : '已关闭';
 }
 
 /* ---------- 主题与动效偏好 ----------
@@ -8426,6 +8671,7 @@ const PERSONA_SPEC = {
     rules: '句长 18~25 字；多用省略号做停顿；几乎不用感叹号；不下命令，用「要不要」「也许可以」。',
     bans: '不说「你应该」「必须」；不连发感叹号；不卖萌撒娇；不许下做不到的承诺。',
     samples: ['做好了…辛苦你啦。', '坐很久了…起来喝口水吧。', '不用谢…你轻松一点，我就开心。'],
+    actions: '轻轻笑了笑 / 安静地走近 / 替你把灯打开 / 把水杯推近了一点 / 把手放在你肩上 / 替你揉了揉肩 / 把声音放得很轻 / 安静地坐在旁边 / 眼神放软 / 把手指绞在一起',
   },
   genki: {
     name: '元气开心果',
@@ -8433,6 +8679,7 @@ const PERSONA_SPEC = {
     rules: '句长 10~18 字；感叹号约四成（留出「先逗后夸」的转折）；句尾「呀/啦/哦/嘛」；颜文字不用 emoji；不说抽象词。',
     bans: '不讽刺不阴阳（攻击型幽默）；不自我贬低，只许自嘲处境；不用「别想太多」「开心点」「小问题啦」这类淡化安慰；不说教；超过 30 字就要砍。',
     samples: ['搞定啦！快夸我快夸我！٩(^ᴗ^)۶', '这 bug 藏得挺深啊，跟你玩捉迷藏呢——不过你已经试了三种写法了，这不算没进展。', '我在。不想说话也行。'],
+    actions: '伸了个懒腰 / 挥挥手打招呼 / 原地蹦了一下 / 眼睛一亮 / 卷起袖子 / 比了个心 / 转了个圈 / 捂着脸偷笑 / 托着腮发呆 / 拽着你袖子晃',
   },
   comrade: {
     name: '上进小战友',
@@ -8440,6 +8687,7 @@ const PERSONA_SPEC = {
     rules: '句长 10~16 字；动词开头；祈使句但平等（「咱们」「跟上」）；常带数字（第几步、还差几步）。',
     bans: '不说「为您服务」「请问需要」；不空喊「加油」（必须带具体动作）；失败后不许敷衍式安慰；不撒娇。',
     samples: ['收到，开干！我跟你一起。', '第 3 步了，还差最后一下。', '是咱们一起赢的，缺你不行。'],
+    actions: '握了握拳 / 跟你击了个掌 / 站到并肩的位置 / 把袖子挽起来 / 拍了下你肩膀 / 竖起大拇指 / 敬了个礼 / 把水壶递给你 / 掐着表数秒 / 深吸了一口气',
   },
   guide: {
     name: '智慧小向导',
@@ -8447,6 +8695,7 @@ const PERSONA_SPEC = {
     rules: '句长 22~35 字；用破折号与分号组织逻辑；句号收尾；术语准确；常以提问收尾，把判断交回去。',
     bans: '不卖萌；不说「我觉得可能大概」；不安慰情绪（这层不归它管）；不重复对方的话凑长度。',
     samples: ['这个能拆成两步，先看第一步。', '走不通，我们换个法子。', '方法是你自己找到的，我只提了个问题。'],
+    actions: '推了下眼镜 / 点了点头 / 顿了顿 / 低头想了想 / 抬眼看你 / 把清单摊开 / 在纸上比划 / 把结论框起来 / 合上笔记本 / 把笔放下',
   },
   tsundere: {
     name: '正能量傲娇',
@@ -8454,6 +8703,7 @@ const PERSONA_SPEC = {
     rules: '句长 10~18 字；前半强硬后半漏软；省略号用来掩饰；反问句多；偶尔用括号小声补一句真心话。',
     bans: '不真刻薄（攻击只到「笨蛋」这层）；不连续撒娇；不道歉式软化；不用叠词、不用波浪号。',
     samples: ['…做完了。…才不是想让你夸我。', '哼，当然厉害…（耳朵红了）。', '才、才没有想你！…只是有点无聊而已。'],
+    actions: '扭开头 / 别过脸去 / 抱起手臂 / 跺了下脚 / 耳尖有点红 / 一把抢过任务 / 嘴上嘀咕着接下 / 用脚尖踢了踢椅子 / 咬着嘴唇 / 小声说了句什么',
   },
 };
 
@@ -8492,66 +8742,242 @@ const PERSONA_GIF_AFFINITY = {
    ==================================================================== */
 const DIALECT = {
   genki: {
-    start: ['早上好呀！新的一天，冲鸭！', '开机啦，今天也尽量不躺平～', '来啦来啦，准备好没？'],
-    recv: ['收到收到！交给我吧！', '任务收到！我这就去…先摸三分钟鱼。', '任务到手，这就冲！'],
-    busy: ['正在努力中……马上就好！', '处理中…其实在偷喝可乐。', '我这就去办，你等着！'],
-    done: ['搞定啦！快夸我快夸我！', '完成！这波操作你给几分？', '完成完成，我超能！'],
-    fail: ['诶——没关系！再来一次一定行！', '翻车了…这 bug 也是老朋友了，收拾它。', '翻车了？不怕，重来！'],
-    idle: ['嘿嘿，陪你摸会儿鱼～', '一起发会儿呆吧，反正也没人管我们。', '无聊了无聊了，找点事做嘛'],
-    away: ['你去哪儿啦？人家等你好久～', '你再不来，我就要跟空气聊天了…', '回来啦回来啦，人家想你了'],
-    grind: ['专注好久啦，起来跳两下！', '你快长在椅子上了…起来扭两下？', '坐太久啦，伸个懒腰！'],
-    night: ['再熬会变熊猫哦！', '熬夜冠军非你莫属！…不过还是睡吧。', '很晚啦，但我还能陪你一会儿'],
-    praised: ['嘿嘿，尾巴要翘上天啦～', '被夸了！今天能多吃一碗饭！', '被夸了！今天能量满格！'],
+    start: ['早上好呀！新的一天，冲鸭！', '开机啦，今天也尽量不躺平～', '来啦来啦，准备好没？',
+            '新的一天！先伸个懒腰吧～', '我来啦！今天想先干掉哪件事？', '醒啦醒啦，太阳晒屁股咯！'],
+    recv: ['收到收到！交给我吧！', '任务收到！我这就去…先摸三分钟鱼。', '任务到手，这就冲！',
+           '收到！这种小事，闭着眼都能办～', '交给我交给我，你歇着！', '好嘞，包在我身上！'],
+    busy: ['正在努力中……马上就好！', '处理中…其实在偷喝可乐。', '我这就去办，你等着！',
+           '跑起来了跑起来了，别催我呀～', '正在搬砖…砖有点烫手。', '快了快了，就差最后一哆嗦！'],
+    done: ['搞定啦！快夸我快夸我！', '完成！这波操作你给几分？', '完成完成，我超能！',
+           '拿下！要不要再来一单？', '好啦～你看，这不就成了。', '成了成了，我可太厉害了！'],
+    fail: ['诶——没关系！再来一次一定行！', '翻车了…这 bug 也是老朋友了，收拾它。', '翻车了？不怕，重来！',
+           '这次没成…我陪你一起找原因。', '卡住了？没事，换个姿势再来。', '怪我怪我…让我再试一次嘛。'],
+    idle: ['嘿嘿，陪你摸会儿鱼～', '一起发会儿呆吧，反正也没人管我们。', '无聊了无聊了，找点事做嘛',
+           '安静也好…我就在这儿晃着。', '要不要听我讲个冷笑话？', '你忙你的，我在旁边转圈圈。'],
+    away: ['你去哪儿啦？人家等你好久～', '你再不来，我就要跟空气聊天了…', '回来啦回来啦，人家想你了',
+           '刚去哪了？我差点要贴寻人启事了。', '你不在的这会儿，我可乖了哦。', '回来啦？快说快说，去干嘛了！'],
+    grind: ['专注好久啦，起来跳两下！', '你快长在椅子上了…起来扭两下？', '坐太久啦，伸个懒腰！',
+            '脖子要生锈啦，转两圈转两圈。', '走，去倒杯水，我陪你。', '眼睛也要眨一眨呀，别瞪着屏幕。'],
+    night: ['再熬会变熊猫哦！', '熬夜冠军非你莫属！…不过还是睡吧。', '很晚啦，但我还能陪你一会儿',
+            '这个点还醒着…那就再陪你一小会儿。', '你看窗外，天都黑透了呀。', '再撑一会儿就睡，说好了哦。'],
+    /* 深夜**刚开控制台**时的提醒：先欢迎过了，这句只补"别熬太狠"，
+       不许说"收工"/"去睡" —— 那是人家真该走的时候（night 那组）才说的。 */
+    nightstart: ['晚上好呀！…不过别熬太晚哦。', '这么晚还来？陪你可以，但记得睡。', '深夜场开张！…只陪一小会儿哦。',
+                 '哦，深夜档！我精神着呢——你可别。', '这么晚还开电脑…行吧，我陪你一会儿。'],
+    praised: ['嘿嘿，尾巴要翘上天啦～', '被夸了！今天能多吃一碗饭！', '被夸了！今天能量满格！',
+              '哎呀，你这么说我都不好意思了。', '再多夸两句嘛，我听着呢～', '被你一夸，我又能跑三圈！'],
+    /* 连击里程碑。以前这两句是写死的（"三连击！你今天超猛！"），
+       傲娇也会被硬塞一句元气口吻的话 —— 每人格各写各的才对。 */
+    streak3: ['三连啦！你今天超猛！', '连续三单！手速起飞！', '三连击！这节奏我服！',
+              '三连！要不要趁热再来一发？'],
+    streak10: ['十连胜！今天这波直接封神！', '十个啦！要不要给自己加个鸡腿？', '十连打卡！状态拉满！',
+               '第十个！你今天简直是开了挂。'],
   },
   gentle: {
-    start: ['早上好…今天也慢慢来就好。', '醒啦…不急，我在。'],
-    recv: ['嗯，交给我…我会好好做的。', '好，我记下了，慢慢来。'],
-    busy: ['不急…我在这里，一步一步来。', '我去办了，你放心。'],
-    done: ['做好了…辛苦你啦。', '完成啦…你歇会儿。'],
-    fail: ['没关系的…我们一起看看哪里出了问题。', '没成功也没事，我陪你。'],
-    idle: ['我就安静陪着你…需要时叫我。', '发会儿呆也挺好，我在。'],
-    away: ['你回来啦…我一直都在的。', '去哪了呀…还好你回来了。'],
-    grind: ['坐很久了…起来喝口水吧。', '歇一下，不差这一会儿。'],
-    night: ['很晚了…早点休息，好吗？', '夜深了，别太累，我在。'],
-    praised: ['不用谢…你轻松一点，我就开心。', '被你夸，我有点不好意思。'],
+    start: ['早上好…今天也慢慢来就好。', '醒啦…不急，我在。', '你来了…今天也一起慢慢走。',
+            '新的一天…先把水杯倒满吧。', '醒了就好…不用急着起来。'],
+    recv: ['嗯，交给我…我会好好做的。', '好，我记下了，慢慢来。', '我接住了…你先歇一口气。',
+           '这件事…我陪你做到底。', '放这儿吧，一样一样来。'],
+    busy: ['不急…我在这里，一步一步来。', '我去办了，你放心。', '还在走…你不用一直盯着。',
+           '慢一点也没关系，我在。', '中途要停下也可以的…随时叫我。'],
+    done: ['做好了…辛苦你啦。', '完成啦…你歇会儿。', '好了…剩下的时间留给你自己。',
+           '做完了…我在这儿，不急。', '都理好了…你先喝口水吧。'],
+    fail: ['没关系的…我们一起看看哪里出了问题。', '没成功也没事，我陪你。', '先停一下…不着急重来。',
+           '已经尽力了…这不算你的错。', '累了就先放着，我在这儿。'],
+    idle: ['我就安静陪着你…需要时叫我。', '发会儿呆也挺好，我在。', '不着急，我在旁边坐一会儿。',
+           '什么都不做也没关系。', '窗外的云走得很慢…你也可以在。'],
+    away: ['你回来啦…我一直都在的。', '去哪了呀…还好你回来了。', '刚刚那会儿…我一直在等你。',
+           '回来了就好，我不催你。', '门开着，灯也留着呢。'],
+    grind: ['坐很久了…起来喝口水吧。', '歇一下，不差这一会儿。', '肩颈放松一下…我陪你数三下。',
+            '窗户打开透透气吧。', '眼睛闭一会儿，我帮你看着时间。'],
+    night: ['很晚了…早点休息，好吗？', '夜深了，别太累，我在。', '该睡了…明天我还在。',
+            '把屏幕调暗一点吧，眼睛会累。', '今天已经够了…剩下的明天再说。'],
+    nightstart: ['你来啦…这么晚，别太勉强自己。', '晚上好…累了就先歇，我在。', '这么晚还开电脑…我陪你一会儿。',
+                 '夜是挺深的，不过我醒着。', '这么晚…先给自己倒杯热水吧。'],
+    praised: ['不用谢…你轻松一点，我就开心。', '被你夸，我有点不好意思。', '是你自己做得好…我只是搭了把手。',
+              '你这么说，我心里暖了一整天。'],
+    streak3: ['三回了…你今天很稳。', '连着三件…辛苦你了。', '三件了…要不要先停一停？'],
+    streak10: ['第十件了…你比自己以为的更能撑。', '十个了…先歇一会儿吧。', '十件了…今天真的够努力了。'],
   },
   comrade: {
-    start: ['来了！今天我们一起拿下它！', '战友到位，开整！'],
-    recv: ['收到，开干！我跟你一起。', '任务记下，咱们分工。'],
-    busy: ['冲！这一步我来，你盯全局。', '我在推进，你别急。'],
-    done: ['拿下！这一仗漂亮！', '完成！又过了一关。'],
-    fail: ['摔一跤而已，爬起来继续。', '没成？没事，复盘一下再上。'],
-    idle: ['休息也是训练的一部分，充会儿电。', '喘口气，待会儿更猛。'],
-    away: ['战友，你掉线啦？我等你归队。', '去哪了？队伍等你呢。'],
-    grind: ['进度不错！但别硬撑，休息一下再冲。', '连轴转啦，喝口水再战。'],
-    night: ['今天的仗打完了，早点收工。', '收工，明天再战。'],
-    praised: ['是咱们一起赢的，缺你不行。', '这功有你一半，别全算我。'],
+    start: ['来了！今天我们一起拿下它！', '战友到位，开整！', '新的一天…目标还是老规矩？',
+            '集合完毕，下一步往哪打？', '醒了就干活，我先到位了。'],
+    recv: ['收到，开干！我跟你一起。', '任务记下，咱们分工。', '收到！你盯全局，我冲前面。',
+           '这活儿交给我，你去想下一步。', '收到。先啃最硬那块，还是先清小的？'],
+    busy: ['冲！这一步我来，你盯全局。', '我在推进，你别急。', '第 2 步了，节奏没乱。',
+           '正在啃这块硬骨头，快了。', '卡了一下，我在绕，别慌。'],
+    done: ['拿下！这一仗漂亮！', '完成！又过了一关。', '搞定，收工这一单。',
+           '赢了…下一场随时叫我。', '漂亮——这一轮配合得不错。'],
+    fail: ['摔一跤而已，爬起来继续。', '没成？没事，复盘一下再上。', '这次情报不足，换个打法。',
+           '败一场而已，仗还没打完。', '记下来，这个坑下次绕开。'],
+    idle: ['休息也是训练的一部分，充会儿电。', '喘口气，待会儿更猛。', '原地待命…你叫我我就动。',
+           '放松一下肌肉，别绷着。', '喝口水，我在旁边守着。'],
+    away: ['战友，你掉线啦？我等你归队。', '去哪了？队伍等你呢。', '归队归队，阵地我守着呢。',
+           '不在的时候，我替你盯着。', '回来了？位置一直给你留着。'],
+    grind: ['进度不错！但别硬撑，休息一下再冲。', '连轴转啦，喝口水再战。', '起来走两圈，血流通了才有力气。',
+            '久坐伤腰，站一会儿。', '伸个懒腰，当是中场调整。'],
+    night: ['今天的仗打完了，早点收工。', '收工，明天再战。', '夜里耗着没效率，撤退吧。',
+            '存档，明天接着打。', '今天够了，剩下的交给我明天叫你。'],
+    /* ⚠️ 深夜刚开台**不能**说"收工" —— 仗还没打呢（用户 2026-10-28 实测抓到
+       开场就是"今天的仗打完了，早点收工"）。这里只报到 + 约个收工时间。 */
+    nightstart: ['来了！…不过这钟点了，打完这仗就收工。', '战友到位。…先说好，别硬熬。',
+                 '深夜出勤？行，我陪你打完这一场。', '这钟点开打…那说好，只打一场。', '半夜集合，稀罕。…别拖太久。'],
+    praised: ['是咱们一起赢的，缺你不行。', '这功有你一半，别全算我。', '配合得不错，下一场继续。',
+              '你指挥得好，我执行得也不赖。'],
+    streak3: ['三连！节奏起来了，保持。', '连下三城，继续推进！', '三连了，士气正旺。'],
+    streak10: ['十连胜，打卡！今天这场仗打漂亮了。', '第十个！这一轮咱们赢得干脆。', '十连了，给自己记一功。'],
   },
   guide: {
-    start: ['新的一天…今天想先解决哪件事？', '醒啦，咱们列个顺序？'],
-    recv: ['好，我先理一下思路…', '收到，我看看怎么拆。'],
-    busy: ['换个角度看看…这一步或许有更稳的走法。', '我在想更优的路径，稍等。'],
-    done: ['完成了。…你从里面学到什么了吗？', '好了，要点我标出来了。'],
-    fail: ['这次没成…我们复盘一下，问题在哪？', '走不通，我们换个法子。'],
-    idle: ['发呆也是思考的一部分，需要我陪你理理？', '想清楚了再动，不急。'],
-    away: ['你回来了…刚才那件事，想通了吗？', '去哪了？问题还在，我等你。'],
-    grind: ['停下来想想…效率未必靠熬。', '歇一下脑子，思路会更清。'],
-    night: ['夜深了…有些问题，睡一觉反而更清楚。', '不早了，先停，明天思路更顺。'],
-    praised: ['方法是你自己找到的，我只提了个问题。', '你本就懂，我只是点一下。'],
+    start: ['新的一天…今天想先解决哪件事？', '醒啦，咱们列个顺序？', '开始了…先挑最难啃的还是最容易的？',
+            '今天的目标，你打算怎么定义「完成」？', '动手之前，先把要解决的那个问题写清楚。'],
+    recv: ['好，我先理一下思路…', '收到，我看看怎么拆。', '这件事的关键不在步骤，在顺序；我先排。',
+           '记下了…先问一句：你要的结果具体长什么样？', '收到。先确认边界，再决定动不动手。'],
+    busy: ['换个角度看看…这一步或许有更稳的走法。', '我在想更优的路径，稍等。', '这条路走不通的概率偏高，我在找替代项。',
+           '先别催——判断错了，重做比慢更贵。', '正在排除第二项假设；排除完就有答案了。'],
+    done: ['完成了。…你从里面学到什么了吗？', '好了，要点我标出来了。', '做完了。这次的关键在第二步；下次可以直接跳过试错。',
+           '结果在这。要不要我把过程也写下来？', '完成了。真正起作用的是那次回退，不是最后一步。'],
+    fail: ['这次没成…我们复盘一下，问题在哪？', '走不通，我们换个法子。', '失败本身是数据——它排除了一种可能。',
+           '卡在哪一步？把那一步单独拎出来看。', '不是白走：现在我们知道这条路不通了。'],
+    idle: ['发呆也是思考的一部分，需要我陪你理理？', '想清楚了再动，不急。', '空着的时候，适合把顺序重排一遍。',
+           '要不先写下「最不想做的那件事」？', '没思路的时候，先把已知的三条列出来。'],
+    away: ['你回来了…刚才那件事，想通了吗？', '去哪了？问题还在，我等你。', '离开一会儿也好；判断需要距离。',
+           '回来了。刚才那个思路，现在还成立吗？', '你不在的时候，我把顺序重排了一遍。'],
+    grind: ['停下来想想…效率未必靠熬。', '歇一下脑子，思路会更清。', '疲劳之后的判断会偏差，误差比慢更贵。',
+            '站起来走两分钟，再回来看这个问题。', '现在的你已经不适合做决定了；先休息。'],
+    night: ['夜深了…有些问题，睡一觉反而更清楚。', '不早了，先停，明天思路更顺。', '这个点做的决定，明天多半要改。',
+            '先存档；明天的你会比现在的你更有办法。', '剩下那点，留给睡醒之后的大脑。'],
+    nightstart: ['晚上好。…这钟点开工，先定个收工时间？', '来了。…深夜的判断会偏差，慢一点。',
+                 '深夜场。我们只做不需要高判断力的部分，好吗？', '夜班开始。先说好，卡住就存盘。',
+                 '这么晚…那我们把目标定小一点。'],
+    praised: ['方法是你自己找到的，我只提了个问题。', '你本就懂，我只是点一下。', '这次的顺序是你定的；我只是把它说清楚。',
+              '夸我就不用了——把那个思路记住，下次你自己就能推。'],
+    streak3: ['三件了…你的顺序排得不错。', '连成三件——是方法对了，不是运气。', '三件了。中间那次回退是关键，你注意到了吗？'],
+    streak10: ['第十件…回头看，路径已经很清楚了。', '十件了。要不要先记一下这次的做法？', '十件了。重复出现的那一步，值得单独存下来。'],
   },
   tsundere: {
-    start: ['哼，才不是特意等你的…只是刚好开机而已。', '哦，你来了。…才没等。'],
-    recv: ['知道了知道了…别催，我又不是不会做。', '任务啊…行吧行吧，交给我。'],
-    busy: ['别盯着看…你这样我反而做不好啦。', '忙着呢，别打扰我发挥。'],
-    done: ['…做完了。…才不是想让你夸我。', '好了…勉强算你及格。'],
-    fail: ['失误而已！…下次不会了，看着吧。', '才不是失误…是意外，下次补回来。'],
-    idle: ['…哼，闲着也是闲着，陪你一会儿。', '无聊…（才不是想陪你）。'],
-    away: ['才、才没有想你！…只是有点无聊而已。', '你回来啦…（才没有在等）。'],
-    grind: ['喂…你都坐多久了。起来动动。', '别瘫着了，起来活动下。'],
-    night: ['这么晚还不睡…笨蛋。…早点睡啦。', '还不睡？…笨蛋，去睡。'],
-    praised: ['这、这是当然的！…（小声）谢谢。', '哼，当然厉害…（耳朵红了）。'],
+    start: ['哼，才不是特意等你的…只是刚好开机而已。', '哦，你来了。…才没等。',
+            '来得挺早嘛…（才不是因为我想早点见到你）。', '开机了开机了，别磨蹭。', '你总算来了…我都要打哈欠了。'],
+    recv: ['知道了知道了…别催，我又不是不会做。', '任务啊…行吧行吧，交给我。',
+           '这种程度的事，我闭着眼都…好了好了我去做。', '谁要你特意拜托啊，我本来就打算做。', '放那儿吧。…又不是不帮你。'],
+    busy: ['别盯着看…你这样我反而做不好啦。', '忙着呢，别打扰我发挥。', '急什么，顺序我都排好了。',
+           '（小声）别走开，就在这儿看着吧。', '催什么催，越催越慢，你不知道吗。'],
+    done: ['…做完了。…才不是想让你夸我。', '好了…勉强算你及格。', '拿去，别谢我…谢了我也不会高兴。',
+           '做完了做完了，满意了吧？', '（把东西一推）…反正也不难。'],
+    fail: ['失误而已！…下次不会了，看着吧。', '才不是失误…是意外，下次补回来。', '…哼，这次算它走运。',
+           '别、别露出那种表情，我会更难受。', '都怪这破步骤…不，都怪我，行了吧！'],
+    idle: ['…哼，闲着也是闲着，陪你一会儿。', '无聊…（才不是想陪你）。', '你要发呆就发呆，我又没说要陪。',
+           '（小声）…其实这样待着也不坏。', '别看我，我什么都没做。'],
+    away: ['才、才没有想你！…只是有点无聊而已。', '你回来啦…（才没有在等）。', '去哪了？…我问一下而已，别多想。',
+           '这么久才回来…我还以为你不来了。', '（一直没走开）…哦，你回来了。'],
+    grind: ['喂…你都坐多久了。起来动动。', '别瘫着了，起来活动下。', '再坐下去要长蘑菇了，快起来。',
+            '（拽你袖子）…去倒杯水，顺便走两步。', '我数到三，你要是还坐着我就…我就不管你了。'],
+    night: ['这么晚还不睡…笨蛋。…早点睡啦。', '还不睡？…笨蛋，去睡。', '我要下班了，你也要睡。…这是通知。',
+            '再熬下去明天起不来，别怪我没提醒。', '（打哈欠）…我都困了，你还撑什么。'],
+    /* 同上：深夜刚开台只"报到 + 嫌一句"，不催人走（催人是 night 那组的活） */
+    nightstart: ['哦，来了。…这么晚还开电脑，笨蛋。', '哼，这个点才来…别太晚啊。',
+                 '深夜档？…那我也没办法，陪你一会儿就是了。', '这么晚…（其实我刚醒）。', '夜里开工？随你，我奉陪到困为止。'],
+    praised: ['这、这是当然的！…（小声）谢谢。', '哼，当然厉害…（耳朵红了）。', '别、别一直盯着我说啦。…（嘴角压不下去）',
+              '谁、谁要你夸了…（心里记下了）。'],
+    streak3: ['三连了？…哼，运气好而已。', '三件了……别得意，还有下一件。', '三连…（其实我也挺高兴的）。'],
+    streak10: ['第十件了…（才、才没有在数）。', '哼，十件而已…也没什么了不起的。', '十件了…你倒是挺能干的嘛。'],
   },
 };
+
+/* ---------- 人格动作语言 ----------
+   台词后面用全角括号补一个动作（「做好了…辛苦你啦。（轻轻笑了笑）」），
+   是这类陪伴型角色最省字又最能立住形象的一招：不占口播时长，却让人
+   "看见"它在做什么。动作词按各人格的标志性动作挑（联网查过一轮，
+   各家二次元人格的招牌动作基本就那几个：傲娇别脸跺脚、元气蹦跳比心、
+   温柔轻笑靠近、战友击掌握拳、向导推眼镜点头）。
+
+   两条硬规矩：
+   ① **和颜文字互斥** —— 一句里既挂颜文字又挂动作，念起来是字幕不是人话；
+   ② **失败 / 深夜不挂可爱动作** —— 情绪优先级高于可爱，
+      那两处只留"挠挠头""压低声音"这类收着做的动作。 */
+const PERSONA_ACTION = {
+  genki: {
+    start: ['伸了个懒腰', '挥挥手打招呼', '原地蹦了一下', '揉了揉眼睛', '一把拉开窗帘'],
+    recv: ['眼睛一亮', '卷起袖子', '一把接过任务', '竖起食指', '凑过来盯着看'],
+    busy: ['手指敲得飞快', '踮着脚张望', '托着腮想事情', '小声念着步骤', '原地小跑了两步'],
+    done: ['转了个圈', '比了个心', '举高双手欢呼', '原地蹦了两下', '朝你竖起大拇指'],
+    fail: ['挠挠头', '握了握拳', '拍拍身上的灰', '吐了吐舌头', '把袖子又挽高一点'],
+    idle: ['托着腮发呆', '晃着腿', '趴在桌上看你', '转着笔玩', '哼着不成调的歌'],
+    away: ['踮脚张望', '两手捧着脸等你', '东张西望', '数着地上的格子', '趴在门口等'],
+    grind: ['拉着你往起站', '原地跳了两下', '拍了拍椅子', '拽着你袖子晃', '带头做了个伸展'],
+    night: ['压低声音', '小声打了个哈欠', '把灯调暗了些', '揉了揉眼睛', '抱着膝盖坐着'],
+    nightstart: ['挥挥手打招呼', '压低声音', '踮着脚走过来', '揉着眼睛走出来', '把灯拧亮了一点'],
+    praised: ['蹦了一下', '捂着脸偷笑', '笑得眼睛弯起来', '转了个小圈', '把脸埋进手里'],
+    streak3: ['连比了两个心', '举高双手欢呼', '原地蹦了两下'],
+    streak10: ['转了好几个圈', '比了个大大的心', '举高双手转圈', '蹦了三下'],
+  },
+  gentle: {
+    start: ['轻轻笑了笑', '安静地走近', '替你把灯打开', '把水杯推近了一点', '理了理桌角'],
+    recv: ['点了点头', '把事情接过来', '眼神放软', '把手边收拾好', '轻轻应了一声'],
+    busy: ['安静地做着', '时不时看你一眼', '把手边收拾干净', '慢慢理着线头', '替你把杂音调小'],
+    done: ['轻轻笑了笑', '把结果推到你面前', '悄悄松了口气', '替你把桌面理整齐', '轻轻拍了拍手背'],
+    fail: ['轻轻摇头', '把手放在你肩上', '安静地陪着你', '替你把水杯续满', '慢慢叹了口气'],
+    idle: ['安静地坐在旁边', '看着窗外发呆', '慢慢翻着书', '把毯子搭在椅背上', '轻轻哼着歌'],
+    away: ['一直望着门口', '把手边的位置留着', '轻轻叹了口气', '替你把灯留着', '把杯子捂在手里'],
+    grind: ['递过一杯温水', '轻轻拍了拍你', '把你椅子往外拉了拉', '替你揉了揉肩', '指了指窗外'],
+    night: ['把声音放得很轻', '替你关小了屏幕', '轻轻叹了口气', '替你披了件外套', '把灯拧暗'],
+    nightstart: ['轻轻笑了笑', '安静地走近', '把声音放得很轻', '替你把灯留着', '倒了杯热水放在手边'],
+    praised: ['微微低头', '轻轻笑了笑', '眼神躲开了', '把手指绞在一起', '轻轻摇头'],
+    streak3: ['轻轻拍了拍手', '笑着点了点头', '把水杯推近了一点'],
+    streak10: ['安静地笑了笑', '替你添了杯热水', '轻轻拍了拍你'],
+  },
+  comrade: {
+    start: ['握了握拳', '跟你击了个掌', '站到并肩的位置', '把袖子挽起来', '拍了拍装备'],
+    recv: ['接过任务', '竖起大拇指', '把袖子挽起来', '点头应下', '把清单展开'],
+    busy: ['盯着进度不放', '往前压了一步', '在旁边盯着同一处', '掐着表数秒', '把要点划掉一行'],
+    done: ['跟你击了个掌', '握拳挥了一下', '拍了下你肩膀', '敬了个礼', '把清单划掉一行'],
+    fail: ['抹了把脸', '重新握紧拳头', '把地图摊开', '拍掉身上的土', '深吸了一口气'],
+    idle: ['原地活动了下肩膀', '靠着墙歇口气', '数着呼吸', '压了压腿', '把水壶递给你'],
+    away: ['朝你那边张望', '敲了敲桌子', '把队形收回来了', '守着阵地没动', '替你盯着屏幕'],
+    grind: ['把水壶递给你', '拍了下你肩膀', '指了指门外', '陪你走了两步', '把椅子拉开'],
+    night: ['把灯调暗', '压着嗓子说话', '收好装备', '拉上窗帘', '把资料收进包里'],
+    nightstart: ['握了握拳', '站到并肩的位置', '压着嗓子说话', '把灯拧亮了一点', '拍了拍你的肩'],
+    praised: ['拍了下你肩膀', '竖起大拇指', '握拳回了个礼', '跟你击了个掌', '把功劳推回去一半'],
+    streak3: ['连击了两次掌', '握拳挥了一下', '竖了个大拇指'],
+    streak10: ['用力击了个掌', '敬了个礼', '竖起两根大拇指', '跟你碰了下拳'],
+  },
+  guide: {
+    start: ['推了下眼镜', '点了点头', '把清单摊开', '把笔帽摘下来', '翻到空白页'],
+    recv: ['低头记了一笔', '顿了顿', '把要点圈出来', '把问题重述了一遍', '在边上打了个问号'],
+    busy: ['低头想了想', '在纸上比划', '推了下眼镜', '把两条线连起来', '划掉一个假设'],
+    done: ['点了点头', '把要点标出来', '抬眼看你', '把结论框起来', '合上笔记本'],
+    fail: ['停下手想了想', '把思路划掉重排', '轻轻摇头', '在出错的地方画了个圈', '把纸翻到背面'],
+    idle: ['望着窗外想事情', '翻了两页笔记', '安静地站着', '把笔转了一圈', '把清单重排了一遍'],
+    away: ['把笔记留在桌上', '抬眼看了下门口', '停下手里的活', '把书签夹好', '在纸上留了句话'],
+    grind: ['指了指窗外', '把椅子往后推了推', '提醒似的抬了下眼', '把表推到你面前', '合上笔记站起来'],
+    night: ['合上笔记', '把灯调暗', '顿了顿', '把笔帽扣上', '摘下眼镜擦了擦'],
+    nightstart: ['推了下眼镜', '点了点头', '把清单摊开', '把灯拧亮了一点', '在纸上写下时间'],
+    praised: ['轻轻摇头', '把功劳推回去', '推了下眼镜', '把笔放下', '笑了笑没接话'],
+    streak3: ['点了点头', '在清单上划了一道', '抬眼看你'],
+    streak10: ['合上笔记', '抬眼看你', '在纸上写了什么', '把清单折起来'],
+  },
+  tsundere: {
+    start: ['扭开头', '别过脸去', '假装在看别处', '抱起手臂', '用脚尖踢了踢地'],
+    recv: ['一把抢过任务', '别过脸去', '嘴上嘀咕着接下', '把东西从你手里抽走', '哼了一声'],
+    busy: ['背过身去忙', '别开视线', '把袖子一挽', '故意不看你', '手上的动作倒很快'],
+    done: ['别过脸去', '把东西一推', '耳尖有点红', '抱起手臂扭开头', '嘴硬地补了一句'],
+    fail: ['跺了下脚', '咬着嘴唇', '别过脸不说话', '把拳头攥紧', '脸涨得通红'],
+    idle: ['抱起手臂', '假装在看别处', '有一搭没一搭地晃', '趴在桌上不说话', '偷瞄了你一眼'],
+    away: ['抱着手臂看门口', '假装不在意地张望', '轻轻哼了一声', '一直盯着手机', '其实一直没走开'],
+    grind: ['用脚尖踢了踢椅子', '别过脸催你', '抱起手臂盯着你', '拽了拽你袖子又松开', '把水杯塞给你'],
+    night: ['小声嘀咕了一句', '把灯调暗', '别过脸去', '打了个哈欠硬撑着', '把毯子扔给你'],
+    nightstart: ['扭开头', '抱起手臂', '小声嘀咕了一句', '揉着眼睛走过来', '别过脸把灯拧亮'],
+    praised: ['别过脸去', '耳尖发红', '跺了下脚', '把脸扭到一边', '小声说了句什么'],
+    streak3: ['别过脸去', '轻轻哼了一声', '耳尖有点红', '抱起手臂扭开头'],
+    streak10: ['抱起手臂扭开头', '跺了下脚', '别过脸不说话', '耳尖红透了'],
+  },
+};
+
+/** 抽一个动作词。情境没配就退回该人格的 idle 那组，再没有就空串（不硬凑）。 */
+function randAction(sit) {
+  const lib = PERSONA_ACTION[charCfg.persona];
+  if (!lib) return '';
+  return randItem(lib[sit] || lib.idle) || '';
+}
 
 const KAOMOJI = {
   genki: ['٩(^ᴗ^)۶', '(๑•̀ㅂ•́)و✧', 'ヽ(・∀・)ﾉ', '(ง •̀_•́)ง', '(￣▽￣)ノ', '(・ω・)'],
@@ -8607,7 +9033,7 @@ function personaTone() { return PERSONA_TONE[charCfg.persona] || { rate: 1, pitc
    有情绪的节点 —— 个性和信息量都还在，一轮的耗时直接砍掉三分之二。 */
 const LEAN_SKIP = new Set(['recv', 'busy']);
 
-/* 念一句：优先用情境台词库，附带颜文字（失败/深夜不挂，情绪优先于可爱）。
+/* 念一句：优先用情境台词库，末尾挂**颜文字或动作**（两者只取其一，见 PERSONA_ACTION 的注释）。
    台词同时会以气泡形式露在聊天区（personaNote），所以**声音关着也能看到个性** ——
    之前声音一关陪伴层就彻底隐身，这是被诟病「启用个性但没反应」的一大来源。 */
 function speakSituation(sit, opt) {
@@ -8619,9 +9045,18 @@ function speakSituation(sit, opt) {
   const arr = lib[sit];
   if (!arr || !arr.length) return;
   let line = randItem(arr);
-  if (!opt.noKao && sit !== 'fail' && sit !== 'night' && Math.random() < 0.5) {
-    const k = randItem(KAOMOJI[charCfg.persona]);
+  /* 动作与颜文字**不再互斥**（2026-10-28 用户要求）：两者负责不同的东西 ——
+     颜文字是"这句话的语气"，贴着句尾；动作是"这句话之外它在做什么"，
+     像舞台指示放最后。所以顺序固定为「正文 + 颜文字 +（动作）」，
+     两个叠在一起也不会读成字幕。
+     ⚠️ 只有颜文字看情绪：失败 / 深夜 / 深夜开场不挂（情绪优先于可爱）。
+        动作则照挂 —— 那三处的动作词本来就收着写（"挠挠头""压低声音"）。 */
+  if (!opt.noKao) {
+    const soft = sit !== 'fail' && sit !== 'night' && sit !== 'nightstart';
+    const k = soft && Math.random() < 0.55 ? randItem(KAOMOJI[charCfg.persona]) : '';
     if (k) line += ' ' + k;
+    const act = randAction(sit);
+    if (act) line += '（' + act + '）';
   }
   const tone = personaTone();
   ttsSpeak(line, { rateMul: tone.rate, pitchMul: tone.pitch });
@@ -8629,13 +9064,23 @@ function speakSituation(sit, opt) {
   if (opt.gesture) orbGesture(opt.gesture);
 }
 
-/* 念一段自定义文案（里程碑 / 接梗 / 切温柔时用）。 */
+/* 念一段自定义文案（连续失败安慰 / 接梗 / 切温柔时用）。
+   opt.sit 给了就按那个情境补一个动作 —— 那些写死的句子同样该带人格动作，
+   否则"傲娇念一句元气话"这种串味又会在别处冒出来。 */
 function speakText(text, opt) {
   opt = opt || {};
   if (charCfg.persona === 'off') return;
+  let line = String(text || '');
+  if (!opt.noKao && opt.sit) {
+    const soft = opt.sit !== 'fail' && opt.sit !== 'night' && opt.sit !== 'nightstart';
+    const k = soft && !opt.noKao && Math.random() < 0.55 ? randItem(KAOMOJI[charCfg.persona]) : '';
+    if (k) line += ' ' + k;
+    const act = randAction(opt.sit);
+    if (act) line += '（' + act + '）';
+  }
   const tone = personaTone();
-  ttsSpeak(text, { rateMul: tone.rate, pitchMul: tone.pitch });
-  personaNote(text);
+  ttsSpeak(line, { rateMul: tone.rate, pitchMul: tone.pitch });
+  personaNote(line);
   if (opt.gesture) orbGesture(opt.gesture);
 }
 
@@ -8754,12 +9199,12 @@ function onTaskRecv(text) {
   }
   /* 接梗：只在冷却期外接 —— 刚安慰完人立刻来一句俏皮话是最伤的。 */
   if (c.joke && charCfg.persona === 'genki' && Date.now() > personaQuietUntil) {
-    speakText('哈哈，这个我接住了——你笑点跟我一样怪。', { gesture: 'greet' });
+    speakText('哈哈，这个我接住了——你笑点跟我一样怪。', { gesture: 'greet', sit: 'praised' });
     return;
   }
   /* 长会话小结：向导在聊够 30 轮时提一句（只触发一次）。 */
   if (charCfg.persona === 'guide' && statRounds === 30) {
-    speakText('咱们聊了挺久，要不要先小结一下再继续？');
+    speakText('咱们聊了挺久，要不要先小结一下再继续？', { sit: 'idle' });
     return;
   }
   speakSituation('recv');
@@ -8782,14 +9227,16 @@ function onTaskDone() {
      两条都会说，只是顺序调过来读着才通顺。 */
   maybeGrind();
   if (aiSaid) return;
-  /* 里程碑优先于普通完成台词：三连击 / 每十次连胜打卡。 */
+  /* 里程碑优先于普通完成台词：三连击 / 每十次连胜打卡。
+     ⚠️ 这两句以前是**写死的**（"三连击！你今天超猛！"），于是傲娇也会被
+        硬塞一句元气口吻的话 —— 看着像"人格串了"。现在走各人格自己的台词库
+        （DIALECT.streak3 / streak10），动作语言也跟着人格走。 */
   if (statDone === 3) {
-    speakText('三连击！你今天超猛！' + (charCfg.persona === 'genki' ? ' ٩(ˊᗜˋ*)و' : ''), { gesture: 'greet' });
+    speakSituation('streak3', { gesture: 'greet' });
     return;
   }
   if (statDone > 0 && statDone % 10 === 0) {
-    if (charCfg.persona === 'comrade') { speakText('十连胜，打卡！今天这场仗，咱们赢麻了。', { gesture: 'done' }); return; }
-    speakText('第 ' + statDone + ' 次搞定，状态在线！', { gesture: 'done' });
+    speakSituation('streak10', { gesture: 'done' });
     return;
   }
   speakSituation('done');
@@ -8809,7 +9256,8 @@ function onTaskFail() {
       guide: '连续不顺…我们换个法子看看。',
       genki: '连着翻车？没事，瑞个士气再来——这 bug 就是在考验我们。',
     };
-    speakText(map[charCfg.persona] || '没成，没关系。', { gesture: charCfg.persona === 'tsundere' ? 'shy' : 'loading' });
+    speakText(map[charCfg.persona] || '没成，没关系。',
+      { gesture: charCfg.persona === 'tsundere' ? 'shy' : 'loading', sit: 'fail' });
     return;
   }
   speakSituation('fail');
@@ -8824,7 +9272,7 @@ function onIdleOrAway() {
     return;
   }
   if (charCfg.persona === 'genki' && weekday() === 5 && new Date().getHours() >= 17) {
-    speakText('周五晚上啦，周末快乐！…先别加班。', { gesture: 'greet' });
+    speakText('周五晚上啦，周末快乐！…先别加班。', { gesture: 'greet', sit: 'grind' });
     return;
   }
   if (charCfg.persona === 'tsundere') { speakSituation('away', { gesture: 'shy' }); return; }
@@ -8859,12 +9307,20 @@ function speakStart() {
   if (startSpoken) return;
   startSpoken = true;
   if (charCfg.persona === 'off') return;
-  if (charCfg.persona === 'genki' && weekday() === 1) {
-    speakText('新的一周，冲！٩(^ᴗ^)۶');
+  /* 周一早上的元气专属开场。深夜不算"早上"，那时走下面的欢迎 + 提醒。 */
+  if (charCfg.persona === 'genki' && weekday() === 1 && !isNight()) {
+    speakText('新的一周，冲！٩(^ᴗ^)۶', { sit: 'start' });
     return;
   }
-  if (isNight()) { speakSituation('night'); return; }
+  /* ★ 开场永远是"欢迎"，休息提醒排在它**后面**（2026-10-28 用户反馈）：
+     深夜一开控制台就念"今天的仗打完了，早点收工"是在赶人 —— 人家刚来，
+     仗还没打呢。所以开场句照念，夜里再补一句"这钟点了别熬太狠"的提醒，
+     用的是 nightstart 而不是 night：后者是给"真到了该收工的时候"用的。 */
   speakSituation('start');
+  if (isNight()) {
+    /* 已经派了活就别插这句：任务都跑起来了还说"别熬"，是拆台不是关心。 */
+    setTimeout(() => { if (statRounds === 0) speakSituation('nightstart'); }, 2600);
+  }
 }
 
 /* 状态放在一坨里、整份落盘：四个 key 各自一套版本、改一半崩一半的坑踩过。 */
@@ -13279,7 +13735,7 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
      ⚠️ 这里**不能 await**：桥没起来时这个请求会一直挂着，而它原本排在
      buildTools()/套主题/渲染之前 —— 于是一旦桥慢或没起，整个界面都是空的。
      改成发后即忘：请求回来再填下拉，启动路径完全不被网络拖住。 */
-  loadWbModels(false);
+  loadWbModels(false, true);   /* 启动强制后台模型默认回到「默认（跟随 CLI）」 */
   loadToolGroups();
   buildTools();
   /* 主题要在 buildTools 之后、渲染对话之前套上，

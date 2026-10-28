@@ -33,14 +33,14 @@ orb-bridge/
    | 市场展示名称 | `ORB 桌面操作助手`（9 字，上限 15 字，别写"测试""最终版"） |
    | 头像 | `assets/icon.png`（512×512，≤500KB，JPG/PNG） |
    | 分类 / 服务类目 | 效率工具 |
-   | 版本 | v1.0.0 |
+   | 版本 | v1.3.0 |
 
 4. **提交审核**：周期约 7 个工作日。过审后全平台可搜可装。
 
 ## 十项自检（提交前逐条过）
 
 1. 解压后**第一层**就能看到 `SKILL.md`（没多套文件夹）
-2. YAML 头四个字段齐全且大小写正确：`name` `description` `version` `category`
+2. YAML 头字段齐全且大小写正确：`name` `display_name` `display_name_zh` `display_name_en` `name_en` `description` `description_zh` `description_en` `version` `category`（平台要求中英文展示名与描述都填，缺任一个都会解析失败）
 3. 缩进统一**两个空格**，没有 Tab；冒号后都有一个空格
 4. `name: orb-bridge` 与文件夹名完全一致，只用英文小写加连字符
 5. `description` 写清了"解决什么问题 + 在什么场景用"，不是"提升效率"这类空话

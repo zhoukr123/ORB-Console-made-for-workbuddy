@@ -37,21 +37,108 @@
   }
   button:last-child { border-right: none; }
   button:hover { background: var(--accent-soft); color: var(--accent-fg); }
+  button:disabled { opacity: .55; cursor: default; }
+
+  /* ---------- 翻译结果卡 ----------
+     点「翻译」后工具条就地变成这张卡：译文 + 复制 + 关闭。
+     ⚠️ 不再把文字塞进对话框 —— 那正是"翻译只是把选中的文字添加进控制台
+        对话框"的老毛病。单独开一个窗口又太重：划词是"看一眼就走"的动作。 */
+  .card {
+    margin: 2px; height: calc(100% - 4px); box-sizing: border-box;
+    display: flex; flex-direction: column;
+    background: var(--bg-soft); border: 0.5px solid var(--border-strong); border-radius: 10px;
+    box-shadow: var(--sh-lg); overflow: hidden;
+  }
+  .card-head {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 6px 5px 10px; border-bottom: 0.5px solid var(--border);
+    font-size: 11.5px; color: var(--fg-muted); flex: 0 0 auto;
+  }
+  .card-head span { flex: 1; }
+  .card-head button {
+    flex: 0 0 auto; width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px;
+    font-size: 13px; line-height: 1; color: var(--fg-soft);
+  }
+  .card-body {
+    flex: 1 1 auto; min-height: 0; overflow: auto;
+    padding: 8px 10px; font-size: 13px; line-height: 1.55; color: var(--fg);
+    user-select: text; -webkit-user-select: text; white-space: pre-wrap; word-break: break-word;
+  }
+  .card-foot {
+    flex: 0 0 auto; display: flex; gap: 6px; padding: 6px;
+    border-top: 0.5px solid var(--border);
+  }
+  .card-foot button { border-radius: 7px; padding: 5px 0; }
 </style>
 </head>
 <body>
-  <div class="bar">
+  <div class="bar" id="bar">
     <button id="search">搜索</button>
     <button id="translate">翻译</button>
     <button id="send">发给 Agent</button>
   </div>
+
+  <div class="card" id="card" hidden>
+    <div class="card-head"><span id="cardDir">译文</span><button id="cardClose" title="关闭">✕</button></div>
+    <div class="card-body" id="cardText"></div>
+    <div class="card-foot"><button id="cardCopy">复制译文</button></div>
+  </div>
+
 <script>
   let text = "";
-  window.orb.onSelectionText((t) => { text = t || ""; });
+  let busy = false;
+  const bar = document.getElementById('bar');
+  const card = document.getElementById('card');
+  const cardText = document.getElementById('cardText');
+  const cardDir = document.getElementById('cardDir');
+
+  window.orb.onSelectionText((t) => { text = t || ""; showBar(); });
+
+  /** 回到三键状态（换了一段选中文字时）。 */
+  function showBar() {
+    card.hidden = true;
+    bar.hidden = false;
+    window.orb.toolbarResize(216, 44);
+  }
+
+  function showCard(txt, dir, failed) {
+    bar.hidden = true;
+    card.hidden = false;
+    cardDir.textContent = dir ? ('译文 · ' + dir) : (failed ? '翻译失败' : '提示');
+    cardText.textContent = txt;
+    window.orb.toolbarResize(340, 190);
+  }
+
+  async function doTranslate() {
+    if (busy) return;
+    if (!text.trim()) { showCard('没有选中文字。', '', true); return; }
+    busy = true;
+    const btn = document.getElementById('translate');
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = '翻译中…';
+    let r = null;
+    try { r = await window.orb.toolbarTranslate(text); }
+    catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+    busy = false;
+    btn.disabled = false;
+    btn.textContent = old;
+    if (!r || !r.ok) showCard('翻译失败：' + ((r && r.error) || '未知错误'), '', true);
+    else showCard(String(r.text || '（模型没给出译文）'), String(r.dir || ''), false);
+  }
 
   document.getElementById('search').addEventListener('click', () => window.orb.toolbarAction('search', text));
-  document.getElementById('translate').addEventListener('click', () => window.orb.toolbarAction('translate', text));
+  document.getElementById('translate').addEventListener('click', doTranslate);
   document.getElementById('send').addEventListener('click', () => window.orb.toolbarAction('send', text));
+  document.getElementById('cardClose').addEventListener('click', () => window.orb.toolbarHide());
+  document.getElementById('cardCopy').addEventListener('click', async () => {
+    const b = document.getElementById('cardCopy');
+    try {
+      await window.orb.writeClipboard(cardText.textContent || '');
+      b.textContent = '已复制 ✓';
+    } catch { b.textContent = '复制失败'; }
+    setTimeout(() => { b.textContent = '复制译文'; }, 1200);
+  });
 
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.orb.toolbarHide(); });
   document.addEventListener('mouseleave', () => window.orb.toolbarHide());

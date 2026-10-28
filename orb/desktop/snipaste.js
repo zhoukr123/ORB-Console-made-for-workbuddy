@@ -111,6 +111,42 @@ function launchedRecently(ms) {
   return lastLaunchAt > 0 && (Date.now() - lastLaunchAt) < (ms || 8000);
 }
 
+/* ── 安装位置 / 运行状态的短记忆（2026-10-28 加）─────────────────────────
+ * 一次「点截屏」里 resolveInstall 会被跑两遍（面板先 detect 判装没装、
+ * 主进程的 snip-run 再 runSnip），isRunning 同样两遍 —— 每遍都是
+ * where.exe / reg / tasklist 这类短命子进程（各 120–450ms），
+ * 全叠在"点了之后到 Snipaste 浮层弹出来"那一段里，实测要等 4–5 秒。
+ * 装没装、跑没跑都是分钟级才变的事实，没必要每次都重新问系统。
+ *
+ * ⚠️ 但冷启动轮询那一处必须拿**新鲜值**（见 runSnip）：刚 spawn 完就
+ *    去问"起来了吗"，拿到 1.5 秒前的 false 会直接误判启动超时。 */
+let instMemo = { at: 0, has: false, val: null };
+const INST_TTL = 5 * 60 * 1000;   // 命中「装了」：记 5 分钟
+const INST_NEG_TTL = 20 * 1000;   // 命中「没装」：只记 20 秒（用户可能正在装，别锁死）
+let runMemo = { at: 0, val: false };
+/* ⚠️ 8 秒而不是 1.5 秒（2026-10-29 改）：
+   1.5 秒只够覆盖同一次截屏内的重复查询，而**下一次**点截屏时记忆基本已经
+   过期 → 又去 spawn 一次 tasklist（150–400ms），这笔开销直接压在
+   「点下截屏 → 浮层弹出」的观感上。
+   Snipaste 是常驻托盘应用，不会自己退出 —— "8 秒前还在跑" 足以推断现在还在跑。
+   真被用户关掉了的话，代价是这次少做一次冷启动轮询、snip 命令落空，
+   而"没弹框选"有 NO_SESSION_MS 兜底，不会卡死。
+   ⚠️ 我们自己刚 spawn 过它之后会 invalidateRunning()，不受这个 TTL 影响。 */
+const RUN_TTL = 8000;
+
+/** 记忆里有没有还新鲜的结论。undefined = 没有（要真去查一次）。 */
+function installMemo() {
+  if (!instMemo.at) return undefined;
+  const ttl = instMemo.has ? INST_TTL : INST_NEG_TTL;
+  return (Date.now() - instMemo.at < ttl) ? instMemo.val : undefined;
+}
+function setInstallMemo(v) {
+  instMemo = { at: Date.now(), has: !!v, val: v || null };
+}
+/** 外部已经查到结论就顺手灌进来（detect 拿到 running 时）；spawn 之后要 invalidate。 */
+function primeRunning(v) { runMemo = { at: Date.now(), val: !!v }; }
+function invalidateRunning() { runMemo = { at: 0, val: false }; }
+
 /** 已知安装位置（桌面版标准落点）。Store 别名也在列表里，但存在性不能靠 existsSync 判（见头部 ⑤）。 */
 function candidates() {
   const local = process.env.LOCALAPPDATA || "";
@@ -193,6 +229,14 @@ function toAlias(p) {
  *   ④ 运行中进程路径（WMI，只证明"装了"）
  */
 async function resolveInstall() {
+  const m = installMemo();
+  if (m !== undefined) return m;            // 有新鲜结论就别再去问系统
+  const v = await resolveInstallNow();
+  setInstallMemo(v);
+  return v;
+}
+
+async function resolveInstallNow() {
   const fast = findInstall();
   if (fast) return fast;
   const w = await whereSnipaste();
@@ -204,15 +248,21 @@ async function resolveInstall() {
   return null;
 }
 
-/** 进程是否在跑。tasklist 查不到一律当「没跑」—— 宁可多重一次启动，也不能误报成在跑。 */
-function isRunning() {  return new Promise((resolve) => {
+/** 进程是否在跑。tasklist 查不到一律当「没跑」—— 宁可多重一次启动，也不能误报成在跑。
+ *  @param {boolean} fresh  true = 跳过短记忆，必须问系统（冷启动轮询用）。 */
+function isRunning(fresh) {
+  if (!fresh && runMemo.at && (Date.now() - runMemo.at) < RUN_TTL) {
+    return Promise.resolve(runMemo.val);
+  }
+  return new Promise((resolve) => {
     execFile(
       "tasklist",
       ["/FI", "IMAGENAME eq Snipaste.exe", "/NH"],
       { windowsHide: true, timeout: 4000 },
       (err, stdout) => {
-        if (err) return resolve(false);
-        resolve(/snipaste\.exe/i.test(String(stdout || "")));
+        const v = err ? false : /snipaste\.exe/i.test(String(stdout || ""));
+        primeRunning(v);
+        resolve(v);
       }
     );
   });
@@ -242,6 +292,7 @@ async function detect() {
   const inst = await resolveInstall();
   if (!inst) return { ok: true, installed: false, running: false, path: "", source: "" };
   const running = inst.running === true ? true : await isRunning();
+  primeRunning(running);          // 顺手把结论灌进短记忆：紧接着的 runSnip 就不用再查一遍
   return { ok: true, installed: true, running, path: inst.file, source: inst.source };
 }
 
@@ -272,10 +323,11 @@ async function runSnip() {
     } catch (e) {
       return { ok: false, launched: false, file: "", reason: "launch-failed: " + errText(e) };
     }
+    invalidateRunning();        // 刚 spawn：短记忆里的 false 已经作废，必须真查
     const deadline = Date.now() + 6000;
     for (;;) {
       await sleep(200);
-      if (await isRunning()) break;
+      if (await isRunning(true)) break;      // ← fresh=true，别拿 1.5 秒前的旧值判超时
       if (Date.now() >= deadline) return { ok: false, launched: false, file: "", reason: "start-timeout" };
     }
     await sleep(400);   // 进程在 ≠ 托盘/CLI 通道就绪，再给一口喘息

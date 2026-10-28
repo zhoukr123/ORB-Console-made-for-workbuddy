@@ -264,17 +264,36 @@
     if (eng === "whisper") { startWhisper(); return; }
     if (eng === "auto") {
       /* auto：先问本地 Whisper 就绪没有（installed + 权重 + 服务在跑）。
-         就绪 → 走本地（离线、免 Key）；没就绪 → 静默走浏览器引擎，只标一行提示。
-         探测失败（bridge 没起来等）同样按浏览器引擎处理，绝不弹错。 */
-      Promise.resolve(window.orb.asrStatus ? window.orb.asrStatus() : null)
+         就绪 → 走本地（离线、免 Key）；没就绪 → 退回浏览器引擎。
+
+         ⚠️ 必须先 wake 一次再判断（2026-10-28 修）：识别服务空闲 5 分钟就被
+            回收了（见 bridge 的 ASR_IDLE_MS），而 /api/asr 默认**只探活不唤醒**。
+            于是"明明装好了 Whisper，点麦克风却永远失败" —— 因为拿到 running:false
+            之后它换了浏览器引擎，而那个引擎在国内网络的 Electron 里必然连不上。
+         ⚠️ 排队期间要给看得见的反馈：加载 medium 权重要几秒，用户会以为没反应。 */
+      setActive(true, "正在启动本地识别服务…（第一次要加载模型，请稍候）");
+      Promise.resolve(window.orb.asrStatus ? window.orb.asrStatus({ wake: true }) : null)
         .then((s) => {
           if (s && s.ok && s.installed && s.modelDownloaded && s.running) {
             startWhisper({ endpoint: LOCAL_ASR_ENDPOINT, apiKey: "", model: "whisper-1" });
-          } else {
-            startBrowser(true);
+            return;
           }
+          /* 降级**不再静默**：把"为什么用浏览器引擎"写清楚，用户才知道该去哪修。 */
+          setActive(false);
+          statusEl.style.display = "";
+          statusEl.textContent = !s || !s.ok
+            ? "本地识别没起来（控制台桥接不通）：先用浏览器引擎，需联网。"
+            : (!s.installed || !s.modelDownloaded)
+              ? "本地识别没装好：先用浏览器引擎（需联网）。去「设置 → 语音」一键安装。"
+              : "本地识别服务没启动：先用浏览器引擎（需联网），或去「设置 → 语音」点启动。";
+          startBrowser(true);
         })
-        .catch(() => startBrowser(true));
+        .catch(() => {
+          setActive(false);
+          statusEl.style.display = "";
+          statusEl.textContent = "本地识别探活失败：先用浏览器引擎（需联网）。";
+          startBrowser(true);
+        });
       return;
     }
     startBrowser();
@@ -353,6 +372,10 @@
         const s = await Promise.resolve(window.orb.asrStatus ? window.orb.asrStatus() : null).catch(() => null);
         if (s && s.ok && s.installed && s.modelDownloaded && s.running) {
           setMsg("自动模式：本地离线识别已就绪，点麦克风按钮后直接说话即可（离线可用、免 Key）。");
+        } else if (s && s.ok && s.installed && s.modelDownloaded) {
+          /* 装好了、只是空闲被回收（ASR_IDLE_MS=5 分钟）：这不是故障，
+             点麦克风时会自动唤醒。说"未启用"会让人以为白装了。 */
+          setMsg("本地识别已装好，服务当前空闲（为省电自动休眠）。点麦克风会自动唤醒它，稍等几秒再说话即可。");
         } else {
           setMsg("未启用本地识别，本次将使用浏览器引擎（需联网）；需要离线识别可在下方「本地离线识别」一键安装。");
         }

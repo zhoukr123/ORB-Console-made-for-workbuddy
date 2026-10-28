@@ -60,9 +60,20 @@ contextBridge.exposeInMainWorld("orb", {
   setWizardDone: (v) => ipcRenderer.invoke("set-wizard-done", v),
   asrTranscribe: (p) => ipcRenderer.invoke("asr-transcribe", p),
   /* 本地 Whisper 状态（/api/asr 代理）：voice.js 在 engine=auto 时据此选择本地/浏览器引擎 */
-  asrStatus: () => ipcRenderer.invoke("asr-status"),
+  asrStatus: (opt) => ipcRenderer.invoke("asr-status", opt),
   startVoice: () => ipcRenderer.send("voice-start"),
   setPin: (v) => ipcRenderer.send("pin", v),
+  setAutoSelect: (v) => ipcRenderer.send("set-autoselect", v),
+  /* 录屏 / 截屏「隐藏控制台」：key 只认 "rec" / "snip"（主进程侧同样只认这两个） */
+  setHideConsole: (key, v) => ipcRenderer.send("set-hide-console", key, !!v),
+  /* 录屏开始 / 结束时由面板驱动：主进程按偏好决定整窗隐藏还是只收面板。
+     返回 { hidden } / { restored }，面板据此改提示文案。 */
+  recHideConsole: (on) => ipcRenderer.invoke("rec-hide-console", !!on),
+  /* 框选取词：弹覆盖层让用户拖一块区域，主进程抓屏裁剪后回 PNG 的 data URL。
+     取消返回 { ok:false, cancelled:true }。 */
+  ocrPick: () => ipcRenderer.invoke("ocr-pick"),
+  /* 「打开文件夹」键：弹系统的选文件夹对话框，返回绝对路径 */
+  pickDir: () => ipcRenderer.invoke("pick-dir"),
   setHold: (v) => ipcRenderer.send("hold", !!v),
   setBusy: (v) => ipcRenderer.send("busy", !!v),
   setObserving: (v) => ipcRenderer.send("observe", !!v),
@@ -176,6 +187,10 @@ contextBridge.exposeInMainWorld("orb", {
   /* 划词工具条 */
   toolbarHide: () => ipcRenderer.send("toolbar-hide"),
   toolbarAction: (action, text) => ipcRenderer.send("toolbar-action", action, text),
+  /* 划词「翻译」：轻量旁路，返回 { ok, text, dir } 或 { ok:false, error } */
+  toolbarTranslate: (text) => ipcRenderer.invoke("toolbar-translate", String(text || "")),
+  /* 工具条显示译文卡片时要改窗口尺寸（主进程侧钳死上下限） */
+  toolbarResize: (w, h) => ipcRenderer.send("toolbar-resize", w, h),
 
   /* 实时字幕悬浮窗 */
   setSubtitle: (show) => ipcRenderer.invoke(show ? "subtitle-show" : "subtitle-hide"),

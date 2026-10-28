@@ -366,9 +366,13 @@ static HRESULT writeFrame(IMFSinkWriter* writer, DWORD stream, Dup* d,
     BYTE* dst = NULL;
     hr = buf->lpVtbl->Lock(buf, &dst, NULL, NULL);
     if (SUCCEEDED(hr)) {
-      /* 逐行拷贝：GPU 的 RowPitch 通常大于 stride（对齐填充），不能整块 memcpy */
+      /* 逐行拷贝：GPU 的 RowPitch 通常大于 stride（对齐填充），不能整块 memcpy。
+         DXGI Desktop Duplication 的暂存纹理是 top-down（第 0 行在顶部），
+         而 Media Foundation 的 RGB32 输入约定是 bottom-up（内存首行=图像底行），
+         直接 top→top 拷贝会录出上下颠倒的画面。这里把源第 y 行写到目的第
+         (encH-1-y) 行，做垂直翻转，画面正立。 */
       for (UINT y = 0; y < encH; y++) {
-        memcpy(dst + (size_t)y * stride,
+        memcpy(dst + (size_t)(encH - 1 - y) * stride,
                (const BYTE*)map.pData + (size_t)y * map.RowPitch,
                stride);
       }

@@ -1,7 +1,13 @@
 ---
 name: orb-bridge
+display_name: ORB Desktop Control
+display_name_zh: ORB 桌面操作助手
+display_name_en: ORB Desktop Control
+name_en: ORB Desktop Control
 description: 让 AI 真的操作你的 Windows 电脑。当用户要求"帮我点一下 / 打开某个软件 / 在桌面找文件 / 做重复的鼠标操作 / 把任务派给后台 Agent 跑"，且本机装有 ORB 控制台时使用本技能：通过本机桥接服务（127.0.0.1:19387）执行点击、输入、拖动、滚动，或把重活交给后台 Agent 一次性执行并回收结果。
-version: 1.0.0
+description_zh: 让 AI 真的操作你的 Windows 电脑。当用户要求"帮我点一下 / 打开某个软件 / 在桌面找文件 / 做重复的鼠标操作 / 把任务派给后台 Agent 跑"，且本机装有 ORB 控制台时使用本技能：通过本机桥接服务（127.0.0.1:19387）执行点击、输入、拖动、滚动，或把重活交给后台 Agent 一次性执行并回收结果。
+description_en: "Let the AI actually operate the user's Windows PC. Use it when the user asks to click something, open an app, find a file on the desktop, perform repetitive mouse actions, or hand a task to a background Agent, and ORB Console is installed locally. It drives the local bridge service (127.0.0.1:19387) to click, type, drag and scroll, or offload heavy work to a background Agent and collect the result."
+version: 1.3.0
 category: 效率工具
 ---
 
@@ -144,4 +150,5 @@ Invoke-RestMethod -Uri "http://127.0.0.1:19387/api/call" -Method Post `
 
 - 端点与参数的权威说明见 `references/api.md`；
 - ORB 控制台本身是 MIT 开源项目，本技能只做调用，不含其代码；
+- 适配 ORB 控制台 v1.3.0 及以上（原生 MP4 录屏、加号附件、重做后的截屏）；桥接服务（127.0.0.1:19387）协议自 v1.2 起稳定，本技能同样兼容。
 - 若用户问"这是什么"，一句话回答：一个让 AI 真正动手操作电脑的桌面工具，带急停和权限分级。

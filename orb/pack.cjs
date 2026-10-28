@@ -23,7 +23,7 @@ const { execSync, spawnSync } = require('child_process');
 const ROOT = process.env.ORB_ROOT ? path.resolve(process.env.ORB_ROOT) : path.resolve(__dirname, '..');
 const APP = path.join(ROOT, 'orb', 'desktop');
 const ELECTRON = path.join(APP, 'node_modules', 'electron', 'dist');
-const VERSION = '1.4.1';
+const VERSION = '1.4.2';
 /* 输出目录带时间戳：不删旧构建。早先这里是 fs.rmSync(OUT) 一把清空，
    但批量删除会触发安全保护（3789 个文件远超阈值）而被拦截。
    版本化目录反而更好——每次构建都是可回溯的产物，旧的由用户自行清理。 */
@@ -45,6 +45,10 @@ const APP_FILES = [
   /* 桌面模糊背景（2026-10-22 新增）：glassbg.js 被 main.js require，
      漏打包 = 发布版毛玻璃退化成"锐利透出桌面"（开发态完全正常、测不出来）。 */
   'glassbg.js',
+  /* 框选取词（2026-10-28 新增）：pick.html + pick-preload.js 是取词覆盖层
+     （main.js 用 __dirname 定位）。漏打包 = 发布版「取词」一点就报通道不可用，
+     而开发态完全正常、测不出来。 */
+  'pick.html', 'pick-preload.js',
   /* 原生录屏（2026-10-23 新增）：cap-native.js 被 main.js require，
      它是 orb-cap.exe 的唯一入口。漏打包 = 发布版一 require 就抛，
      main.js 整个起不来（比"少个功能"严重得多）。 */
