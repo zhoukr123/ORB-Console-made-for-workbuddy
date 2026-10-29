@@ -9297,8 +9297,10 @@ function armIdleSpeech() {
     armIdleSpeech();
   }, IDLE_SPEECH_MS);
 }
-/* 检测到"有人在用"：重置空闲计时（与悬浮球的 armIdle 平行，互不干扰）。 */
-function touchActivity() { armIdleSpeech(); }
+/* 检测到"有人在用"：重置空闲计时（与悬浮球的 armIdle 平行，互不干扰）。
+   lastUserOpAt 同时记录「用户上次操作控制台」的时刻，供「离开≥4分钟再展开面板弹问候」判定。 */
+let lastUserOpAt = Date.now();
+function touchActivity() { lastUserOpAt = Date.now(); armIdleSpeech(); }
 
 /* 启动台词：只在应用启动念一次；纯工具不念，深夜走 night，周一早上元气有专属。
    注意这里**不再**要求 tts.enabled —— 声音关着也要出气泡，
@@ -13605,10 +13607,17 @@ async function pollStatus() {
 }
 
 // 面板重新可见时立刻刷一次，不用干等下一个周期
+let panelEverShown = false;   // 首次显示由 speakStart 负责问候，避免重复
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     if (pollTimer) clearTimeout(pollTimer);
     pollStatus();
+    // 离开 ≥4 分钟后再展开面板：弹一句与「每两分钟空闲」相同的问候（复用 onIdleOrAway）
+    if (!panelEverShown) { panelEverShown = true; lastUserOpAt = Date.now(); }
+    else if (charCfg.persona !== 'off' && Date.now() - lastUserOpAt >= 4 * 60000) {
+      onIdleOrAway();
+      lastUserOpAt = Date.now();   // 防短时间内反复折叠/展开又弹
+    }
   }
 });
 
