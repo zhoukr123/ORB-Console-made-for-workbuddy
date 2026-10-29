@@ -9003,10 +9003,11 @@ let statRounds = 0;      // 会话轮数（用于长会话小结）
 let lastBusy = false;    // syncBusy 的边沿检测
 let workHintAt = 0;      // 久坐提醒的节流时间戳
 let startSpoken = false; // 启动台词只念一次
-let idleSpeechTimer = null;
 /* L3（真难过）冷却截止时间：这之前不再主动开任何玩笑。
    没有这道闸，下一句又会蹦起来 —— 比一开始不安慰更伤人。 */
 let personaQuietUntil = 0;
+/* 原「每 2 分钟定时空闲问候」的触发周期（毫秒）。该定时问候已于 2026-10-29 停用，
+   保留常量仅作复原参考；恢复时把它接回 armIdleSpeech 的 setTimeout 即可。 */
 const IDLE_SPEECH_MS = 120000;
 
 function isNight() { const h = new Date().getHours(); return h >= 23 || h < 5; }
@@ -9289,14 +9290,13 @@ function maybeGrind() {
   speakSituation('grind');
 }
 
-function armIdleSpeech() {
-  if (idleSpeechTimer) clearTimeout(idleSpeechTimer);
-  idleSpeechTimer = setTimeout(() => {
-    idleSpeechTimer = null;
-    onIdleOrAway();
-    armIdleSpeech();
-  }, IDLE_SPEECH_MS);
-}
+/* 每 2 分钟定时「空闲问候」已按用户要求关闭（2026-10-29）：不再周期调度 onIdleOrAway。
+   仍保留的问候入口：
+     · 启动首屏 speakStart
+     · 任务完成/失败/被夸/里程碑/久坐等「有结果」节点（task 事件、maybeGrind）
+     · 离开控制台 ≥4 分钟再展开面板（visibilitychange 直接调 onIdleOrAway）
+   如需恢复：把下面一行替换为原 setTimeout 调度（见 IDLE_SPEECH_MS 注释）。 */
+function armIdleSpeech() { /* disabled: periodic 2-min idle greeting removed */ }
 /* 检测到"有人在用"：重置空闲计时（与悬浮球的 armIdle 平行，互不干扰）。
    lastUserOpAt 同时记录「用户上次操作控制台」的时刻，供「离开≥4分钟再展开面板弹问候」判定。 */
 let lastUserOpAt = Date.now();
@@ -13881,8 +13881,9 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
      等磁盘历史读完后 startFreshConversation() 会换掉它，提示就白发了。
      提示统一由 startFreshConversation() 发（silent 模式，不落盘）。 */
 
-  /* 陪伴层启动：载入偏好（startSpoken 前必须有 persona）、开空闲念白计时、念启动台词。
-     声音默认关，所以通常不发声——用户打开「声音」后，下一次启动才会问候。 */
+  /* 陪伴层启动：载入偏好（startSpoken 前必须有 persona）、念启动台词。
+     声音默认关，所以通常不发声——用户打开「声音」后，下一次启动才会问候。
+     注：每 2 分钟定时空闲问候已于 2026-10-29 停用，armIdleSpeech 现为 no-op。 */
   charLoad();
   armIdleSpeech();
   speakStart();
