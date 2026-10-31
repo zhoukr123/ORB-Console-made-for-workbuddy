@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ORB 控制台 · 替你动手，也陪你加班</title>
+<meta name="description" content="一个真的会操作你电脑的桌面 AI 员工。说一句话，它自己截图看屏幕、判断该点哪里，然后替你点击、输入、滚动。五个人格、360 句离线语音，陪你把这件活干完。Windows 10/11，免费开源。">
+<meta name="theme-color" content="#0A0C12">
+<meta property="og:type" content="website">
+<meta property="og:title" content="ORB 控制台 · 替你动手，也陪你加班">
+<meta property="og:description" content="桌面 AI 员工：前台它动手，后台它思考，视觉轨道让它自己看屏幕。v1.4.5 新增语音双音源、记忆自动瘦身、录屏只录一块。">
+<meta property="og:image" content="assets/hero-app.png">
+<link rel="icon" href="assets/favicon.png" type="image/png">
+<style>
+/* ---------- 设计令牌：深空底 + 紫青强调，与产品默认主题同源 ---------- */
+:root{
+  --bg:#0A0C12; --bg2:#0C0F17; --panel:#12161F; --panel2:#171C27;
+  --line:#222937; --line2:#2F3749;
+  --fg:#E9ECF3; --fg2:#A9B2C2; --fg3:#7A8497;
+  --acc:#7C6CF0; --acc-t:#BAB2FF; --acc2:#37D3E6; --warm:#F2B34B;
+  --r:16px; --rs:10px;
+  --sh:0 20px 60px rgba(0,0,0,.5);
+  --max:1120px;
+  --dur:.45s;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth;overflow-x:clip}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Source Han Sans SC",sans-serif;
+  font-size:16px;line-height:1.75;letter-spacing:.01em;
+  -webkit-font-smoothing:antialiased;
+  background-image:
+    radial-gradient(900px 520px at 12% -6%, rgba(124,108,240,.20), transparent 62%),
+    radial-gradient(820px 480px at 88% 4%, rgba(55,211,230,.10), transparent 60%),
+    radial-gradient(1000px 700px at 50% 108%, rgba(124,108,240,.10), transparent 60%);
+  background-repeat:no-repeat;
+}
+img{max-width:100%;height:auto;display:block}
+a{color:var(--acc-t);text-decoration:none}
+a:hover{text-decoration:underline;text-underline-offset:3px}
+h1,h2,h3{letter-spacing:-.015em;line-height:1.2;margin:0;font-weight:700}
+p{margin:0}
+.wrap{width:100%;max-width:var(--max);margin:0 auto;padding:0 24px}
+.sec{padding:clamp(58px,8vw,104px) 0;position:relative}
+.sec+.sec{border-top:1px solid rgba(34,41,55,.65)}
+.eyebrow{
+  display:inline-flex;align-items:center;gap:8px;
+  font-size:12.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg3);
+  font-weight:600;margin-bottom:18px;
+}
+.eyebrow::before{content:"";width:18px;height:1px;background:var(--acc);opacity:.9}
+.h2{font-size:clamp(25px,3.3vw,36px);margin-bottom:14px}
+.lead{font-size:clamp(15.5px,1.5vw,18px);color:var(--fg2);max-width:64ch}
+.lead strong{color:var(--fg);font-weight:600}
+.sec-head{margin-bottom:clamp(30px,4vw,48px)}
+
+/* ---------- 顶栏 ---------- */
+.hd{position:sticky;top:0;z-index:50;backdrop-filter:blur(14px);background:rgba(10,12,18,.82);border-bottom:1px solid rgba(34,41,55,.8)}
+.hd-in{display:flex;align-items:center;gap:18px;height:62px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15.5px;color:var(--fg)}
+.brand img{width:26px;height:26px;border-radius:7px}
+.brand:hover{text-decoration:none}
+.nav{display:flex;gap:22px;margin-left:auto;font-size:14px}
+.nav a{color:var(--fg2);font-weight:500}
+.nav a:hover{color:var(--fg);text-decoration:none}
+.hd .btn{margin-left:6px}
+
+/* ---------- 按钮 ---------- */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:11px 20px;border-radius:11px;border:1px solid transparent;
+  font-size:14.5px;font-weight:600;line-height:1;cursor:pointer;
+  transition:transform .18s var(--dur),background .18s,box-shadow .18s,border-color .18s;
+}
+.btn:hover{text-decoration:none;transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.btn-pri{background:linear-gradient(135deg,#8B7BF6,#5B6CF6);color:#fff;box-shadow:0 10px 26px rgba(110,102,240,.34)}
+.btn-pri:hover{box-shadow:0 14px 32px rgba(110,102,240,.44)}
+.btn-ghost{background:rgba(255,255,255,.045);color:var(--fg);border-color:var(--line2)}
+.btn-ghost:hover{background:rgba(255,255,255,.08);border-color:#414B61}
+.btn-sm{padding:8px 14px;font-size:13.5px;border-radius:9px}
+
+/* ---------- 首屏 ---------- */
+.hero{padding:clamp(52px,7vw,86px) 0 clamp(30px,4vw,44px)}
+.hero-in{display:grid;grid-template-columns:minmax(0,1.06fr) minmax(0,.94fr);gap:clamp(24px,4vw,58px);align-items:center}
+.hero-txt{min-width:0}
+.badge{
+  display:inline-flex;align-items:center;gap:9px;flex-wrap:wrap;
+  padding:6px 13px 6px 9px;border:1px solid var(--line2);border-radius:999px;
+  font-size:12.5px;color:var(--fg2);background:rgba(255,255,255,.03);
+  letter-spacing:.04em;
+}
+.badge b{color:var(--fg)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--acc2);box-shadow:0 0 0 3px rgba(55,211,230,.16);flex:none}
+.hero h1{font-size:clamp(33px,5.2vw,58px);margin:22px 0 0;max-width:19ch}
+.hero h1 .g{
+  background:linear-gradient(105deg,#C9C2FF 6%,#8B7BF6 42%,#37D3E6 96%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.hero h1 .u{position:relative;white-space:nowrap}
+.hero h1 .u::after{
+  content:"";position:absolute;left:0;right:0;bottom:.06em;height:.30em;
+  background:linear-gradient(90deg,rgba(124,108,240,.55),rgba(55,211,230,.28));
+  border-radius:3px;z-index:-1;
+}
+.hero .lead{margin-top:20px;max-width:56ch}
+.hero-act{display:flex;gap:12px;flex-wrap:wrap;margin-top:30px}
+.hero-note{margin-top:16px;font-size:13px;color:var(--fg3);display:flex;gap:16px;flex-wrap:wrap}
+.hero-note span{display:inline-flex;align-items:center;gap:6px}
+.hero-note i{width:5px;height:5px;border-radius:50%;background:var(--fg3);display:inline-block}
+.hero-stage{margin-top:clamp(34px,5vw,54px);position:relative}.hero-stage::before{
+  content:"";position:absolute;inset:-7% -2% -11%;z-index:0;pointer-events:none;
+  background:radial-gradient(60% 60% at 50% 30%,rgba(124,108,240,.24),transparent 70%);
+  filter:blur(6px);
+}
+.shot{position:relative;z-index:1;border:1px solid var(--line2);border-radius:var(--r);overflow:hidden;background:var(--panel);box-shadow:var(--sh)}
+.shot img{width:100%}
+.shot-cap{position:relative;z-index:1;margin-top:14px;font-size:12.5px;color:var(--fg3);text-align:center}
+.hero-shot{max-width:430px;margin:0 auto}
+.hero-visual{position:relative;min-width:0}
+.hero-visual .shot{max-width:372px;margin:0 auto}
+.hero-visual .shot-cap{max-width:372px;margin:14px auto 0}
+
+/* ---------- 问题引入：三问三答 ---------- */
+.qgrid{display:grid;gap:18px;grid-template-columns:repeat(3,1fr)}
+.qcard{
+  position:relative;padding:26px 24px 24px;border:1px solid var(--line);border-radius:var(--r);
+  background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.012));
+  transition:transform .3s var(--dur),border-color .3s,background .3s;
+}
+.qcard:hover{transform:translateY(-3px);border-color:var(--line2);background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.018))}
+.qnum{
+  font-size:12px;font-weight:700;letter-spacing:.14em;color:var(--acc-t);
+  display:flex;align-items:center;gap:8px;margin-bottom:14px;
+}
+.qnum em{font-style:normal;color:var(--fg3);letter-spacing:0;font-weight:500}
+.qcard h3{font-size:18.5px;line-height:1.5;margin-bottom:12px;font-weight:650}
+.qcard p{font-size:14.5px;color:var(--fg2)}
+.qcard .tag{
+  display:inline-block;margin-top:16px;padding:4px 10px;border-radius:7px;
+  background:rgba(124,108,240,.14);border:1px solid rgba(124,108,240,.30);
+  color:var(--acc-t);font-size:12.5px;font-weight:600;
+}
+.qcard.warm .qnum{color:var(--warm)}
+.qcard.warm .tag{background:rgba(242,179,75,.12);border-color:rgba(242,179,75,.28);color:#F6C877}
+
+/* ---------- 通用卡片 ---------- */
+.grid3{display:grid;gap:18px;grid-template-columns:repeat(3,1fr)}
+.grid2{display:grid;gap:18px;grid-template-columns:repeat(2,1fr)}
+.card{
+  padding:24px;border:1px solid var(--line);border-radius:var(--r);
+  background:var(--panel);transition:border-color .3s,transform .3s var(--dur);
+}
+.card:hover{border-color:var(--line2)}
+.card h3{font-size:17px;margin-bottom:8px;display:flex;align-items:center;gap:10px}
+.card p{font-size:14.5px;color:var(--fg2)}
+.ico{
+  width:34px;height:34px;flex:none;border-radius:9px;display:grid;place-items:center;
+  background:rgba(124,108,240,.14);border:1px solid rgba(124,108,240,.26);color:var(--acc-t);
+}
+.ico svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.ico.cy{background:rgba(55,211,230,.12);border-color:rgba(55,211,230,.26);color:#7FE6F2}
+.ico.wa{background:rgba(242,179,75,.12);border-color:rgba(242,179,75,.26);color:#F6C877}
+
+/* ---------- 分栏（文字 + 截图） ---------- */
+.split{display:grid;gap:clamp(26px,4vw,56px);grid-template-columns:1fr 1fr;align-items:start}
+.split.rev .split-media{order:-1}
+.split-media .shot{max-width:400px}
+/* 设置页原图是 1:2.1 的竖长图，并排会把文字那栏衬出一大片空白。
+   用 4:5 画框取景：object-position 定位到这一段真正要讲的功能块。 */
+.crop{aspect-ratio:4/5;overflow:hidden}
+.crop img{width:100%;height:100%;object-fit:cover}
+.crop.voice img{object-position:center 26%}
+.crop.memory img{object-position:center 64%}
+.crop.rec img{object-position:center 43%}
+.split-txt h3{font-size:clamp(20px,2.2vw,25px);margin-bottom:12px}
+.split-txt p{color:var(--fg2);font-size:15px}
+.list{margin:18px 0 0;padding:0;list-style:none;display:grid;gap:11px}
+.list li{display:flex;gap:11px;font-size:14.5px;color:var(--fg2);line-height:1.65}
+.list li b{color:var(--fg);font-weight:600}
+.list .tick{
+  width:17px;height:17px;flex:none;margin-top:4px;border-radius:50%;
+  background:rgba(55,211,230,.14);color:#7FE6F2;display:grid;place-items:center;
+  font-size:10px;font-weight:700;
+}
+
+/* ---------- 三步流水 ---------- */
+.flow{display:grid;gap:12px;grid-template-columns:repeat(3,1fr);counter-reset:f}
+.flow-i{position:relative;padding:20px 20px 20px 52px;border:1px solid var(--line);border-radius:13px;background:rgba(255,255,255,.02)}
+.flow-i::before{
+  counter-increment:f;content:counter(f,decimal-leading-zero);
+  position:absolute;left:18px;top:20px;font-size:12px;font-weight:700;color:var(--acc-t);letter-spacing:.06em;
+}
+.flow-i b{display:block;font-size:15px;margin-bottom:4px}
+.flow-i span{font-size:13.5px;color:var(--fg2)}
+
+/* ---------- 双音源矩阵 ---------- */
+.matrix{width:100%;border-collapse:separate;border-spacing:0;font-size:14px;margin-top:4px}
+.matrix th,.matrix td{padding:12px 14px;text-align:left;border-bottom:1px solid var(--line)}
+.matrix th{font-size:12.5px;letter-spacing:.06em;color:var(--fg3);font-weight:600;text-transform:uppercase}
+.matrix td{color:var(--fg2)}
+.matrix td.on{color:var(--fg);font-weight:600}
+.matrix td.mute{color:#D98C8C}
+.matrix tr:last-child td{border-bottom:0}
+.matrix-wrap{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:var(--panel)}
+.switchbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:18px}
+.sw{
+  display:inline-flex;align-items:center;gap:9px;padding:9px 15px;border-radius:10px;
+  border:1px solid var(--line2);background:rgba(255,255,255,.035);color:var(--fg2);
+  font-size:13.5px;font-weight:600;cursor:pointer;transition:all .2s;
+}
+.sw[aria-pressed="true"]{background:rgba(124,108,240,.18);border-color:rgba(124,108,240,.5);color:#fff}
+.sw i{width:26px;height:15px;border-radius:999px;background:rgba(255,255,255,.14);position:relative;transition:background .2s}
+.sw i::after{content:"";position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;background:#fff;transition:transform .2s}
+.sw[aria-pressed="true"] i{background:var(--acc)}
+.sw[aria-pressed="true"] i::after{transform:translateX(11px)}
+.sw-note{font-size:13.5px;color:var(--fg2);min-height:44px;padding:12px 15px;border-radius:11px;border:1px dashed var(--line2);background:rgba(255,255,255,.02);line-height:1.7}
+.sw-note b{color:var(--fg)}
+
+/* ---------- 人格 ---------- */
+.personas{display:grid;gap:14px;grid-template-columns:repeat(5,1fr)}
+.pcard{padding:20px 18px;border:1px solid var(--line);border-radius:14px;background:var(--panel);transition:transform .3s var(--dur),border-color .3s}
+.pcard:hover{transform:translateY(-3px);border-color:var(--line2)}
+.pcard .pico{width:30px;height:30px;border-radius:9px;margin-bottom:12px;display:grid;place-items:center;background:rgba(242,179,75,.12);color:#F6C877;font-size:13px;font-weight:700}
+.pcard b{display:block;font-size:15px;margin-bottom:6px}
+.pcard small{display:block;font-size:12.5px;color:var(--fg3);line-height:1.6;margin-bottom:12px}
+.pcard .say{font-size:13px;color:var(--fg2);line-height:1.7;padding-top:12px;border-top:1px solid var(--line)}
+.pcard .say::before{content:"「";color:var(--fg3)}
+.pcard .say::after{content:"」";color:var(--fg3)}
+
+/* ---------- 主题 ---------- */
+.themes{display:grid;gap:18px;grid-template-columns:repeat(4,1fr)}
+.tcard{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--panel);transition:transform .3s var(--dur),border-color .3s}
+.tcard:hover{transform:translateY(-3px);border-color:var(--line2)}
+.tcard .shot{border:0;border-radius:0;box-shadow:none}
+.tcard .meta{padding:12px 14px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.tcard .meta b{font-size:13.5px}
+.tcard .meta span{font-size:11.5px;color:var(--fg3)}
+
+/* ---------- 下载 ---------- */
+.dl{display:grid;gap:16px;grid-template-columns:1.35fr 1fr;align-items:start}
+.dl-main{padding:28px;border:1px solid rgba(124,108,240,.34);border-radius:var(--r);background:linear-gradient(160deg,rgba(124,108,240,.14),rgba(255,255,255,.02))}
+.dl-main h3{font-size:19px;margin-bottom:6px}
+.dl-main .sz{font-size:13px;color:var(--fg3);margin-bottom:18px}
+.dl-side{padding:24px;border:1px solid var(--line);border-radius:var(--r);background:var(--panel);display:flex;flex-direction:column;gap:14px}
+.meta-row{display:flex;justify-content:space-between;gap:14px;font-size:13.5px;padding:9px 0;border-bottom:1px dashed var(--line)}
+.meta-row:last-child{border-bottom:0}
+.meta-row span{color:var(--fg3)}
+.meta-row b{color:var(--fg);font-weight:600;text-align:right}
+code,.mono{font-family:ui-monospace,SFMono-Regular,"Cascadia Mono",Consolas,"Liberation Mono",monospace;font-size:12.5px}
+.hash{font-size:11.5px;word-break:break-all;color:var(--fg3);line-height:1.6}
+.limits{margin-top:18px;padding:20px 22px;border:1px solid var(--line);border-radius:13px;background:rgba(255,255,255,.018)}
+.limits b{font-size:13.5px;color:var(--fg)}
+.limits ul{margin:10px 0 0;padding-left:18px;font-size:13px;color:var(--fg2);line-height:1.85}
+
+/* ---------- 页脚 ---------- */
+.foot{border-top:1px solid var(--line);padding:44px 0 56px;font-size:13px;color:var(--fg3)}
+.foot-in{display:flex;gap:28px;flex-wrap:wrap;justify-content:space-between}
+.foot-links{display:flex;gap:20px;flex-wrap:wrap}
+.foot p{margin-top:14px;max-width:76ch;line-height:1.8}
+.foot .fine{font-size:12px;color:#5F697B}
+
+/* ---------- 滚动揭示（带 no-js 与超时兜底） ---------- */
+.rv{opacity:0;transform:translateY(14px);transition:opacity .6s var(--dur),transform .6s var(--dur)}
+.rv.in{opacity:1;transform:none}
+html.no-js .rv{opacity:1;transform:none}
+
+@media (max-width:980px){
+  .hero-in{grid-template-columns:1fr}
+  .hero-visual{order:2;margin-top:6px}
+  .hero-visual .shot{max-width:340px}
+  .qgrid,.grid3,.personas,.themes{grid-template-columns:repeat(2,1fr)}
+  .personas .pcard:last-child{grid-column:span 2}
+  .split,.split.rev{grid-template-columns:1fr}
+  .split.rev .split-media{order:0}
+  .split-media .shot{margin:0 auto}
+  .dl{grid-template-columns:1fr}
+  .flow{grid-template-columns:1fr}
+  .nav{display:none}
+}
+@media (max-width:620px){
+  .qgrid,.grid3,.grid2,.personas,.themes{grid-template-columns:1fr}
+  .personas .pcard:last-child{grid-column:auto}
+  .hero h1{max-width:none}
+  .hero-act .btn{flex:1 1 100%}
+  .sec{padding:52px 0}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+  .rv{opacity:1;transform:none}
+  html{scroll-behavior:auto}
+}
+</style>
+</head>
+<body>
+<header class="hd">
+  <div class="wrap hd-in">
+    <a class="brand" href="#top"><img src="assets/icon.png" alt="ORB 控制台图标" width="26" height="26">ORB 控制台</a>
+    <nav class="nav" aria-label="页面导航">
+      <a href="#ask">三个问题</a>
+      <a href="#work">它怎么干活</a>
+      <a href="#company">它怎么陪你</a>
+      <a href="#safe">安全</a>
+      <a href="#themes">主题</a>
+      <a href="#dl">下载</a>
+    </nav>
+    <a class="btn btn-ghost btn-sm" href="https://github.com/zhoukr123/ORB-Console-made-for-workbuddy" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- ============ 首屏 ============ -->
+<section class="hero">
+  <div class="wrap">
+   <div class="hero-in">
+    <div class="hero-txt">
+      <p class="badge"><i class="dot"></i><b>v1.4.5 已发布</b><span>·</span><span>Windows 10 / 11 x64</span><span>·</span><span>MIT 开源</span></p>
+      <h1>替你动手，<br><span class="g">也陪你加班。</span></h1>
+      <p class="lead">
+        一个真的会操作你电脑的桌面 AI 员工。说一句话，它自己截图看屏幕、判断该点哪里，
+        然后替你点击、输入、滚动——做完把过程回给你。
+        悬浮球常驻桌面，<strong>五个性格、三百六十句离线语音</strong>，干完活还会在你卡住的时候说一句「先歇会儿」。
+      </p>
+      <div class="hero-act">
+        <a class="btn btn-pri" href="#dl">下载 v1.4.5 · 211 MB</a>
+        <a class="btn btn-ghost" href="#work">看它怎么干活</a>
+      </div>
+      <div class="hero-note">
+        <span><i></i>自解压单文件，双击即用</span>
+        <span><i></i>不装 Node / Python</span>
+        <span><i></i>零遥测</span>
+      </div>
+    </div>
+
+    <div class="hero-visual">
+      <figure class="shot hero-shot" style="margin:0 auto">
+        <img src="assets/hero-app.png" width="1120" height="2360" alt="ORB 控制台深空主题实机截图：一段关于 v1.4.5 改动的对话，中间是人物的台词气泡">
+      </figure>
+      <p class="shot-cap">↑ 深空主题实机截图。左边细线小气泡是人格的台词——它会在你做完一件事的时候开口，声音关着也照样显示。</p>
+    </div>
+   </div>
+  </div>
+</section>
+
+<!-- ============ 问题引入 ============ -->
+<section class="sec" id="ask">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <p class="eyebrow">先说三个问题</p>
+      <h2 class="h2">如果这三句你都点头，<br>那这个工具就是给你做的。</h2>
+      <p class="lead">我们不是先想功能再找场景，是先被这三件事烦到，才动手写的。</p>
+    </div>
+
+    <div class="qgrid">
+      <article class="qcard rv">
+        <p class="qnum">01 <em>手上的活</em></p>
+        <h3>让 AI 帮个忙，<br>比自己动手还累？</h3>
+        <p>先截图、再粘贴、再用文字描述「那个按钮在右下角」——它回你一段操作步骤，最后还得你自己去点。</p>
+        <span class="tag">→ 它自己看屏幕，也自己动手</span>
+      </article>
+      <article class="qcard rv">
+        <p class="qnum">02 <em>动脑的活</em></p>
+        <h3>几千行的活，<br>它只给我一段建议？</h3>
+        <p>网页里的对话框进不了你的终端、读不了你的磁盘，给的思路再漂亮也落不了地，最后还得你自己敲。</p>
+        <span class="tag">→ 派给本机 CLI，跑完再回填</span>
+      </article>
+      <article class="qcard warm rv">
+        <p class="qnum">03 <em>没人陪的活</em></p>
+        <h3>所有工具都像<br>一个不讲感情的输入框？</h3>
+        <p>永远是「好的，我明白了」。它不知道你已经连着坐了六个小时，也不会在你卡住的时候说一句「先歇会儿」。</p>
+        <span class="tag">→ 五个性格，会说话，也会闭嘴</span>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 工作性：三条轨道 ============ -->
+<section class="sec" id="work">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <p class="eyebrow">工作性 · 一</p>
+      <h2 class="h2">同一句话，它自己判断<br>该走哪条路。</h2>
+      <p class="lead">你不需要学「提示词工程」，也不用先选模式。说清楚要什么，它按活的类型自己分流；想指定也可以。</p>
+    </div>
+
+    <div class="grid3">
+      <article class="card rv">
+        <h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M4 3.5 12 11l-3.2.9L7.6 15 4 3.5Z"/><path d="M13.5 12.5 20 19"/></svg></span>前台轨道</h3>
+        <p>直接操作你的电脑：点击、输入、快捷键、滚动、长按、拖动。<strong>它自己在你的屏幕上动手</strong>，不是教你点。</p>
+      </article>
+      <article class="card rv">
+        <h3><span class="ico cy"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7.5 9.5 3 2.5-3 2.5M13 15h3.5"/></svg></span>后台轨道</h3>
+        <p>把重活派给本机的 CodeBuddy CLI（headless 一次性执行），读代码库、跑批处理。<strong>答案边跑边长出来</strong>，不用干等。</p>
+      </article>
+      <article class="card rv">
+        <h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M2.6 12s3.4-5.4 9.4-5.4S21.4 12 21.4 12s-3.4 5.4-9.4 5.4S2.6 12 2.6 12Z"/><circle cx="12" cy="12" r="2.4"/></svg></span>视觉轨道</h3>
+        <p>「截图 → 视觉模型 → 动作 → 再截图」的闭环，模型自己决定下一步。<strong>坐标用千分比而不是像素</strong>，高分辨率下也不数错。</p>
+      </article>
+    </div>
+
+    <div class="flow rv" style="margin-top:18px">
+      <div class="flow-i"><b>截图看屏幕</b><span>它先看清当前窗口长什么样，而不是猜。</span></div>
+      <div class="flow-i"><b>判断该点哪里</b><span>视觉模型给出动作与坐标，主力失败自动切备选。</span></div>
+      <div class="flow-i"><b>替你点击 / 输入</b><span>原生输入原语真的按下鼠标键盘，动作后亮起观察边框。</span></div>
+    </div>
+  </div>
+</section>
+<!-- ============ 工作性：录屏 / 工作流 ============ -->
+<section class="sec" id="work2">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <p class="eyebrow">工作性 · 二</p>
+      <h2 class="h2">录一遍，它替你重复；<br>录一半界面改版了，它也扛得住。</h2>
+      <p class="lead">录制回放最容易翻车的地方不是录，是<strong>放</strong>：过两天按钮挪了位置、多了个弹窗，回放就一路点空。所以每条工作流都能配「遇到意外怎么办」。</p>
+    </div>
+
+    <div class="grid2">
+      <article class="card rv">
+        <h3><span class="ico cy"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M10 8.5v7l6-3.5-6-3.5Z"/></svg></span>照录制坐标继续</h3>
+        <p>不调模型，最快。适合点错了也没事的流程。</p>
+      </article>
+      <article class="card rv">
+        <h3><span class="ico wa"><svg viewBox="0 0 24 24"><path d="M12 3.5 21 20H3l9-16.5Z"/><path d="M12 9.5v4.5M12 17h.01"/></svg></span>停下来并报错</h3>
+        <p>宁可不做也不乱点。适合会改数据、会发消息的流程。</p>
+      </article>
+      <article class="card rv">
+        <h3><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.5 9.5c0-1.4 1.1-2.4 2.5-2.4s2.5 1 2.5 2.4c0 1.9-2.5 2-2.5 4"/><path d="M12 17h.01"/></svg></span>先问一次视觉模型</h3>
+        <p>卡住那一步问一次该怎么走，问完继续。</p>
+      </article>
+      <article class="card rv">
+        <h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8.5"/><path d="M20 4v4.5h-4.5"/><path d="M20 12a8 8 0 0 1-13.7 5.6L4 15.5"/><path d="M4 20v-4.5h4.5"/></svg></span>交给智能体顶几步</h3>
+        <p>让视觉模型推回正轨，再交还回放。判定在后端，不靠感觉。</p>
+      </article>
+    </div>
+    <p class="lead rv" style="margin-top:22px;font-size:14.5px;color:var(--fg3)">
+      后两档只在「配了锚定文字、且那句话确实找不到」的步骤上触发，其余步骤永远纯回放——所以开了它也不会每条都变慢。
+      配套还有：循环轮次标记、重复片段折叠、定时 / 文件变化 / 热键三类触发器。
+    </p>
+  </div>
+</section>
+
+<!-- ============ 工作性：录屏区域 + 摄像头小框 ============ -->
+<section class="sec">
+  <div class="wrap">
+    <div class="split">
+      <div class="split-txt rv">
+        <p class="eyebrow">工作性 · 三</p>
+        <h3>录屏只录一块，<br>摄像头小框跟着那块走。</h3>
+        <p>整屏录下来一大半是无关桌面。现在可以只录一块——而且存的是<strong>相对屏幕的比例</strong>，换显示器、改缩放之后，「左半屏」还是左半屏。</p>
+        <ul class="list">
+          <li><span class="tick">✓</span><span><b>七种范围</b>：全屏 / 左半屏 / 右半屏 / 上半屏 / 下半屏 / 中间 / 自定义框选</span></li>
+          <li><span class="tick">✓</span><span><b>摄像头小框</b>：圆形 / 圆角 / 方框，16:9、4:3、1:1 或自定义比例；位置与大小都以「录制区域」为基准，录半屏也不会跑到画面外</span></li>
+          <li><span class="tick">✓</span><span><b>比例到像素只在主进程换算</b>，渲染层只传 0..1——所以不会出现「以为录左边、成片是中间」</span></li>
+          <li><span class="tick">✓</span><span><b>原生直出 MP4</b>，桌面复制直出不依赖外部编码器；悬浮控制条可暂停 / 继续 / 取消 / 完成</span></li>
+        </ul>
+      </div>
+      <div class="split-media rv">
+        <div class="shot crop rec"><img src="assets/set-rec.png" width="560" height="1180" alt="设置 › 截屏与录屏：录制区域的七个预设与当前范围提示"></div>
+        <p class="shot-cap">「隐藏控制台」和「录制区域」都在这一页，不用翻两次。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 工作性：记忆 ============ -->
+<section class="sec">
+  <div class="wrap">
+    <div class="split rev">
+      <div class="split-txt rv">
+        <p class="eyebrow">工作性 · 四</p>
+        <h3>它会记事，<br>也会自己把事记瘦。</h3>
+        <p>长期记忆分七层：人格、偏好、规则常驻在场，项目 / 事实 / 教训 / 话题按当前任务检索。
+          常驻层还有 <strong>1200 字预算上限</strong>——装不下的丢尾，并明说「另有 N 条未注入」，不搞无声截断。</p>
+        <ul class="list">
+          <li><span class="tick">✓</span><span><b>自动瘦身</b>：单层超 6000 字或全库超 14000 字，把最旧最不重要的几条合并</span></li>
+          <li><span class="tick">✓</span><span><b>归档不删</b>：原文标「已归档」，退出召回但仍可回溯，90 天后才物理清理</span></li>
+          <li><span class="tick">✓</span><span><b>压不动就放弃</b>：缩不到原字数 55% 就整单作废，原文一条不动</span></li>
+          <li><span class="tick">✓</span><span><b>规则永不参与</b>：规则、偏好、人格三层不压——合并有丢约束的风险</span></li>
+        </ul>
+      </div>
+      <div class="split-media rv">
+        <div class="shot crop memory"><img src="assets/set-memory.png" width="560" height="1180" alt="设置 › 存储 › 记忆库：标题旁显示共 N 条、约 N 字、已归档 N，右侧是压缩键"></div>
+        <p class="shot-cap">记忆库直接写着「共 N 条 · 约 N 字 · 已归档 N」，不用猜。</p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- ============ 陪伴性 ============ -->
+<section class="sec" id="company">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <p class="eyebrow">陪伴性</p>
+      <h2 class="h2">它不替你决定任何事，<br>只是旁边有个家伙在嘟囔。</h2>
+      <p class="lead">个性是<strong>独立的一层</strong>：人格不会改 AI 回答的内容，也不插手你的活。它只在有结果的节点开口——做完了、失败了、你被夸了、你坐太久了。</p>
+    </div>
+
+    <div class="personas">
+      <article class="pcard rv">
+        <span class="pico">温</span>
+        <b>温柔守护者</b>
+        <small>慢一点，稳一点，会提醒你休息</small>
+        <p class="say">我在。累了就先停一下，不着急。</p>
+      </article>
+      <article class="pcard rv">
+        <span class="pico">元</span>
+        <b>元气开心果</b>
+        <small>够燃，也够松弛，会看气氛</small>
+        <p class="say">搞定啦！快夸我快夸我！٩(^ᴗ^)۶</p>
+      </article>
+      <article class="pcard rv">
+        <span class="pico">战</span>
+        <b>上进小战友</b>
+        <small>把任务当共同目标，会报进度</small>
+        <p class="say">第 3 步了，还差最后一下。</p>
+      </article>
+      <article class="pcard rv">
+        <span class="pico">导</span>
+        <b>智慧小向导</b>
+        <small>讲清楚再动手，少卖萌</small>
+        <p class="say">这个能拆成两步，先看第一步。</p>
+      </article>
+      <article class="pcard rv">
+        <span class="pico">傲</span>
+        <b>正能量傲娇</b>
+        <small>嘴上不认，事情照做</small>
+        <p class="say">……又不是特意为你做的。</p>
+      </article>
+    </div>
+
+    <div class="split" style="margin-top:clamp(38px,5vw,60px)">
+      <div class="split-txt rv">
+        <h3>声音有两条路，<br>你可以只留不联网那条。</h3>
+        <p>以前「关掉在线接口」只能连带把声音一起关掉。现在离线语音包和生成播报各有各的开关，四种组合自己挑——点下面试试（这是示意，不是真的在播）。</p>
+
+        <div class="switchbar" style="margin-top:18px">
+          <button class="sw" id="swOff" type="button" aria-pressed="true"><i></i>离线语音包</button>
+          <button class="sw" id="swGen" type="button" aria-pressed="true"><i></i>生成播报</button>
+        </div>
+        <p class="sw-note" id="swNote" aria-live="polite">两条都开：<b>离线包优先</b>，包里没有的句子回落生成播报。</p>
+
+        <ul class="list" style="margin-top:18px">
+          <li><span class="tick">✓</span><span><b>360 句离线语音</b>随包带着（约 9 MB），不联网、不耗额度、装完开口就有声</span></li>
+          <li><span class="tick">✓</span><span><b>生成播报</b>可填任何 OpenAI 兼容的语音端点，也能按人格分别指定音色与语气；不配就用系统语音兜底</span></li>
+          <li><span class="tick">✓</span><span><b>关掉生成播报</b>就一句都不联外网——代价是模型现编的句子没声音，但台词气泡照旧显示</span></li>
+        </ul>
+      </div>
+      <div class="split-media rv">
+        <div class="shot crop voice"><img src="assets/set-voice.png" width="560" height="1180" alt="设置 › 个性 › 声音：① 离线语音包与 ② 生成播报两个独立开关"></div>
+        <p class="shot-cap">真实界面：两个开关下面那行字，会随组合变化。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 安全 ============ -->
+<section class="sec" id="safe">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <p class="eyebrow">安全</p>
+      <h2 class="h2">把鼠标交给 AI，<br>你第一个问题一定是这个。</h2>
+      <p class="lead">所以「怎么拦住它」被当成第一功能来做，而不是事后补的限制条款。长期记忆也只在本地：召回与压缩都在你机器上完成，除拼进你自己的任务，不外传。</p>
+    </div>
+
+    <div class="grid3">
+      <article class="card rv">
+        <h3><span class="ico wa"><svg viewBox="0 0 24 24"><path d="M8 6.5v11M8 12h8M16 6.5v11"/></svg></span>急停</h3>
+        <p><span class="mono">Ctrl + Alt + Backspace</span> 一键中断，或点顶栏红色急停键。随时可打断，不留后台动作。</p>
+      </article>
+      <article class="card rv">
+        <h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3 20 6.5v5.6c0 4.4-3.2 7.8-8 9.4-4.8-1.6-8-5-8-9.4V6.5L12 3Z"/></svg></span>权限分级</h3>
+        <p>只读 / 工作区可写 / 完全访问三档，随会话保存。不开「完全访问」就不会有视觉循环。</p>
+      </article>
+      <article class="card rv">
+        <h3><span class="ico cy"><svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M3.5 9h17M9 3.5v17"/></svg></span>观察边框</h3>
+        <p>前台执行时目标窗口亮起一圈边框——你随时能看到它正在操作谁。</p>
+      </article>
+      <article class="card rv">
+        <h3><span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3.5v17M5 8.5h14"/><path d="M5 8.5 2.5 14h5L5 8.5ZM19 8.5 16.5 14h5L19 8.5Z"/></svg></span>人工确认</h3>
+        <p>删除、支付、发送这类不可逆操作，模型必须先发起确认，不能自己决定。</p>
+      </article>
+      <article class="card rv">
+        <h3><span class="ico"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4"/><path d="M12 12h9M17 12v3.5"/></svg></span>令牌鉴权</h3>
+        <p>本机桥的每个接口都要启动时随机生成的 <span class="mono">X-Orb-Token</span>——浏览器里的任意网页都遥控不了你的电脑。</p>
+      </article>
+      <article class="card rv">
+        <h3><span class="ico cy"><svg viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 3.5 12 2.5-6H21"/></svg></span>零遥测</h3>
+        <p>不含任何遥测。密钥只在内存里过一遍，不落盘、不写日志、不上传。</p>
+      </article>
+    </div>
+  </div>
+</section>
+<!-- ============ 主题 ============ -->
+<section class="sec" id="themes">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <p class="eyebrow">主题</p>
+      <h2 class="h2">四套主题，<br>连压在桌面上的浮层都跟着换色。</h2>
+      <p class="lead">全部走同一套语义令牌。所以录屏选区、摄像头摆位框、悬浮控制条、字幕窗，换主题不会留在旧配色上。</p>
+    </div>
+
+    <div class="themes">
+      <figure class="tcard rv" style="margin:0">
+        <div class="shot"><img src="assets/hero-app.png" width="1120" height="2360" alt="深空主题界面" loading="lazy"></div>
+        <figcaption class="meta"><b>深空</b><span>默认</span></figcaption>
+      </figure>
+      <figure class="tcard rv" style="margin:0">
+        <div class="shot"><img src="assets/theme-daylight.png" width="560" height="1180" alt="白昼主题界面" loading="lazy"></div>
+        <figcaption class="meta"><b>白昼</b><span>浅色</span></figcaption>
+      </figure>
+      <figure class="tcard rv" style="margin:0">
+        <div class="shot"><img src="assets/theme-aurora.png" width="560" height="1180" alt="极光·氤氲主题界面，带渐变强调色" loading="lazy"></div>
+        <figcaption class="meta"><b>极光·氤氲</b><span>6 款渐变</span></figcaption>
+      </figure>
+      <figure class="tcard rv" style="margin:0">
+        <div class="shot"><img src="assets/theme-custom.png" width="560" height="1180" alt="自定义主题界面，整窗图片背景" loading="lazy"></div>
+        <figcaption class="meta"><b>自定义</b><span>整窗图片</span></figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 下载 ============ -->
+<section class="sec" id="dl">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <p class="eyebrow">下载</p>
+      <h2 class="h2">双击就能用。</h2>
+      <p class="lead">自解压单文件：运行后展开到 <span class="mono">%LOCALAPPDATA%\ORBConsole</span> 并启动。不安装、不写注册表、不用预装 Node 或 Python。</p>
+    </div>
+
+    <div class="dl">
+      <div class="dl-main rv">
+        <h3>ORB 控制台 v1.4.5 · 便携单文件</h3>
+        <p class="sz">Windows 10 / 11 x64 · 211 MB · 双击即用 · 未签名（首次运行请在 SmartScreen 选「更多信息 → 仍要运行」）</p>
+        <div class="hero-act" style="margin-top:0">
+          <a class="btn btn-pri" href="https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases/download/v1.4.5/ORB-Console-1.4.5-portable.exe">下载 .exe</a>
+          <a class="btn btn-ghost" href="https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases/tag/v1.4.5">发布页与更新说明</a>
+        </div>
+      </div>
+
+      <div class="dl-side rv">
+        <div class="meta-row"><span>版本</span><b>v1.4.5</b></div>
+        <div class="meta-row"><span>平台</span><b>Windows 10 / 11 x64</b></div>
+        <div class="meta-row"><span>许可</span><b>MIT 开源</b></div>
+        <div class="meta-row"><span>安装包</span><b>212 MB（含 9 MB 离线语音）</b></div>
+        <div class="meta-row"><span>依赖</span><b>无需预装运行时</b></div>
+        <p class="hash">SHA256（便携版 .exe）<br>82d06fa4fa6605dda2e90b060245fb59…</p>
+      </div>
+    </div>
+
+    <div class="limits rv">
+      <b>说清楚它的边界（这些是我们自己写在更新说明里的）</b>
+      <ul>
+        <li>离线语音包只覆盖台词库里的 360 句；模型现编的句子要走生成播报，关掉它就没声音。</li>
+        <li>记忆压缩要走后台任务，没装 CodeBuddy CLI 就压不了——它会安静跳过，不报错也不卡住。</li>
+        <li>自定义框选目前只针对主屏；副屏整屏录制没问题，跨屏框选不支持。</li>
+        <li>后台轨道需要你本机已安装并登录 CodeBuddy CLI；前台、视觉、录屏、截屏不依赖它。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot-in">
+      <div>
+        <a class="brand" href="#top"><img src="assets/icon.png" alt="ORB 控制台图标" width="26" height="26">ORB 控制台</a>
+        <p>为 WorkBuddy / CodeBuddy 生态而建：后台轨道直接调用你本机安装的 CLI，无需另配 Key。仓库与发布包不包含该 CLI，也不含任何第三方专有软件。</p>
+      </div>
+      <nav class="foot-links" aria-label="相关链接">
+        <a href="https://github.com/zhoukr123/ORB-Console-made-for-workbuddy" target="_blank" rel="noopener">开源仓库</a>
+        <a href="https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases" target="_blank" rel="noopener">全部版本</a>
+        <a href="https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/blob/main/使用说明.md" target="_blank" rel="noopener">使用说明</a>
+        <a href="https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/blob/main/docs/更新说明-v1.4.5.md" target="_blank" rel="noopener">更新说明</a>
+      </nav>
+    </div>
+    <p class="fine">
+      页面内的界面截图为 v1.4.5 实机截图。离线语音包由开源语音合成模型按文字描述生成，不采样任何真人录音，
+      也不指向任何现有角色或配音演员；本项目不声称、也请勿理解为某位真人或某角色的配音。
+      名字里的 ORB 指悬浮球形态，与 DeepSeek Orb 及其它同名产品无关联；与腾讯 WorkBuddy / CodeBuddy 无隶属关系。
+    </p>
+    <p class="fine" style="margin-top:10px">© 2026 ORB 控制台 · 以 MIT 许可开源</p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var html = document.documentElement;
+  html.classList.remove('no-js');
+
+  /* 滚动揭示：IntersectionObserver + 3 秒兜底，禁用 JS 时 CSS 已放行 */
+  var els = [].slice.call(document.querySelectorAll('.rv'));
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+      });
+    }, { rootMargin: '0px 0px -8% 0px', threshold: 0.08 });
+    els.forEach(function(el){ io.observe(el); });
+  } else {
+    els.forEach(function(el){ el.classList.add('in'); });
+  }
+  setTimeout(function(){
+    els.forEach(function(el){ if (!el.classList.contains('in')) el.classList.add('in'); });
+  }, 3000);
+
+  /* 双音源示意：只改文案，不触碰任何真实配置 */
+  var off = document.getElementById('swOff');
+  var gen = document.getElementById('swGen');
+  var note = document.getElementById('swNote');
+  if (!off || !gen || !note) return;
+
+  var TEXT = {
+    '1|1': '两条都开：<b>离线包优先</b>，包里没有的句子回落生成播报。',
+    '1|0': '只留离线包：包里有的照常播；<b>包里没有的句子静默不播</b>——台词气泡还在，只是没声音。',
+    '0|1': '只走生成播报：全部句子交给在线接口（没配就用系统语音）。',
+    '0|0': '两条都关：<b>不会出声</b>，台词气泡照旧显示。'
+  };
+  function sync(){
+    var a = off.getAttribute('aria-pressed') === 'true' ? '1' : '0';
+    var b = gen.getAttribute('aria-pressed') === 'true' ? '1' : '0';
+    note.innerHTML = TEXT[a + '|' + b];
+  }
+  function bind(btn){
+    btn.addEventListener('click', function(){
+      var on = btn.getAttribute('aria-pressed') === 'true';
+      btn.setAttribute('aria-pressed', on ? 'false' : 'true');
+      sync();
+    });
+  }
+  bind(off); bind(gen); sync();
+})();
+</script>
+
+
+
+
+</body>
+</html>
