@@ -1,7 +1,7 @@
 {
   "name": "orb-desktop",
   "private": true,
-  "version": "1.4.2",
+  "version": "1.4.5",
   "main": "main.js",
   "description": "ORB 控制台 · 桌面端（Electron）",
   "author": "ORB",
@@ -34,6 +34,7 @@
       "toolbar.html",
       "voice.js",
       "storage.js",
+      "memory.js",
       "mp4finalize.js",
       "recbar.html",
       "recbar-preload.js",

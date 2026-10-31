@@ -1,0 +1,538 @@
+<!doctype html>
+<!--
+  录屏区域选择覆盖层（只铺主显示器 —— 原生采集器目前只支持 --display 0）。
+    选法有三条，随便挑一条：
+      ① 点顶部预设：全屏 / 左半 / 右半 / 上半 / 下半 / 中间
+      ② 在空白处拖出一个新框
+      ③ 拖框体移动、拖八个手柄缩放（贴边 / 贴中线自动吸附）
+    方向键微调 1px（按住 Shift 是 10px）；Enter 采用；Esc 取消。
+
+  ⚠️ 这一页**不采集、不碰文件系统**：它只产出"哪块矩形"，其余全在主进程。
+  ⚠️ 坐标是窗口内的 CSS 像素（= DIP，相对主显示器左上角）。比例换算与
+     物理像素（DXGI 用物理像素）由主进程按 scaleFactor 做，页面只管摆框。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>选择录制区域</title>
+<style>
+  :root {
+    /* 强调色：默认取面板 t2 的品牌紫，窗口加载后由主进程把当前主题色推进
+       --ac-rgb / --ac-on 覆盖掉（pushThemeVars）。
+       底色**故意恒深**：这层压在任意桌面/窗口上，浅色 HUD 碰上白底就看不见了。
+       所以这里只跟"色相"，不跟"明暗"——主题是 t1 深空还是 t2 白昼，浮层都是这身深色。 */
+    --ac-rgb: 83, 74, 183;
+    --ac-on: #ffffff;          /* 强调色实底上的文字色，主进程按对比度算好推进来 */
+    --dur-1: .12s;             /* 与面板同一套时长/缓动，避免"浮层比面板更生硬" */
+    --dur-2: .18s;
+    --ease: cubic-bezier(.4, 0, .2, 1);
+  }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: transparent;
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    cursor: crosshair;
+    user-select: none; -webkit-user-select: none;
+  }
+
+  /* 选区：四边描线 + 向外投一圈巨大的阴影，把"这框之外"压暗（挖洞） */
+  #sel {
+    position: fixed; display: none; box-sizing: border-box;
+    border: 1.5px solid rgba(var(--ac-rgb), .95);
+    border-radius: 2px;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, .46);
+    cursor: move;
+    touch-action: none;
+  }
+  /* 手柄：8 个，白底蓝边小方块。必须能接事件（父级 #sel 也在接） */
+  #handles { position: fixed; inset: 0; display: none; pointer-events: none; }
+  .hd {
+    position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px;
+    background: #fff; border: 1.5px solid rgba(var(--ac-rgb), .95); border-radius: 2px;
+    pointer-events: auto; box-sizing: border-box;
+  }
+  .hd[data-hd="n"], .hd[data-hd="s"] { cursor: ns-resize; }
+  .hd[data-hd="e"], .hd[data-hd="w"] { cursor: ew-resize; }
+  .hd[data-hd="nw"], .hd[data-hd="se"] { cursor: nwse-resize; }
+  .hd[data-hd="ne"], .hd[data-hd="sw"] { cursor: nesw-resize; }
+
+  /* 跟随选区的尺寸标签：显示**物理像素**（那就是成片分辨率，比 CSS 像素有用） */
+  #hud {
+    position: fixed; display: none; padding: 3px 8px; border-radius: 6px;
+    background: rgba(12, 16, 22, .90); color: #eaf2ff;
+    font-size: 12px; line-height: 1.5; white-space: nowrap;
+    border: 1px solid rgba(var(--ac-rgb), .35);
+    pointer-events: none;
+  }
+  #hud b { color: rgba(var(--ac-rgb), 1); font-weight: 600; }
+
+  /* 顶部工具条：标题 + 六个预设 + 一句操作提示 */
+  #bar {
+    position: fixed; left: 50%; top: 22px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 10px 7px 12px; border-radius: 12px;
+    background: rgba(12, 16, 22, .90);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, .45);
+    cursor: default; white-space: nowrap;
+  }
+  #bar .ttl { font-size: 12.5px; color: #e8eaf6; font-weight: 600; padding-right: 2px; }
+  #bar .hint { font-size: 11.5px; color: #9aa3c7; padding-left: 6px; }
+  #bar .sep { width: 1px; height: 16px; background: rgba(255,255,255,.14); margin: 0 2px; }
+  /* 预设钮 / 操作钮统一用同一套过渡：只动 transform + 颜色（不碰宽高，
+     否则 hover 时整条工具条会跟着抖一下）。按下态缩到 .96 —— 与面板 .chip 同一手感。 */
+  .pbtn {
+    border: none; border-radius: 8px; padding: 5px 10px; cursor: pointer;
+    font-family: inherit; font-size: 12px; color: #d8ddf5;
+    background: rgba(255, 255, 255, .10);
+    transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+                transform var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+  }
+  .pbtn:hover { background: rgba(255, 255, 255, .20); }
+  .pbtn:active { transform: scale(.96); }
+  /* 选中预设：底色走当前主题强调色，文字色由主进程按对比度算好（--ac-on）。
+     写死深蓝字的话，碰上青柠/浅黄这类浅强调色就整颗钮糊成一片。
+     极光主题下 --accent-grad 是一支不透明四色带（品牌色本身就是渐变），
+     用 background-image 叠上去 —— 单色主题那边推来的是同色渐变，视觉上等同于实色。 */
+  .pbtn.on {
+    background-color: rgba(var(--ac-rgb), .92);
+    background-image: var(--accent-grad, none);
+    color: var(--ac-on); font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(var(--ac-rgb), .35);
+  }
+  .pbtn.on:hover {
+    background-color: rgba(var(--ac-rgb), 1);
+    background-image: var(--accent-grad, none);
+    /* 提亮用内投影叠一层白雾，而不是 filter:brightness —— filter 会额外开合成层，
+       而 box-shadow 本来就在过渡列表里，动它是免费的。 */
+    box-shadow: inset 0 0 0 60px rgba(255, 255, 255, .07), 0 0 0 1px rgba(var(--ac-rgb), .35);
+  }
+  /* 键盘用户：Tab 过来必须看得见焦点（这层是全屏覆盖，没有焦点就等于迷路） */
+  .pbtn:focus-visible, #acts button:focus-visible {
+    outline: none; box-shadow: 0 0 0 2px rgba(var(--ac-rgb), .95);
+  }
+
+  /* 底部操作条：放屏幕底部而不是选区下方 —— 选区贴底时容易掉出屏幕 */
+  #acts {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 12px;
+    background: rgba(12, 16, 22, .90); box-shadow: 0 4px 18px rgba(0,0,0,.45);
+    cursor: default; white-space: nowrap;
+  }
+  #info { font-size: 12px; color: #b9bfe0; padding: 0 6px; min-width: 120px; }
+  #acts button {
+    border: none; border-radius: 8px; padding: 6px 12px; cursor: pointer;
+    font-family: inherit; font-size: 12.5px; color: #e8eaf6;
+    background: rgba(255,255,255,.10);
+    transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+                transform var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+  }
+  #acts button:hover { background: rgba(255,255,255,.20); }
+  #acts button:active { transform: scale(.96); }
+  #acts button.pri {
+    background-color: rgba(var(--ac-rgb), .95);
+    background-image: var(--accent-grad, none);
+    color: var(--ac-on); font-weight: 600;
+  }
+  #acts button.pri:hover {
+    background-color: rgba(var(--ac-rgb), 1);
+    background-image: var(--accent-grad, none);
+    box-shadow: inset 0 0 0 60px rgba(255, 255, 255, .07);
+  }
+  #acts button:disabled { opacity: .45; cursor: default; transform: none; }
+
+  #tip {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    padding: 10px 18px; border-radius: 10px;
+    background: rgba(12, 16, 22, .82); color: #eaf2ff;
+    font-size: 13px; line-height: 1.7; text-align: center;
+    pointer-events: none;
+  }
+  #tip b { color: rgba(var(--ac-rgb), 1); font-weight: 600; }
+  #tip.hide { display: none; }
+  #tip .sm { font-size: 12px; color: #9aa3c7; }
+
+  /* 入场：工具条/操作条/提示淡入并上浮 6px。覆盖层是"啪"地压上来的，
+     没有任何过渡会让人以为是画面闪了一下。fill-mode: backwards 保证延迟期间就是第一帧。 */
+  @keyframes orbRise {
+    from { opacity: 0; transform: translateY(6px) translateX(-50%); }
+    to   { opacity: 1; transform: translateY(0) translateX(-50%); }
+  }
+  #bar, #acts { animation: orbRise var(--dur-2) var(--ease) backwards; }
+  #bar { animation-delay: .02s; }
+  #acts { animation-delay: .06s; }
+  #tip { animation: orbFade var(--dur-2) var(--ease) backwards; }
+  @keyframes orbFade { from { opacity: 0 } to { opacity: 1 } }
+
+  /* 降级：系统开了"减少动态效果"就全部关掉。
+     这里没有 html.no-motion（那是面板自己的类，覆盖层是独立窗口收不到），
+     所以只认 media query —— 但这也就够了，面板的类本身就是替不认这个媒体查询的老环境兜的。 */
+  @media (prefers-reduced-motion: reduce) {
+    #bar, #acts, #tip, .pbtn, #acts button {
+      animation: none !important; transition: none !important;
+    }
+    .pbtn:active, #acts button:active { transform: none; }
+  }
+</style>
+</head>
+<body>
+  <div id="sel"></div>
+  <div id="handles"></div>
+  <div id="hud"></div>
+
+  <div id="bar">
+    <span class="ttl">录制区域</span>
+    <span class="sep"></span>
+    <button class="pbtn" type="button" data-preset="full">全屏</button>
+    <button class="pbtn" type="button" data-preset="left">左半屏</button>
+    <button class="pbtn" type="button" data-preset="right">右半屏</button>
+    <button class="pbtn" type="button" data-preset="top">上半屏</button>
+    <button class="pbtn" type="button" data-preset="bottom">下半屏</button>
+    <button class="pbtn" type="button" data-preset="center">中间</button>
+    <span class="sep"></span>
+    <span class="hint">空白处拖出新框 · 拖框体移动 · 拖手柄缩放 · Shift 加速</span>
+  </div>
+
+  <div id="tip">拖出要录的区域，或点上面的预设 · <b>Enter</b> 采用 · <b>Esc</b> 取消<br><span class="sm">区域录制只支持主显示器（多屏时请在主屏上框选）</span></div>
+
+  <div id="acts">
+    <span id="info"></span>
+    <button id="ok" class="pri" type="button">用这个区域（Enter）</button>
+    <button id="cancel" type="button">取消（Esc）</button>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  var selEl = document.getElementById('sel');
+  var handlesWrap = document.getElementById('handles');
+  var hudEl = document.getElementById('hud');
+  var barEl = document.getElementById('bar');
+  var actsEl = document.getElementById('acts');
+  var infoEl = document.getElementById('info');
+  var tipEl = document.getElementById('tip');
+  var okBtn = document.getElementById('ok');
+  var cancelBtn = document.getElementById('cancel');
+
+  var MIN = 16;              /* 比这更小的框定位不准，也没有录的意义 */
+  var SNAP = 8;              /* 吸附距离（CSS px） */
+  var sf = 1;                /* devicePixelRatio 走的是 display.scaleFactor */
+  var W = 0, H = 0;
+  var sel = null;            /* {x,y,w,h} 窗口内 CSS px；null = 还没画 */
+  var prevSel = null;        /* 画废了（太小）时回退用 */
+  var drag = null;           /* { mode, ... } */
+  var done = false;
+
+  var HD = [
+    ['nw', 0, 0], ['n', .5, 0], ['ne', 1, 0], ['e', 1, .5],
+    ['se', 1, 1], ['s', .5, 1], ['sw', 0, 1], ['w', 0, .5]
+  ];
+  var hdEls = {};
+
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+  function phys(v) { return Math.round(v * sf); }
+
+  function buildHandles() {
+    HD.forEach(function (spec) {
+      var el = document.createElement('div');
+      el.className = 'hd';
+      el.setAttribute('data-hd', spec[0]);
+      handlesWrap.appendChild(el);
+      hdEls[spec[0]] = el;
+    });
+  }
+
+  function isFull(r) {
+    return !!r && r.x <= 0.5 && r.y <= 0.5 && r.w >= W - 1 && r.h >= H - 1;
+  }
+
+  /* ---------------- 渲染 ---------------- */
+  function render() {
+    if (!sel || sel.w < 1 || sel.h < 1) {
+      selEl.style.display = 'none';
+      handlesWrap.style.display = 'none';
+      hudEl.style.display = 'none';
+      infoEl.textContent = '还没选区域';
+      okBtn.disabled = true;
+      return;
+    }
+    okBtn.disabled = (sel.w < MIN || sel.h < MIN);
+    selEl.style.display = 'block';
+    selEl.style.left = sel.x + 'px';
+    selEl.style.top = sel.y + 'px';
+    selEl.style.width = sel.w + 'px';
+    selEl.style.height = sel.h + 'px';
+
+    handlesWrap.style.display = 'block';
+    HD.forEach(function (spec) {
+      var el = hdEls[spec[0]];
+      el.style.left = (sel.x + sel.w * spec[1]) + 'px';
+      el.style.top = (sel.y + sel.h * spec[2]) + 'px';
+    });
+
+    /* 尺寸标签：优先放框上方，顶不下就放框内顶部（永不出屏） */
+    hudEl.style.display = 'block';
+    hudEl.innerHTML = '<b>' + phys(sel.w) + ' × ' + phys(sel.h) + '</b> px';
+    var hx = clamp(sel.x, 2, Math.max(2, W - 150));
+    var hy = sel.y > 30 ? (sel.y - 26) : (sel.y + 6);
+    hudEl.style.left = hx + 'px';
+    hudEl.style.top = hy + 'px';
+
+    var pw = Math.round(sel.w / W * 100);
+    var ph = Math.round(sel.h / H * 100);
+    infoEl.textContent = '占屏幕 ' + pw + '% × ' + ph + '%（' + phys(sel.w) + '×' + phys(sel.h) + '）';
+    tipEl.classList.add('hide');
+  }
+
+  function setSel(r) {
+    if (!r) return;
+    /* NaN 防线：任何一步算出 NaN（比如漏存了宽高），样式赋值会被浏览器
+       静默丢弃 —— 界面看着"拖了没反应"，却没有任何报错可查。 */
+    if (![r.x, r.y, r.w, r.h].every((v) => Number.isFinite(Number(v)))) return;
+    sel = {
+      x: clamp(Math.round(r.x), 0, W),
+      y: clamp(Math.round(r.y), 0, H),
+      w: Math.round(r.w),
+      h: Math.round(r.h)
+    };
+    sel.w = clamp(sel.w, 1, W - sel.x);
+    sel.h = clamp(sel.h, 1, H - sel.y);
+    render();
+  }
+
+  function markPreset(name) {
+    var btns = barEl.querySelectorAll('.pbtn');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle('on', btns[i].getAttribute('data-preset') === name);
+    }
+  }
+
+  function applyPreset(name) {
+    if (name === 'full') setSel({ x: 0, y: 0, w: W, h: H });
+    else if (name === 'left') setSel({ x: 0, y: 0, w: Math.round(W / 2), h: H });
+    else if (name === 'right') setSel({ x: Math.round(W / 2), y: 0, w: W - Math.round(W / 2), h: H });
+    else if (name === 'top') setSel({ x: 0, y: 0, w: W, h: Math.round(H / 2) });
+    else if (name === 'bottom') setSel({ x: 0, y: Math.round(H / 2), w: W, h: H - Math.round(H / 2) });
+    else if (name === 'center') setSel({
+      x: Math.round(W * 0.15), y: Math.round(H * 0.15),
+      w: Math.round(W * 0.7), h: Math.round(H * 0.7)
+    });
+    markPreset(name);
+  }
+
+  /* ---------------- 吸附：贴边 / 贴中线 ---------------- */
+  function snapVal(v, targets) {
+    for (var i = 0; i < targets.length; i++) {
+      if (Math.abs(v - targets[i]) <= SNAP) return targets[i];
+    }
+    return v;
+  }
+  var SNAP_X = [], SNAP_Y = [];
+  function rebuildSnap() {
+    SNAP_X = [0, Math.round(W / 2), W];
+    SNAP_Y = [0, Math.round(H / 2), H];
+  }
+
+  /* ---------------- 三种拖动 ---------------- */
+  function startNew(e) {
+    /* 拖出新框：先钉住起点，松手时太小的按"误触"回退到上一次的有效框 */
+    prevSel = sel ? { x: sel.x, y: sel.y, w: sel.w, h: sel.h } : null;
+    drag = { mode: 'new', ax: e.clientX, ay: e.clientY };
+    sel = { x: e.clientX, y: e.clientY, w: 0, h: 0 };
+    markPreset('');
+    render();
+  }
+
+  function startMove(e) {
+    /* ⚠️ w/h 必须一起存：onMove 里 `W - drag.w` 是夹边界用的，
+       少了它就是 `2560 - undefined = NaN`，整个矩形算成 NaN 后
+       样式赋值被浏览器静默丢弃 —— 表现是"拖了完全没反应"。 */
+    drag = { mode: 'move', mx: e.clientX, my: e.clientY, x: sel.x, y: sel.y, w: sel.w, h: sel.h };
+    markPreset('');
+  }
+
+  function startResize(dir, e) {
+    drag = {
+      mode: 'resize', dir: dir,
+      mx: e.clientX, my: e.clientY,
+      x: sel.x, y: sel.y, w: sel.w, h: sel.h
+    };
+    markPreset('');
+  }
+
+  function onMove(e) {
+    if (!drag) return;
+    if (drag.mode === 'new') {
+      var x = Math.min(drag.ax, e.clientX);
+      var y = Math.min(drag.ay, e.clientY);
+      var w = Math.abs(e.clientX - drag.ax);
+      var h = Math.abs(e.clientY - drag.ay);
+      setSel({ x: x, y: y, w: w, h: h });
+      return;
+    }
+    if (drag.mode === 'move') {
+      var nx = drag.x + (e.clientX - drag.mx);
+      var ny = drag.y + (e.clientY - drag.my);
+      nx = clamp(nx, 0, W - drag.w);
+      ny = clamp(ny, 0, H - drag.h);
+      /* 左边 / 右边分别吸附，吸完再夹一次，保证不出屏 */
+      var l = snapVal(nx, SNAP_X);
+      var r = snapVal(nx + drag.w, SNAP_X);
+      if (l !== nx) nx = l;
+      else if (r !== nx + drag.w) nx = r - drag.w;
+      var t = snapVal(ny, SNAP_Y);
+      var b = snapVal(ny + drag.h, SNAP_Y);
+      if (t !== ny) ny = t;
+      else if (b !== ny + drag.h) ny = b - drag.h;
+      setSel({ x: clamp(nx, 0, W - drag.w), y: clamp(ny, 0, H - drag.h), w: drag.w, h: drag.h });
+      return;
+    }
+    /* resize：按方向逐个边算，最后统一夹进屏幕并保证不小于 MIN */
+    var dir = drag.dir || '';
+    var dx = e.clientX - drag.mx;
+    var dy = e.clientY - drag.my;
+    var x1 = drag.x, y1 = drag.y, x2 = drag.x + drag.w, y2 = drag.y + drag.h;
+    if (dir.indexOf('w') >= 0) x1 = drag.x + dx;
+    if (dir.indexOf('e') >= 0) x2 = drag.x + drag.w + dx;
+    if (dir.indexOf('n') >= 0) y1 = drag.y + dy;
+    if (dir.indexOf('s') >= 0) y2 = drag.y + drag.h + dy;
+    x1 = clamp(x1, 0, W);
+    y1 = clamp(y1, 0, H);
+    x2 = clamp(x2, 0, W);
+    y2 = clamp(y2, 0, H);
+    if (x2 - x1 < MIN) { if (dir.indexOf('w') >= 0) x1 = x2 - MIN; else x2 = x1 + MIN; }
+    if (y2 - y1 < MIN) { if (dir.indexOf('n') >= 0) y1 = y2 - MIN; else y2 = y1 + MIN; }
+    setSel({ x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) });
+  }
+
+  function onUp() {
+    if (!drag) return;
+    var wasNew = (drag.mode === 'new');
+    drag = null;
+    if (!sel) return;
+    if (sel.w < MIN || sel.h < MIN) {
+      if (wasNew && prevSel) { sel = prevSel; render(); return; }
+      /* 没有可回退的旧框：就留个小框，用户接着拖手柄放大（而不是把界面弄空） */
+      sel = { x: sel.x, y: sel.y, w: MIN, h: MIN };
+      render();
+      return;
+    }
+    /* 松手时把"跟预设一模一样"的框标成选中态，用户一眼知道当前是哪档 */
+    if (sel.x === 0 && sel.y === 0 && sel.w === W && sel.h === H) markPreset('full');
+  }
+
+  /* ---------------- 收尾 ---------------- */
+  function finish(kind) {
+    if (done) return;
+    if (kind === 'ok') {
+      if (!sel || sel.w < MIN || sel.h < MIN) return;
+      done = true;
+      okBtn.disabled = true;
+      cancelBtn.disabled = true;
+      window.orb.done({
+        kind: 'ok',
+        rect: { x: sel.x, y: sel.y, w: sel.w, h: sel.h }
+      });
+      return;
+    }
+    done = true;
+    window.orb.done({ kind: 'cancel' });
+  }
+
+  /* ---------------- 事件 ---------------- */
+  document.addEventListener('pointerdown', function (e) {
+    if (e.button !== 0) return;
+    var t = e.target;
+    if (barEl.contains(t) || actsEl.contains(t)) return;   /* 按钮自己处理 */
+    var hd = t && t.getAttribute && t.getAttribute('data-hd');
+    if (hd) { startResize(hd, e); e.preventDefault(); return; }
+    if (t === selEl) {
+      /* 全屏框上按下 = 重画（全屏没有"移动"的意义，否则用户永远画不出新框） */
+      if (isFull(sel)) startNew(e); else startMove(e);
+      e.preventDefault();
+      return;
+    }
+    startNew(e);
+    e.preventDefault();
+  });
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
+
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); finish('cancel'); return; }
+    if (e.key === 'Enter') { e.preventDefault(); finish('ok'); return; }
+    var step = e.shiftKey ? 10 : 1;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      if (!sel) return;
+      e.preventDefault();
+      var dx = e.key === 'ArrowLeft' ? -step : (e.key === 'ArrowRight' ? step : 0);
+      var dy = e.key === 'ArrowUp' ? -step : (e.key === 'ArrowDown' ? step : 0);
+      setSel({
+        x: clamp(sel.x + dx, 0, W - sel.w),
+        y: clamp(sel.y + dy, 0, H - sel.h),
+        w: sel.w, h: sel.h
+      });
+      markPreset('');
+    }
+  });
+
+  /* 右键 = 取消（与框选取词一致）。⚠️ 不监听 blur：覆盖层刚创建时焦点未必
+     立刻落进来，一个 blur 会让它刚出现就自己取消（"点了没反应"的老坑）。 */
+  window.addEventListener('contextmenu', function (e) { e.preventDefault(); finish('cancel'); });
+
+  barEl.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.pbtn') : null;
+    if (!b) return;
+    e.stopPropagation();
+    applyPreset(b.getAttribute('data-preset'));
+  });
+  okBtn.addEventListener('click', function (e) { e.stopPropagation(); finish('ok'); });
+  cancelBtn.addEventListener('click', function (e) { e.stopPropagation(); finish('cancel'); });
+
+  /* 屏幕尺寸变了（改分辨率 / DPI）：按比例重算，别让旧框跑出屏幕 */
+  window.addEventListener('resize', function () {
+    var oldW = W, oldH = H;
+    W = document.documentElement.clientWidth;
+    H = document.documentElement.clientHeight;
+    rebuildSnap();
+    if (!sel || !oldW || !oldH) return;
+    setSel({
+      x: sel.x / oldW * W, y: sel.y / oldH * H,
+      w: sel.w / oldW * W, h: sel.h / oldH * H
+    });
+  });
+
+  buildHandles();
+
+  /* 初始化：拿上次保存的区域作为起点。全屏 = 不出框（提示用户拖或点预设），
+     出了框的话整屏边缘就是框，一按下去就走了"移动"分支，反而画不了新框。 */
+  function boot() {
+    W = document.documentElement.clientWidth || window.innerWidth;
+    H = document.documentElement.clientHeight || window.innerHeight;
+    rebuildSnap();
+    var p = window.orb && window.orb.init ? window.orb.init() : Promise.resolve(null);
+    Promise.resolve(p).then(function (s) {
+      sf = (s && Number(s.sf)) > 0 ? Number(s.sf) : (window.devicePixelRatio || 1);
+      var r = (s && s.ratio) || { x: 0, y: 0, w: 1, h: 1 };
+      var w = Math.round((r.w || 1) * W);
+      var h = Math.round((r.h || 1) * H);
+      if (w >= W - 1 && h >= H - 1) {
+        sel = null;
+        render();
+        markPreset('full');
+        return;
+      }
+      setSel({ x: Math.round((r.x || 0) * W), y: Math.round((r.y || 0) * H), w: w, h: h });
+      markPreset('');
+    });
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

@@ -260,10 +260,27 @@ function cliStatusPayload(cli) {
  * 试图绑定「桌面已占用的同一个端口」→ EADDRINUSE 未捕获异常秒退。
  * 这里显式剔除，确保子进程用自己的端口（与 spawnOnce 的 --port 双保险）。
  */
+let cacheEnvLogged = false;
 function cleanCliEnv(extra = {}) {
   const env = { ...process.env, ...extra };
   delete env.SERVER__PORT;
   delete env.CODEBUDDY_SERVICE_PROXY_URL;
+  /* 一次性诊断（每个进程只记一条）：提示缓存是 CLI 的**默认行为**（1h TTL，
+     请求里带 cache_retention:"long"），命令行没有开关，只能被环境变量关掉。
+     若用户机器上恰好设了 CODEBUDDY_DISABLE_PROMPT_CACHING_1H=1，缓存会静默退化成
+     5 分钟，而 ORB 这边一点迹象都没有 —— 至少让 orb.log 留下这一行可供排查。
+     另注：走自定义模型接管（--model custom-local:*）时官方口径是 unaffected，
+     那条路径不享受缓存，别拿它做速度对比。 */
+  if (!cacheEnvLogged) {
+    cacheEnvLogged = true;
+    try {
+      const off = String(env.CODEBUDDY_DISABLE_PROMPT_CACHING_1H || "").trim();
+      const disabled = !!off && !/^(0|false|no|off)$/i.test(off);
+      log("[cache] 提示缓存 1h " + (disabled
+        ? "已关闭（CODEBUDDY_DISABLE_PROMPT_CACHING_1H=" + off + "）→ TTL 退回 5 分钟"
+        : "按 CLI 默认开启（1h TTL）"));
+    } catch { /* 日志失败不能影响 spawn */ }
+  }
   return env;
 }
 
@@ -347,7 +364,9 @@ let WB_DAEMON = process.env.ORB_WB_DAEMON === "1" || confFlag("daemon", false);
 const WB_DAEMON_PORT = Number(process.env.ORB_WB_PORT || 19090);
 // daemon 单次等待上限（等一次 run 的回调往返）。
 // 调小可让「daemon 没成」时更快回落到 -p 子进程，代价是长任务更容易走回落。
-const WB_DAEMON_WAIT = Number(process.env.ORB_WB_DAEMON_WAIT || 90000);
+// 可变：面板开启热启动时可传 waitMs 一起调小 —— 实测 daemon 有"派发成功但结果
+// 拿不回来"的情况，那时要干等到超时才回落，90s 的默认值会让用户以为卡死。
+let WB_DAEMON_WAIT = Number(process.env.ORB_WB_DAEMON_WAIT || 90000);
 const pendingRuns = new Map();
 let daemonProc = null;
 
@@ -3020,7 +3039,11 @@ function startJob(key, tool, args, timeoutMs, sink = null) {
   const job = { id, server: key, tool, status: "running", startedAt: Date.now(), partial: "" };
   jobs.set(id, job);
   // 增量正文出口：节流写回 job.partial（最多 ~3 次/秒，不拖慢 CLI 主流程）。
-  const jobSink = (s) => { job.partial = typeof s === "string" ? s : ""; };
+  // 同时把 partial 推给 SSE 订阅者：面板不再 2s 轮询，做到"生成即到屏"。
+  const jobSink = (s) => {
+    job.partial = typeof s === "string" ? s : "";
+    try { pushJobPartial(id, job.partial); } catch { /* 推送失败不影响主流程 */ }
+  };
   const finalSink = sink
     ? (s) => { jobSink(s); try { sink(s); } catch {} }
     : jobSink;
@@ -3040,10 +3063,20 @@ function startJob(key, tool, args, timeoutMs, sink = null) {
       const raw = await callTool(key, tool, args, timeoutMs ?? JOB_TIMEOUT_MS, finalSink);
       const { result, truncated } = trimJobResult(raw);
       const cur = jobs.get(id);
-      if (cur) jobs.set(id, { ...cur, status: "done", finishedAt: Date.now(), result, truncated });
+      if (cur) {
+        const next = { ...cur, status: "done", finishedAt: Date.now(), result, truncated };
+        jobs.set(id, next);
+        pushJobFinal(id, next);
+        broadcastStatus().catch(() => {});   // 任务状态变化 → 状态流也即时刷新
+      }
     } catch (err) {
       const cur = jobs.get(id);
-      if (cur) jobs.set(id, { ...cur, status: "error", finishedAt: Date.now(), error: String(err?.message ?? err) });
+      if (cur) {
+        const next = { ...cur, status: "error", finishedAt: Date.now(), error: String(err?.message ?? err) };
+        jobs.set(id, next);
+        pushJobFinal(id, next);
+        broadcastStatus().catch(() => {});
+      }
     }
   })();
   return id;
@@ -3079,6 +3112,89 @@ async function readBody(req) {
   if (!chunks.length) return {};
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { return {}; }
 }
+
+/* ---------- SSE 推送（替代面板轮询，做到"生成即到屏"） ----------
+ * jobSubs:    任务 id → 订阅该任务流式输出的响应集合
+ * statusSubs: 订阅全局状态（通道/活动/急停/待确认）的响应集合
+ * 设计：纯增量 + 包裹，现有 /api/job/:id、/api/status 轮询端点一字未改；
+ *       面板侧 EventSource 出错会自动退回原轮询，零退化。 */
+const jobSubs = new Map();      // id -> Set<ServerResponse>
+const statusSubs = new Set();   // Set<ServerResponse>
+let lastStatusJson = "";
+
+function sseHead(res) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+    ...CORS,
+  });
+}
+
+function sseSend(res, obj) {
+  if (res.writableEnded) return;
+  try { res.write("data: " + JSON.stringify(obj) + "\n\n"); } catch { /* 连接已断 */ }
+}
+
+// 任务 partial 写回时顺推订阅者（由 jobSink 调用，永不向 CLI 主流程抛错）。
+function pushJobPartial(id, text) {
+  const set = jobSubs.get(id);
+  if (!set || !set.size) return;
+  const payload = JSON.stringify({ type: "partial", text: typeof text === "string" ? text : "" });
+  for (const res of set) { if (!res.writableEnded) { try { res.write("data: " + payload + "\n\n"); } catch {} } }
+}
+
+function pushJobFinal(id, job) {
+  const set = jobSubs.get(id);
+  if (!set || !set.size) return;
+  const payload = JSON.stringify({ type: "final", job });
+  for (const res of set) {
+    if (res.writableEnded) continue;
+    try { res.write("data: " + payload + "\n\n"); res.end(); } catch {}
+  }
+  jobSubs.delete(id);
+}
+
+function subscribeJob(id, res) {
+  let set = jobSubs.get(id);
+  if (!set) { set = new Set(); jobSubs.set(id, set); }
+  set.add(res);
+  res.on("close", () => { set.delete(res); if (!set.size) jobSubs.delete(id); });
+}
+
+function subscribeStatus(res) {
+  statusSubs.add(res);
+  res.on("close", () => statusSubs.delete(res));
+}
+
+/* 快照重入守卫：buildStatusSnapshot 里要 await getSession（坏掉的 server 会一直
+ * 超时到退避生效），1.5s 定时器很容易在上一次还没算完时再进来。不挡的话：
+ *   ① 并发快照白烧 CPU，还可能重复 spawn；
+ *   ② lastStatusJson 会被较晚返回的旧快照覆盖 —— 下一次真变化与旧值相同就被
+ *      判成"没变"而永久漏推，面板卡在过期状态上（很难查的那种）。 */
+let statusBuilding = false;
+
+async function broadcastStatus() {
+  if (!statusSubs.size) return;
+  if (statusBuilding) return;
+  statusBuilding = true;
+  try {
+    let snap;
+    try { snap = await buildStatusSnapshot(); } catch { return; }
+    const json = JSON.stringify(snap);
+    if (json === lastStatusJson) return;   // 无变化不重复推，省带宽
+    lastStatusJson = json;
+    for (const res of statusSubs) sseSend(res, snap);
+  } finally {
+    statusBuilding = false;
+  }
+}
+
+// 安全网：订阅者存在时每 1.5s 重算并推送（仅在状态真变化时发送）。
+// 覆盖未在显式广播点覆盖的少量状态变更；无订阅者时不跑。
+const _statusTimer = setInterval(() => { broadcastStatus().catch(() => {}); }, 1500);
+if (_statusTimer.unref) _statusTimer.unref();
 
 /* ---------- OCR（截屏取词）：走 Windows 自带 OCR 引擎，离线、免安装、不限流 ---------- */
 
@@ -4395,6 +4511,69 @@ async function readCredits() {
   return data;
 }
 
+// /api/status 与 /api/events(SSE) 共用的快照构造：原样提取，返回字段形状不变，
+// 面板现有的 applyChannels/applyLive/renderStop/applyPending 消费方无需改动。
+async function buildStatusSnapshot() {
+  // 后台 CLI 检测：结果缓存 30s（resolveWbCli），所以 5 秒一次的轮询不会反复 spawn where。
+  const cliNow = await resolveWbCli();
+  const out = {
+    orb: { ok: true, label: "orb-native", tools: ORB_TOOL_LIST },
+  };
+  for (const key of Object.keys(SERVERS)) {
+    const def = SERVERS[key];
+    if (def.kind === "cli") {
+      out[key] = {
+        // CLI 没找到就置灰（ok:false）：面板据此把后台灯画成灰，并给出安装提示
+        ok: !!cliNow.found,
+        label: def.label,
+        tools: WORKBUDDY_TOOL_LIST,
+        cli: cliStatusPayload(cliNow),
+      };
+      continue;
+    }
+    // lazy 的服务不在这里预热：面板根本不显示它，拉起来只是白占内存（见 SERVERS.dsh 注释）
+    if (def.lazy && !sessions.has(key)) {
+      out[key] = { ok: true, label: def.label, tools: [], lazy: true };
+      continue;
+    }
+    // 连接失败后退避：这个接口每 5 秒被轮询一次，坏掉的 server 会变成
+    // "每 5 秒重连一次、每次都超时"，白烧 CPU 还拖慢整个 status 响应。
+    if (sessionBackoff.has(key)) {
+      const left = sessionBackoff.get(key) - Date.now();
+      if (left > 0) {
+        out[key] = { ok: false, label: def.label, error: "连接失败，稍后重试", retryInMs: left };
+        continue;
+      }
+      sessionBackoff.delete(key);
+    }
+    try {
+      const s = await getSession(key);
+      out[key] = { ok: true, label: def.label, tools: s.tools.map((t) => t.name) };
+      sessionBackoff.delete(key);
+    } catch (err) {
+      sessionBackoff.set(key, Date.now() + SESSION_BACKOFF_MS);
+      out[key] = { ok: false, label: def.label, error: String(err?.message ?? err) };
+    }
+  }
+  // 顺带带上面板轮询需要的三样，把原来的 3 个轮询（live/confirm/stop）合并成这一次请求
+  out.ok = true;
+  /* tok 是「本次任务的合计用量」，含人格台词那一笔 —— 面板拿它画状态条。
+     复制一份再挂，别把 LIVE 本身改成另一种形状：LIVE 还被审计/接管逻辑读写。 */
+  out.live = Object.assign({}, LIVE, { tok: tokSnapshot() });
+  out.stop = { on: STOP.on, reason: STOP.reason };
+  out.pending = listPending();
+  out.dangerous = [...DANGER_TOOLS];
+  out.dangerRules = { tools: [...DANGER.tools], args: DANGER.args };
+  // 前台通道健康度：面板据此显示「一键修复」按钮（windows 挂了才有意义）
+  out.frontHealth = frontHealth();
+  // 后台 CLI 状态（与 out.workbuddy.cli 同源，面板读这一份即可，不必再发一次请求）
+  out.cli = cliStatusPayload(cliNow);
+  // 本地识别摘要：只做文件系统检查、不探测端口（这个接口 5 秒轮询一次，别添延迟）；
+  // 运行中与否 / 生效设备走 /api/asr。
+  out.asr = { installed: asrInstalled(), modelDownloaded: asrModelDownloaded(), running: !!asrProc };
+  return out;
+}
+
 async function handle(req, res) {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
 
@@ -4405,9 +4584,12 @@ async function handle(req, res) {
   }
 
   // 鉴权：预检请求（OPTIONS）不带自定义头，必须放行且不泄露任何信息；
-  // 其余 /api/* 一律要令牌。
+  // 其余 /api/* 一律要令牌。SSE 用 EventSource 不能带自定义头，
+  // 令牌改走 ?token= 查询参数（与请求头二选一即可，不放松校验）。
   if (url.pathname.startsWith("/api/") && !PUBLIC_PATHS.has(url.pathname)) {
-    if (req.headers["x-orb-token"] !== TOKEN) {
+    const hdrTok = req.headers["x-orb-token"];
+    const qTok = url.searchParams && url.searchParams.get("token");
+    if (hdrTok !== TOKEN && qTok !== TOKEN) {
       send(res, 401, { ok: false, error: "缺少或错误的 X-Orb-Token" });
       return;
     }
@@ -4426,65 +4608,27 @@ async function handle(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/status") {
-    // 后台 CLI 检测：结果缓存 30s（resolveWbCli），所以 5 秒一次的轮询不会反复 spawn where。
-    // 不隐藏这条通道：灯变灰 + hover 文案，用户才知道「有这功能，但要自己装」。
-    const cliNow = await resolveWbCli();
-    const out = {
-      orb: { ok: true, label: "orb-native", tools: ORB_TOOL_LIST },
-    };
-    for (const key of Object.keys(SERVERS)) {
-      const def = SERVERS[key];
-      if (def.kind === "cli") {
-        out[key] = {
-          // CLI 没找到就置灰（ok:false）：面板据此把后台灯画成灰，并给出安装提示
-          ok: !!cliNow.found,
-          label: def.label,
-          tools: WORKBUDDY_TOOL_LIST,
-          cli: cliStatusPayload(cliNow),
-        };
-        continue;
-      }
-      // lazy 的服务不在这里预热：面板根本不显示它，拉起来只是白占内存（见 SERVERS.dsh 注释）
-      if (def.lazy && !sessions.has(key)) {
-        out[key] = { ok: true, label: def.label, tools: [], lazy: true };
-        continue;
-      }
-      // 连接失败后退避：这个接口每 5 秒被轮询一次，坏掉的 server 会变成
-      // "每 5 秒重连一次、每次都超时"，白烧 CPU 还拖慢整个 status 响应。
-      if (sessionBackoff.has(key)) {
-        const left = sessionBackoff.get(key) - Date.now();
-        if (left > 0) {
-          out[key] = { ok: false, label: def.label, error: "连接失败，稍后重试", retryInMs: left };
-          continue;
-        }
-        sessionBackoff.delete(key);
-      }
-      try {
-        const s = await getSession(key);
-        out[key] = { ok: true, label: def.label, tools: s.tools.map((t) => t.name) };
-        sessionBackoff.delete(key);
-      } catch (err) {
-        sessionBackoff.set(key, Date.now() + SESSION_BACKOFF_MS);
-        out[key] = { ok: false, label: def.label, error: String(err?.message ?? err) };
-      }
-    }
-    // 顺带带上面板轮询需要的三样，把原来的 3 个轮询（live/confirm/stop）合并成这一次请求
-    out.ok = true;
-    /* tok 是「本次任务的合计用量」，含人格台词那一笔 —— 面板拿它画状态条。
-       复制一份再挂，别把 LIVE 本身改成另一种形状：LIVE 还被审计/接管逻辑读写。 */
-    out.live = Object.assign({}, LIVE, { tok: tokSnapshot() });
-    out.stop = { on: STOP.on, reason: STOP.reason };
-    out.pending = listPending();
-    out.dangerous = [...DANGER_TOOLS];
-    out.dangerRules = { tools: [...DANGER.tools], args: DANGER.args };
-    // 前台通道健康度：面板据此显示「一键修复」按钮（windows 挂了才有意义）
-    out.frontHealth = frontHealth();
-    // 后台 CLI 状态（与 out.workbuddy.cli 同源，面板读这一份即可，不必再发一次请求）
-    out.cli = cliStatusPayload(cliNow);
-    // 本地识别摘要：只做文件系统检查、不探测端口（这个接口 5 秒轮询一次，别添延迟）；
-    // 运行中与否 / 生效设备走 /api/asr。
-    out.asr = { installed: asrInstalled(), modelDownloaded: asrModelDownloaded(), running: !!asrProc };
-    send(res, 200, out);
+    send(res, 200, await buildStatusSnapshot());
+    return;
+  }
+
+  // SSE：全局状态（通道/活动/急停/待确认）实时推送，替代面板 1.2s/10s 轮询。
+  // 回退：面板 EventSource 出错会退回原 pollStatus 轮询，本改动纯增量、零退化。
+  if (req.method === "GET" && url.pathname === "/api/events") {
+    sseHead(res);
+    try {
+      const snap = await buildStatusSnapshot();
+      sseSend(res, snap);
+      /* 首帧也记进去重缓存：否则紧接着的 1.5s 定时器会认为「状态变了」，
+         给**所有**订阅者再推一遍一模一样的内容（每来一个新连接就多一次全量帧）。 */
+      lastStatusJson = JSON.stringify(snap);
+    } catch { sseSend(res, { ok: false }); }  // 构造失败也给一帧避免空等
+    subscribeStatus(res);
+    const ka = setInterval(() => {
+      if (res.writableEnded) return;
+      try { res.write(": keep-alive\n\n"); } catch {}
+    }, 15000);
+    res.on("close", () => clearInterval(ka));
     return;
   }
 
@@ -5040,6 +5184,23 @@ async function handle(req, res) {
     return;
   }
 
+  // SSE：单个任务的 partial/final 实时推送，替代面板 2s 轮询 /api/job/:id。
+  // 回退：面板 EventSource 出错会自动退回原 2s 轮询，零退化。
+  if (req.method === "GET" && url.pathname.startsWith("/api/job/") && url.pathname.endsWith("/stream")) {
+    const id = url.pathname.slice("/api/job/".length, -"/stream".length);
+    sseHead(res);
+    const job = jobs.get(id);
+    sseSend(res, { type: "snapshot", job: job || null });   // 立即先推当前状态（含已存在的 partial）
+    if (!job) { res.end(); return; }                         // 任务已不存在：推一帧空快照后关闭
+    subscribeJob(id, res);
+    const ka = setInterval(() => {
+      if (res.writableEnded) return;
+      try { res.write(": keep-alive\n\n"); } catch {}
+    }, 15000);
+    res.on("close", () => clearInterval(ka));
+    return;
+  }
+
   if (req.method === "GET" && url.pathname.startsWith("/api/job/")) {
     const id = url.pathname.split("/").pop();
     const job = jobs.get(id);
@@ -5061,14 +5222,22 @@ async function handle(req, res) {
       enabled: WB_DAEMON,
       port: WB_DAEMON_PORT,
       running: !!daemonProc,
+      waitMs: WB_DAEMON_WAIT,
       healthy: WB_DAEMON ? await daemonHealth() : false,
     });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/api/wb-daemon") {
-    const { enabled } = await readBody(req);
+    const { enabled, waitMs } = await readBody(req);
     WB_DAEMON = !!enabled;
+    /* 可选：一并调小「等回调」的上限（3–90s）。面板联动开启时会传一个较短值 ——
+       daemon 派发成功但回调不来时，靠这个值快速回落到 -p 子进程，
+       否则用户会盯着"后台执行中"干等 90 秒。 */
+    if (waitMs !== undefined && enabled) {
+      const n = Number(waitMs);
+      if (isFinite(n) && n > 0) WB_DAEMON_WAIT = Math.max(3000, Math.min(90000, Math.round(n)));
+    }
     try {
       writeConfFlag("daemon", WB_DAEMON);
     } catch (err) {
@@ -5085,7 +5254,7 @@ async function handle(req, res) {
     log("[wb-daemon] 已开启热启动；随后台任务按需启动常驻服务");
     // 预热放后台，接口立即返回，避免面板卡住（ensureDaemon 最长等 40s）。
     ensureDaemon().then((ok) => log("[wb-daemon] 预热", ok ? "就绪" : "未成功")).catch(() => {});
-    send(res, 200, { ok: true, enabled: true, running: !!daemonProc });
+    send(res, 200, { ok: true, enabled: true, running: !!daemonProc, waitMs: WB_DAEMON_WAIT });
     return;
   }
 

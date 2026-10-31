@@ -23,7 +23,7 @@ const { execSync, spawnSync } = require('child_process');
 const ROOT = process.env.ORB_ROOT ? path.resolve(process.env.ORB_ROOT) : path.resolve(__dirname, '..');
 const APP = path.join(ROOT, 'orb', 'desktop');
 const ELECTRON = path.join(APP, 'node_modules', 'electron', 'dist');
-const VERSION = '1.4.2';
+const VERSION = '1.4.5';
 /* 输出目录带时间戳：不删旧构建。早先这里是 fs.rmSync(OUT) 一把清空，
    但批量删除会触发安全保护（3789 个文件远超阈值）而被拦截。
    版本化目录反而更好——每次构建都是可回溯的产物，旧的由用户自行清理。 */
@@ -49,10 +49,23 @@ const APP_FILES = [
      （main.js 用 __dirname 定位）。漏打包 = 发布版「取词」一点就报通道不可用，
      而开发态完全正常、测不出来。 */
   'pick.html', 'pick-preload.js',
+  /* 录屏区域选择（2026-10-31 新增）：region.html + region-preload.js 是
+     「自定义录制区域」的全屏覆盖层（main.js 用 __dirname 定位）。
+     漏打包 = 发布版点「自定义…」报"选区覆盖层加载失败"，其余预设档位看着
+     还都能用 —— 属于"只缺一角"的坑，最容易漏测。 */
+  'region.html', 'region-preload.js',
+  /* 摄像头小框摆位（2026-10-31 新增）：camstage.html + camstage-preload.js 是
+     「预览模式」的全屏覆盖层。漏打包不会报错 —— 面板会静默回退到旧的
+     "面板内放大示意图"，用户看到的是旧体验而不是故障，最难发现。 */
+  'camstage.html', 'camstage-preload.js',
   /* 原生录屏（2026-10-23 新增）：cap-native.js 被 main.js require，
      它是 orb-cap.exe 的唯一入口。漏打包 = 发布版一 require 就抛，
      main.js 整个起不来（比"少个功能"严重得多）。 */
   'cap-native.js',
+  /* 记忆模块（2026-10-31 补）：memory.js 被 main.js 顶层 require（第 13 行），
+     漏打包 = 发布版一 require 就抛 MODULE_NOT_FOUND，main.js 整个起不来。
+     这和 cap-native.js 是同一类：不是"少个功能"，是"程序打不开"。 */
+  'memory.js',
   'icon.png', 'icon.ico', 'icon-64.png', 'selection-watch.ps1', 'package.json',
 ];
 /* 随包附带的配置文件（都放在包根，桥的 DATA_DIR 在开发态就是项目根，行为一致）：
@@ -152,8 +165,12 @@ for (const f of APP_FILES) {
 /* 随包目录（2026-10-27 新增）：anim/ 是图标动图（7 张 GIF，约 1.8MB），
    面板的预览网格与悬浮球都按相对路径 `anim/xxx.gif` 取。
    漏打包 = 设置页那 7 个格子全是碎图 + 球永远只演静态原图，
-   而开发态完全正常 —— 和 glassbg.js / snipaste.js 是同一类"只炸发布版"的坑。 */
-const APP_DIRS = ['anim'];
+   而开发态完全正常 —— 和 glassbg.js / snipaste.js 是同一类"只炸发布版"的坑。
+
+   voicepack/（2026-10-31 新增）：五人格预烘焙台词音频 + index.js 索引，
+   面板按相对路径 `voicepack/xxx.opus` 取。漏打包不会报错，只会**静默**回落到
+   系统语音 —— 用户听到的是冷冰冰的机器嗓，还以为人格语音就这么难听。 */
+const APP_DIRS = ['anim', 'voicepack'];
 for (const d of APP_DIRS) {
   const src = path.join(APP, d);
   if (!fs.existsSync(src)) { console.error('✗ 缺少应用目录:', d); process.exit(1); }
@@ -326,6 +343,8 @@ const must = [
   'ORB 控制台.exe',
   path.join('resources', 'app', 'main.js'),
   path.join('resources', 'app', 'panel.html'),
+  path.join('resources', 'app', 'memory.js'),
+  path.join('resources', 'app', 'voicepack', 'index.js'),
   path.join('resources', 'bridge.mjs'),
   path.join('resources', 'mousehook.mjs'),
   path.join('resources', 'runtime.mjs'),

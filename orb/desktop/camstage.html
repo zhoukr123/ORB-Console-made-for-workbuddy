@@ -1,0 +1,603 @@
+<!doctype html>
+<!--
+  摄像头小框 · 全屏摆位层（替换面板内那个「放大的模拟舞台」）。
+    为什么改成全屏：舞台只有三百多像素宽，却要表示 1920 宽的画面，只能放大 2.6 倍
+    画个示意图 —— 用户看到的尺寸/位置和真实屏幕对不上，也没法判断小框遮住了什么。
+    现在直接铺在真实桌面上、按**真实比例**画框：框多大、压到什么，一眼就是成片里的样子。
+    分辨率/缩放比例换了也不用改代码：一切都是占屏比例。
+
+  交互：拖框体移动 · 拖四边/四角调大小 · 方向键微调（Shift×10）
+        顶部切形状与比例 · Enter 完成 · Esc 取消
+  ⚠️ 这一页不采集摄像头、不碰文件：它只产出「框在屏幕上的位置与大小」（占屏比例）。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>摄像头小框摆位</title>
+<style>
+  :root {
+    /* 与 region.html 同一套：强调色跟面板主题走（主进程推进 --ac-rgb / --ac-on），
+       底色恒深 —— 这层压在桌面和真实窗口上，浅色 HUD 遇上白底会直接消失。 */
+    --ac-rgb: 83, 74, 183;
+    --ac-on: #ffffff;          /* 强调色实底上的文字色，主进程按对比度算 */
+    --dur-1: .12s;
+    --dur-2: .18s;
+    --ease: cubic-bezier(.4, 0, .2, 1);
+  }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: transparent;
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    cursor: default;
+    user-select: none; -webkit-user-select: none;
+  }
+
+  /* ---------- 录制范围：这就是摄像头小框的**可摆放边界** ----------
+     选了「左半屏」之类的区域录制，成片里只有那一块 —— 小框摆到区域外毫无意义
+     （成片里根本不存在），所以范围的边就是小框的墙：压暗区外 + 虚线标出边界。 */
+  #scope {
+    position: fixed; display: none; box-sizing: border-box;
+    border: 1px dashed rgba(255, 255, 255, .62);
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, .46);
+    pointer-events: none;
+  }
+  #scopeLb {
+    position: fixed; display: none; padding: 2px 7px; border-radius: 5px;
+    background: rgba(12, 16, 22, .86); color: #cfd6ea; font-size: 11px;
+    white-space: nowrap; pointer-events: none;
+  }
+
+  /* ---------- 摄像头框本体 ---------- */
+  #frame {
+    position: fixed; box-sizing: border-box; touch-action: none;
+    /* 几乎是实心：真实录制时摄像头画面就是不透明的，摆位要能看出它遮住了什么 */
+    background: radial-gradient(120% 120% at 50% 30%, #3a4152 0%, #20242f 70%, #171a22 100%);
+    border: 1.5px solid rgba(var(--ac-rgb), .95);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .45), 0 10px 30px rgba(0, 0, 0, .5);
+    cursor: move;
+    /* ⚠️ 不能用 overflow:hidden —— 八个手柄是按负偏移贴在框**外面**的，
+       一裁就全没了（表现：框能拖能缩，但看不到也抓不到手柄）。 */
+  }
+  #frame .sil {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    color: rgba(255, 255, 255, .30); pointer-events: none;
+  }
+  #frame .tag {
+    position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%);
+    font-size: 10.5px; color: rgba(255, 255, 255, .55); white-space: nowrap;
+    pointer-events: none;
+  }
+  /* 框太小时把剪影与标签藏掉，免得糊成一团 */
+  #frame.tiny .sil, #frame.tiny .tag { display: none; }
+
+  /* ---------- 八个手柄（挂在 frame 内，CSS 定位，不随尺寸重算） ---------- */
+  .hd {
+    position: absolute; width: 12px; height: 12px;
+    background: #fff; border: 1.5px solid rgba(var(--ac-rgb), .95); border-radius: 3px;
+    box-sizing: border-box;
+  }
+  .hd[data-hd="nw"] { left: -7px; top: -7px; cursor: nwse-resize; }
+  .hd[data-hd="ne"] { right: -7px; top: -7px; cursor: nesw-resize; }
+  .hd[data-hd="sw"] { left: -7px; bottom: -7px; cursor: nesw-resize; }
+  .hd[data-hd="se"] { right: -7px; bottom: -7px; cursor: nwse-resize; }
+  .hd[data-hd="n"] { left: 50%; top: -7px; margin-left: -6px; cursor: ns-resize; }
+  .hd[data-hd="s"] { left: 50%; bottom: -7px; margin-left: -6px; cursor: ns-resize; }
+  .hd[data-hd="w"] { left: -7px; top: 50%; margin-top: -6px; cursor: ew-resize; }
+  .hd[data-hd="e"] { right: -7px; top: 50%; margin-top: -6px; cursor: ew-resize; }
+  #frame.circle .hd[data-hd="n"], #frame.circle .hd[data-hd="s"],
+  #frame.circle .hd[data-hd="w"], #frame.circle .hd[data-hd="e"] { display: none; }
+
+  /* ---------- 顶部工具条 ---------- */
+  #bar {
+    position: fixed; left: 50%; top: 20px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 10px 7px 12px; border-radius: 12px;
+    background: rgba(12, 16, 22, .90); box-shadow: 0 4px 18px rgba(0, 0, 0, .45);
+    white-space: nowrap; z-index: 9;
+  }
+  #bar .ttl { font-size: 12.5px; color: #e8eaf6; font-weight: 600; padding-right: 2px; }
+  #bar .sep { width: 1px; height: 16px; background: rgba(255, 255, 255, .14); margin: 0 2px; }
+  #bar .sz { font-size: 12px; color: #b9bfe0; padding: 0 4px; }
+  /* 工具条/操作条按钮：与 region.html、面板 .chip 同一套手势
+     （hover 提亮 → 按下缩 .96），只动 transform + 颜色，不动宽高。 */
+  .btn {
+    border: none; border-radius: 8px; padding: 5px 8px; cursor: pointer;
+    font-family: inherit; font-size: 12px; color: #d8ddf5;
+    background: rgba(255, 255, 255, .10);
+    transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+                transform var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .btn:hover { background: rgba(255, 255, 255, .20); }
+  .btn:active { transform: scale(.96); }
+  /* 选中态：底色走当前主题强调色，字色用主进程算好的对比色（--ac-on）。
+     固定写 #10203a 的深蓝字在浅强调色（青柠/浅黄）上会糊成一片。
+     极光主题下 --accent-grad 是品牌四色带（t3 的品牌色本来就是渐变），
+     单色主题推来的是同色渐变，视觉上等同于实色。 */
+  .btn.on {
+    background-color: rgba(var(--ac-rgb), .92);
+    background-image: var(--accent-grad, none);
+    color: var(--ac-on); font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(var(--ac-rgb), .35);
+  }
+  .btn.on:hover {
+    background-color: rgba(var(--ac-rgb), 1);
+    background-image: var(--accent-grad, none);
+    box-shadow: inset 0 0 0 60px rgba(255, 255, 255, .07), 0 0 0 1px rgba(var(--ac-rgb), .35);
+  }
+  .btn svg { width: 13px; height: 13px; display: block; }
+  .rbtn { padding: 5px 9px; }
+  .btn:focus-visible, #acts button:focus-visible, #frame:focus-visible {
+    outline: none; box-shadow: 0 0 0 2px rgba(var(--ac-rgb), .95);
+  }
+
+  /* ---------- 底部操作条 ---------- */
+  #acts {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 12px;
+    background: rgba(12, 16, 22, .90); box-shadow: 0 4px 18px rgba(0, 0, 0, .45);
+    white-space: nowrap; z-index: 9;
+  }
+  #info { font-size: 12px; color: #b9bfe0; padding: 0 6px; }
+  #acts button {
+    border: none; border-radius: 8px; padding: 6px 12px; cursor: pointer;
+    font-family: inherit; font-size: 12.5px; color: #e8eaf6;
+    background: rgba(255, 255, 255, .10);
+    transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+                transform var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+  }
+  #acts button:hover { background: rgba(255, 255, 255, .20); }
+  #acts button:active { transform: scale(.96); }
+  #acts button.pri {
+    background-color: rgba(var(--ac-rgb), .95);
+    background-image: var(--accent-grad, none);
+    color: var(--ac-on); font-weight: 600;
+  }
+  #acts button.pri:hover {
+    background-color: rgba(var(--ac-rgb), 1);
+    background-image: var(--accent-grad, none);
+    box-shadow: inset 0 0 0 60px rgba(255, 255, 255, .07);
+  }
+
+  /* 入场：工具条/操作条淡入上浮。
+     这层是"啪"地压上来的，不加过渡会像画面闪了一下。fill-mode: backwards
+     保证延迟那段就是第一帧（不会先以终态闪一下再动）。 */
+  @keyframes orbRise {
+    from { opacity: 0; transform: translateY(6px) translateX(-50%); }
+    to   { opacity: 1; transform: translateY(0) translateX(-50%); }
+  }
+  #bar { animation: orbRise var(--dur-2) var(--ease) backwards; animation-delay: .02s; }
+  #acts { animation: orbRise var(--dur-2) var(--ease) backwards; animation-delay: .06s; }
+
+  /* 降级：系统开了"减少动态效果"就全关（覆盖层是独立窗口，收不到面板的 html.no-motion） */
+  @media (prefers-reduced-motion: reduce) {
+    #bar, #acts, .btn, #acts button {
+      animation: none !important; transition: none !important;
+    }
+    .btn:active, #acts button:active { transform: none; }
+  }
+</style>
+</head>
+<body>
+  <div id="scope"></div>
+  <div id="scopeLb">录制范围（小框只能摆在这块里）</div>
+
+  <div id="frame" tabindex="0" role="application" aria-label="摄像头小框：拖动移动，拖四边四角调大小">
+    <div class="sil">
+      <svg width="46" height="46" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="7.6" r="3.3"/><path d="M4.6 20.6c0-3.5 3.3-5.8 7.4-5.8s7.4 2.3 7.4 5.8v.4H4.6Z"/></svg>
+    </div>
+    <span class="tag">摄像头画面</span>
+    <div class="hd" data-hd="nw"></div><div class="hd" data-hd="n"></div><div class="hd" data-hd="ne"></div>
+    <div class="hd" data-hd="w"></div><div class="hd" data-hd="e"></div>
+    <div class="hd" data-hd="sw"></div><div class="hd" data-hd="s"></div><div class="hd" data-hd="se"></div>
+  </div>
+
+  <div id="bar">
+    <span class="ttl">摄像头小框</span>
+    <span class="sep"></span>
+    <button class="btn" type="button" data-shape="circle" title="圆形（等比缩放）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="8.5"/></svg>圆形
+    </button>
+    <button class="btn" type="button" data-shape="round" title="圆角矩形（可拖边调宽高）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/></svg>圆角
+    </button>
+    <button class="btn" type="button" data-shape="square" title="方框（可拖边调宽高）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.5" y="3.5" width="17" height="17" rx="1"/></svg>方框
+    </button>
+    <span class="sep" id="ratioSep"></span>
+    <button class="btn rbtn" type="button" data-r="16:9">16:9</button>
+    <button class="btn rbtn" type="button" data-r="4:3">4:3</button>
+    <button class="btn rbtn" type="button" data-r="1:1">1:1</button>
+    <button class="btn rbtn" type="button" data-r="free">自由</button>
+    <button class="btn rbtn" type="button" data-r="custom" id="rbCustom" hidden>自定义</button>
+    <span class="sep"></span>
+    <span class="sz" id="sizeTx"></span>
+  </div>
+
+  <div id="acts">
+    <span id="info">拖动移动 · 拖四边四角调大小 · 方向键微调（Shift 加速）</span>
+    <button id="ok" class="pri" type="button">完成（Enter）</button>
+    <button id="cancel" type="button">取消（Esc）</button>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  var frameEl = document.getElementById('frame');
+  var scopeEl = document.getElementById('scope');
+  var scopeLbEl = document.getElementById('scopeLb');
+  var barEl = document.getElementById('bar');
+  var actsEl = document.getElementById('acts');
+  var sizeTx = document.getElementById('sizeTx');
+  var infoEl = document.getElementById('info');
+  var rbCustom = document.getElementById('rbCustom');
+  var ratioSep = document.getElementById('ratioSep');
+
+  var MIN = 28;              /* 再小就没法抓手柄了 */
+  var SNAP = 12;             /* 贴边吸附距离（CSS px） */
+  var W = 0, H = 0, sf = 1;
+  /* 可摆放范围（CSS px，绝对屏幕坐标）。默认整屏；选了区域录制就收成那块。
+     ⚠️ 存进配置的 bx/by/bw/bh 是**相对这块范围**的比例（也就是相对成片画面），
+     不是相对整屏 —— 否则录左半屏时，小框位置会跟成片对不上。 */
+  var area = { x: 0, y: 0, w: 0, h: 0 };
+  var box = { l: 0, t: 0, w: 160, h: 120 };
+  var shape = 'round', ratio = '4:3', customRatio = '';
+  var drag = null;
+  var done = false;
+
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+  function phys(v) { return Math.round(v * sf); }
+
+  /** 尺寸下限受范围本身约束：范围比手柄还小时，以范围为界。 */
+  function minW() { return Math.min(MIN, area.w); }
+  function minH() { return Math.min(MIN, area.h); }
+
+  /** 是否限定了录制范围（全屏时等于没限定）。 */
+  function isScoped() {
+    return !(areaRatio.x <= 0.001 && areaRatio.y <= 0.001
+      && areaRatio.w >= 0.999 && areaRatio.h >= 0.999);
+  }
+
+  /** 把框夹进可摆放范围（位置夹边、尺寸封顶）。所有改动最后都过这一道。 */
+  function clampBox(b) {
+    b.w = clamp(b.w, minW(), area.w);
+    b.h = clamp(b.h, minH(), area.h);
+    b.l = clamp(b.l, area.x, area.x + area.w - b.w);
+    b.t = clamp(b.t, area.y, area.y + area.h - b.h);
+    return b;
+  }
+
+  /** 比例数值：圆形恒 1；自由 0（不约束）。 */
+  function ratioNum() {
+    if (shape === 'circle') return 1;
+    if (ratio === '16:9') return 16 / 9;
+    if (ratio === '4:3') return 4 / 3;
+    if (ratio === '1:1') return 1;
+    if (ratio === 'custom') return ratioValue(customRatio);
+    return 0;
+  }
+  function ratioValue(str) {
+    var t = String(str || '').trim();
+    var m = t.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+    if (m) { var a = Number(m[1]), b = Number(m[2]); return a > 0 && b > 0 ? a / b : 0; }
+    if (/^\d+(?:\.\d+)?$/.test(t)) { var v = Number(t); return v > 0 ? v : 0; }
+    return 0;
+  }
+
+  /* ---------------- 渲染 ---------------- */
+  function render() {
+    frameEl.style.left = box.l + 'px';
+    frameEl.style.top = box.t + 'px';
+    frameEl.style.width = box.w + 'px';
+    frameEl.style.height = box.h + 'px';
+    frameEl.style.borderRadius = shape === 'circle' ? '50%' : (shape === 'round' ? '16px' : '3px');
+    frameEl.classList.toggle('circle', shape === 'circle');
+    frameEl.classList.toggle('tiny', box.w < 90 || box.h < 70);
+
+    /* 两套口径：占**录制画面**的百分比（就是存进配置的数，跨分辨率/换区域都稳）
+       与屏上真实像素（"遮住了多少"的答案）。 */
+    var pctW = box.w / area.w, pctH = box.h / area.h;
+    sizeTx.textContent = Math.round(pctW * 100) + '% × ' + Math.round(pctH * 100) + '% 画面';
+    infoEl.textContent = '屏上 ' + phys(box.w) + '×' + phys(box.h) + ' px'
+      + (isScoped() ? ' · 只能摆在录制范围内' : '') + ' · 方向键微调';
+
+    syncBtns();
+  }
+
+  function syncBtns() {
+    var shs = barEl.querySelectorAll('[data-shape]');
+    for (var i = 0; i < shs.length; i++) shs[i].classList.toggle('on', shs[i].getAttribute('data-shape') === shape);
+    var isC = shape === 'circle';
+    ratioSep.style.display = isC ? 'none' : '';
+    var rs = barEl.querySelectorAll('[data-r]');
+    for (var j = 0; j < rs.length; j++) {
+      var r = rs[j].getAttribute('data-r');
+      rs[j].style.display = (r === 'custom' && !customRatio) ? 'none' : '';
+      if (isC && r !== 'custom') rs[j].style.display = 'none';
+      rs[j].classList.toggle('on', r === ratio && !isC);
+    }
+    if (rbCustom) {
+      rbCustom.hidden = !customRatio;
+      rbCustom.textContent = '自定义 ' + customRatio;
+    }
+  }
+
+  /* ---------------- 吸附：贴屏幕边与中线 ---------------- */
+  function snapEdge(v, targets) {
+    for (var i = 0; i < targets.length; i++) if (Math.abs(v - targets[i]) <= SNAP) return targets[i];
+    return v;
+  }
+
+  /* ---------------- 尺寸约束 ---------------- */
+  /** 按比例/圆形把宽高捏到一起。from = 'w' 表示"由宽定高"，'h' 反之。 */
+  function conform(w, h, from) {
+    var v = ratioNum();
+    var mLo = minW();
+    if (shape === 'circle') {
+      var m = Math.max(mLo, from === 'h' ? h : w);
+      return { w: m, h: m };
+    }
+    if (!v) return { w: Math.max(mLo, w), h: Math.max(mLo, h) };
+    if (from === 'h') return { w: Math.max(mLo, h * v), h: Math.max(mLo, h) };
+    return { w: Math.max(mLo, w), h: Math.max(mLo, w / v) };
+  }
+
+  /* ---------------- 拖动 ---------------- */
+  function startMove(e) {
+    drag = { mode: 'move', mx: e.clientX, my: e.clientY, l: box.l, t: box.t };
+  }
+  function startResize(dir, e) {
+    drag = { mode: 'resize', dir: dir, mx: e.clientX, my: e.clientY,
+             l: box.l, t: box.t, w: box.w, h: box.h };
+  }
+
+  function onMove(e) {
+    if (!drag) return;
+    var ax2 = area.x + area.w, ay2 = area.y + area.h;
+    if (drag.mode === 'move') {
+      var nl = drag.l + (e.clientX - drag.mx);
+      var nt = drag.t + (e.clientY - drag.my);
+      nl = clamp(nl, area.x, ax2 - box.w);
+      nt = clamp(nt, area.y, ay2 - box.h);
+      /* 贴边吸附：吸的是**录制范围**的边与中线（不是屏幕的） */
+      var sl = snapEdge(nl, [area.x, area.x + (area.w - box.w) / 2, ax2 - box.w]);
+      var st = snapEdge(nt, [area.y, area.y + (area.h - box.h) / 2, ay2 - box.h]);
+      if (sl !== nl) nl = sl;
+      if (st !== nt) nt = st;
+      box.l = clamp(nl, area.x, ax2 - box.w);
+      box.t = clamp(nt, area.y, ay2 - box.h);
+      render();
+      return;
+    }
+    var dir = drag.dir || '';
+    var dx = e.clientX - drag.mx;
+    var dy = e.clientY - drag.my;
+    var hasW = dir.indexOf('w') >= 0, hasE = dir.indexOf('e') >= 0;
+    var hasN = dir.indexOf('n') >= 0, hasS = dir.indexOf('s') >= 0;
+    var l = drag.l, t = drag.t, w = drag.w, h = drag.h;
+    if (hasW) { l = drag.l + dx; w = drag.w - dx; }
+    if (hasE) { w = drag.w + dx; }
+    if (hasN) { t = drag.t + dy; h = drag.h - dy; }
+    if (hasS) { h = drag.h + dy; }
+
+    /* 由"主导方向"决定谁先定：横向拖动定宽，纵向拖动定高 */
+    var from = (!hasW && !hasE) ? 'h' : 'w';
+    var size = conform(w, h, from);
+    w = size.w; h = size.h;
+    /* 锚点修正：拖左边/上边时对边不动 */
+    if (hasW) l = drag.l + drag.w - w;
+    if (hasN) t = drag.t + drag.h - h;
+
+    /* 夹进**可摆放范围**：先夹位置，尺寸超了就缩（不能长到范围之外） */
+    if (l < area.x) { w += l - area.x; l = area.x; }
+    if (t < area.y) { h += t - area.y; t = area.y; }
+    if (l + w > ax2) w = ax2 - l;
+    if (t + h > ay2) h = ay2 - t;
+    if (w < minW() || h < minH()) return;
+    box = { l: l, t: t, w: w, h: h };
+    render();
+  }
+
+  function onUp() { drag = null; }
+
+  /* ---------------- 切换形状 / 比例 ---------------- */
+  function setShape(s) {
+    shape = s;
+    var cx = box.l + box.w / 2, cy = box.t + box.h / 2;
+    var size = conform(box.w, box.h, 'w');
+    placeCentered(cx, cy, size.w, size.h);
+  }
+  function setRatio(r) {
+    ratio = r;
+    var cx = box.l + box.w / 2, cy = box.t + box.h / 2;
+    var size = conform(box.w, box.h, 'w');
+    placeCentered(cx, cy, size.w, size.h);
+  }
+  function placeCentered(cx, cy, w, h) {
+    w = Math.min(w, area.w); h = Math.min(h, area.h);
+    box = clampBox({ l: cx - w / 2, t: cy - h / 2, w: w, h: h });
+    render();
+  }
+
+  /* ---------------- 收尾 ---------------- */
+  function finish(kind) {
+    if (done) return;
+    if (kind === 'ok') {
+      if (box.w < 8 || box.h < 8) return;
+      done = true;
+      /* 归一化基准是**录制范围**（= 成片画面），不是整屏：
+         录左半屏时，bx=0.9 就该落在左半屏的右边，而不是屏幕右边。 */
+      window.orb.done({
+        kind: 'ok',
+        cam: {
+          shape: shape,
+          ratio: ratio,
+          bx: (box.l + box.w / 2 - area.x) / area.w,
+          by: (box.t + box.h / 2 - area.y) / area.h,
+          bw: box.w / area.w,
+          bh: box.h / area.h,
+        },
+      });
+      return;
+    }
+    done = true;
+    window.orb.done({ kind: 'cancel' });
+  }
+
+  /* ---------------- 事件 ---------------- */
+  frameEl.addEventListener('pointerdown', function (e) {
+    if (e.button !== 0) return;
+    var hd = e.target && e.target.getAttribute && e.target.getAttribute('data-hd');
+    if (hd) { startResize(hd, e); } else { startMove(e); }
+    frameEl.focus();
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
+
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); finish('cancel'); return; }
+    if (e.key === 'Enter') { e.preventDefault(); finish('ok'); return; }
+    var step = e.shiftKey ? 10 : 1;
+    var dx = e.key === 'ArrowLeft' ? -step : (e.key === 'ArrowRight' ? step : 0);
+    var dy = e.key === 'ArrowUp' ? -step : (e.key === 'ArrowDown' ? step : 0);
+    if (!dx && !dy) return;
+    e.preventDefault();
+    box.l = clamp(box.l + dx, area.x, area.x + area.w - box.w);
+    box.t = clamp(box.t + dy, area.y, area.y + area.h - box.h);
+    render();
+  });
+
+  /* 右键 = 取消（与框选取词 / 录屏选区一致） */
+  window.addEventListener('contextmenu', function (e) { e.preventDefault(); finish('cancel'); });
+
+  barEl.addEventListener('click', function (e) {
+    var sb = e.target.closest ? e.target.closest('[data-shape]') : null;
+    if (sb) { e.stopPropagation(); setShape(sb.getAttribute('data-shape')); return; }
+    var rb = e.target.closest ? e.target.closest('[data-r]') : null;
+    if (rb) { e.stopPropagation(); setRatio(rb.getAttribute('data-r')); return; }
+  });
+  document.getElementById('ok').addEventListener('click', function (e) { e.stopPropagation(); finish('ok'); });
+  document.getElementById('cancel').addEventListener('click', function (e) { e.stopPropagation(); finish('cancel'); });
+
+  window.addEventListener('resize', function () {
+    var oldW = W, oldH = H;
+    W = document.documentElement.clientWidth;
+    H = document.documentElement.clientHeight;
+    if (!oldW || !oldH) return;
+    /* 按比例跟着缩放：屏幕变了（改分辨率 / 拖到别的缩放档），框与范围一起缩，
+       再把框夹回范围内，免得跑到屏外或越出录制区域 */
+    applyArea();
+    renderScope();
+    box = {
+      l: box.l / oldW * W, t: box.t / oldH * H,
+      w: box.w / oldW * W, h: box.h / oldH * H,
+    };
+    clampBox(box);
+    render();
+  });
+
+  /* ---------------- 初始化 ---------------- */
+
+  /* 可摆放范围 = 录制区域（占屏比例 → CSS px）。全屏录制时就是整屏。
+     比例来源优先级：主进程顺带给的 > 渲染层 localStorage 里存的。 */
+  var areaRatio = { x: 0, y: 0, w: 1, h: 1 };
+
+  function applyArea() {
+    area = { x: areaRatio.x * W, y: areaRatio.y * H, w: areaRatio.w * W, h: areaRatio.h * H };
+    if (area.w < 40) area.w = 40;
+    if (area.h < 40) area.h = 40;
+  }
+
+  function resolveArea(s) {
+    areaRatio = { x: 0, y: 0, w: 1, h: 1 };
+    var rg = (s && s.region) || null;
+    if (!rg) {
+      try {
+        var saved = JSON.parse(localStorage.getItem('orb.recRegion') || 'null');
+        if (saved && saved.mode !== 'full' && saved.ratio) rg = saved.ratio;
+      } catch { /* 存坏了就当没选区域 */ }
+    }
+    if (rg) {
+      var rx = Number(rg.x), ry = Number(rg.y), rw = Number(rg.w), rh = Number(rg.h);
+      var okNums = [rx, ry, rw, rh].every(function (v) { return Number.isFinite(v); });
+      var isFull = rx <= 0.001 && ry <= 0.001 && rw >= 0.999 && rh >= 0.999;
+      if (okNums && rw > 0 && rh > 0 && !isFull) {
+        areaRatio = {
+          x: clamp(rx, 0, 1), y: clamp(ry, 0, 1),
+          w: clamp(rw, 0.05, 1 - clamp(rx, 0, 1)),
+          h: clamp(rh, 0.05, 1 - clamp(ry, 0, 1)),
+        };
+      }
+    }
+    applyArea();
+  }
+
+  function renderScope() {
+    var isFull = areaRatio.x <= 0.001 && areaRatio.y <= 0.001
+      && areaRatio.w >= 0.999 && areaRatio.h >= 0.999;
+    if (isFull) {
+      scopeEl.style.display = 'none';
+      scopeLbEl.style.display = 'none';
+      barEl.style.left = '50%';
+      actsEl.style.left = '50%';
+      return;
+    }
+    scopeEl.style.display = 'block';
+    scopeEl.style.left = area.x + 'px';
+    scopeEl.style.top = area.y + 'px';
+    scopeEl.style.width = area.w + 'px';
+    scopeEl.style.height = area.h + 'px';
+    /* 标签贴区域左上角外侧；贴顶时挪到内侧，别被屏幕裁掉 */
+    scopeLbEl.style.display = 'block';
+    scopeLbEl.style.left = clamp(area.x, 4, Math.max(4, W - 220)) + 'px';
+    scopeLbEl.style.top = (area.y > 26 ? area.y - 24 : area.y + 6) + 'px';
+    /* 工具条跟着范围的横向中线走：范围只占左半时，工具条居中在整屏会跟画面割裂 */
+    var midX = area.x + area.w / 2;
+    barEl.style.left = midX + 'px';
+    actsEl.style.left = midX + 'px';
+  }
+
+  function boot() {
+    W = document.documentElement.clientWidth || window.innerWidth;
+    H = document.documentElement.clientHeight || window.innerHeight;
+    var p = (window.orb && window.orb.init) ? window.orb.init() : Promise.resolve(null);
+    Promise.resolve(p).then(function (s) {
+      sf = (s && Number(s.sf)) > 0 ? Number(s.sf) : (window.devicePixelRatio || 1);
+      var c = (s && s.cam) || {};
+      shape = ['circle', 'round', 'square'].indexOf(c.shape) >= 0 ? c.shape : 'round';
+      ratio = ['16:9', '4:3', '1:1', 'custom', 'free'].indexOf(c.ratio) >= 0 ? c.ratio : '4:3';
+      customRatio = String(c.customRatio || '');
+      if (ratio === 'custom' && !ratioValue(customRatio)) ratio = 'free';
+
+      /* 先定范围再摆框：bx/by/bw/bh 是**相对录制范围**的比例，
+         范围变了（比如刚从整屏改成左半屏）就得按新范围换算，并夹回范围内。 */
+      resolveArea(s);
+      renderScope();
+
+      var bw = Number(c.bw) > 0 ? Number(c.bw) : 0.115;
+      var bh = Number(c.bh) > 0 ? Number(c.bh) : 0.15;
+      var bx = Number.isFinite(Number(c.bx)) ? Number(c.bx) : 0.76;
+      var by = Number.isFinite(Number(c.by)) ? Number(c.by) : 0.72;
+      var w = clamp(bw * area.w, minW(), area.w);
+      var h = clamp(bh * area.h, minH(), area.h);
+      box = clampBox({
+        l: area.x + bx * area.w - w / 2,
+        t: area.y + by * area.h - h / 2,
+        w: w, h: h,
+      });
+      render();
+      frameEl.focus();
+    });
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

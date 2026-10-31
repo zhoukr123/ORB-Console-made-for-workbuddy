@@ -10,6 +10,7 @@ const { spawn, execFile } = require("node:child_process");
    main.js 已经两千行，这两块的职责边界很清晰（磁盘目录管理、字节级容器修补），
    拆出去既能单测，也让面板相关改动不必再动主流程。 */
 const storage = require("./storage");
+const memory = require("./memory");
 const mp4finalize = require("./mp4finalize");
 /* Snipaste 调用接口（截屏功能走它：检测 / 唤起 / 落盘到截屏分区）。 */
 const snipaste = require("./snipaste");
@@ -49,6 +50,16 @@ try {
  * 走注入而不是让 storage 自己 require("../main")：那会形成 require 环，
  * 两边拿到的都是还没初始化完的半成品模块对象。 */
 storage.init({
+  dataRoot: DATA_ROOT,
+  getState: () => state,
+  setState: (patch) => saveState(patch),
+  log: (...a) => log(...a),
+});
+
+/* 长期记忆引擎：与 storage 同根，记忆库落在 <DATA_ROOT>/memory/memory.json。
+ * 同样走注入而非 require 环（见 storage 头注）。所有读写经主进程 safeHandle，
+ * 渲染进程只通过 preload 白名单的 invoke 调用，绝不直接碰文件。 */
+memory.init({
   dataRoot: DATA_ROOT,
   getState: () => state,
   setState: (patch) => saveState(patch),
@@ -900,8 +911,20 @@ function createPanel() {
   });
   /* 面板可见 = 不节流（视觉循环要跟手）；收起 = 立刻恢复节流（省 CPU）。
      这个开关运行时可以改，不必重建窗口。 */
-  panel.on("show", () => { try { panel.webContents.setBackgroundThrottling(false); } catch {} });
-  panel.on("hide", () => { try { panel.webContents.setBackgroundThrottling(true); } catch {} });
+  panel.on("show", () => {
+    try { panel.webContents.setBackgroundThrottling(false); } catch {}
+    /* 面板被唤出：通知渲染层跑一次「离开 ≥4 分钟再开」的问候判定。
+       不能只靠渲染层的 visibilitychange —— hide()/show() 在部分环境不触发它
+       （面板里向导/截图引导都为此加了 700ms 轮询兜底），而主进程的 window
+       'show' 事件是可靠的，用它兜住。发送失败（窗口正在销毁）忽略即可。 */
+    try { panel.webContents.send("panel-shown"); } catch {}
+  });
+  panel.on("hide", () => {
+    try { panel.webContents.setBackgroundThrottling(true); } catch {}
+    /* 记下「收起时刻」：让「离开 ≥4 分钟」从真正收起起算，而不是从最后一次
+       键盘/点击算（自动收起前用户可能已悬停阅读一段时间，按操作算会提前弹）。 */
+    try { panel.webContents.send("panel-hidden"); } catch {}
+  });
   panel.loadFile(path.join(__dirname, "panel.html"));
   /* 桌面模糊底图：面板玻璃态（t1/t2）时要抓桌面实拍。挂载即可，
      抓不抓由渲染层的 glass-bg-want 说了算（非玻璃态零开销）。
@@ -1307,8 +1330,38 @@ function createToolbar() {
    换肤时面板会经 theme-changed 报新主题名 + 算完的令牌族，这里即时重打/重推。
    executeJavaScript 走 CDP 求值，不受页面 CSP script-src 约束（border.html 无脚本也推得动）。 */
 let panelThemeVars = {};
+/* 小窗里有一批写法是 `rgba(var(--ac-rgb), .5)` —— 需要一个 "r,g,b" 三元组，
+   而面板报上来的 --accent 是 hex。统一在这里算一次，省得每个小窗各写一份 hex 解析
+   （写错了不报错、只是颜色静默退回兜底值，正是本项目最烦的一类 bug）。 */
+function hexToRgbTriple(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+  if (!m) return "";
+  const n = parseInt(m[1], 16);
+  return ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255);
+}
+/* 强调色实底上该用白字还是黑字：按 WCAG 相对亮度选对比度高的一支。
+   覆盖层的"选中预设/主按钮"是**实底**（不像面板 .chip.sel 是浅底深字），
+   写死一个 #10203a 碰上青柠、浅黄这类强调色就整颗钮糊掉。 */
+function pickOnColor(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+  if (!m) return "";
+  const n = parseInt(m[1], 16);
+  const lin = (c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+  const L = 0.2126 * lin(((n >> 16) & 255) / 255)
+    + 0.7152 * lin(((n >> 8) & 255) / 255)
+    + 0.0722 * lin((n & 255) / 255);
+  return 1.05 / (L + 0.05) >= (L + 0.05) / 0.05 ? "#ffffff" : "#101828";
+}
 function themeVarsScript() {
-  return "(() => { const v = " + JSON.stringify(panelThemeVars) +
+  let vars = panelThemeVars;
+  const accent = panelThemeVars["--accent"];
+  const triple = hexToRgbTriple(accent);
+  const on = pickOnColor(accent);
+  if (triple) {
+    vars = Object.assign({}, panelThemeVars, { "--ac-rgb": triple });
+    if (on) vars["--ac-on"] = on;
+  }
+  return "(() => { const v = " + JSON.stringify(vars) +
     "; for (const k in v) { try { document.documentElement.style.setProperty(k, v[k]); } catch {} } })()";
 }
 function applyToolbarTheme() {
@@ -1321,12 +1374,15 @@ function applyToolbarTheme() {
     } catch {}
   }
 }
-/* 令牌族推给所有活着的小窗：悬浮球 / 录制边框 / 字幕窗 / 悬浮控制条。
-   这些窗口没有主题系统，只认推进来的 CSS 变量；推不了就保持各自默认（不致命）。 */
+/* 令牌族推给所有活着的小窗：悬浮球 / 录制边框 / 字幕窗 / 悬浮控制条 / 录屏选区 / 摄像头摆位。
+   这些窗口没有主题系统，只认推进来的 CSS 变量；推不了就保持各自默认（不致命）。
+   录屏选区与摄像头摆位是 v1.4.3 新增的两个全屏覆盖层：它们压在桌面上、底色必须恒深
+   （浅色 HUD 遇上白窗口就看不见），但**强调色要跟面板同一支**，否则面板是紫、浮层是蓝，
+   就是"外来色"。所以这两个只吃 --accent 家族，不吃 --bg/--fg 那套明暗。 */
 function pushThemeVars() {
   if (!Object.keys(panelThemeVars).length) return;
   const js = themeVarsScript();
-  for (const w of [ball, borderWin, subWin, recbarWin]) {
+  for (const w of [ball, borderWin, subWin, recbarWin, regionWin, camStageWin]) {
     if (w && !w.isDestroyed()) { try { w.webContents.executeJavaScript(js); } catch {} }
   }
 }
@@ -2985,8 +3041,8 @@ const GIF_IDS = new Set(["done", "greet", "loading", "nod", "shy", "sleep", "thi
 let characterCfg = {
   persona: "gentle",
   gif: { enabled: true, off: [] },
-  memory: { enabled: false, source: "" },
-  tts: { enabled: false },
+  memory: { enabled: false, project: "", auto: true },
+  tts: { enabled: false, offline: true, gen: true },
 };
 function sanitizeCharacter(raw) {
   const o = (raw && typeof raw === "object") ? raw : {};
@@ -2994,14 +3050,18 @@ function sanitizeCharacter(raw) {
   const g = (o.gif && typeof o.gif === "object") ? o.gif : {};
   const off = Array.isArray(g.off) ? g.off.filter((x) => GIF_IDS.has(x)) : [];
   const m = (o.memory && typeof o.memory === "object") ? o.memory : {};
-  const MEM_SRC = new Set(["", "project", "chat"]);
-  const source = MEM_SRC.has(String(m.source || "")) ? String(m.source || "") : "";
+  /* 旧版 memory 是 {enabled, source:'project'|'chat'}（读哪个文件），新版是本地记忆库 +
+     project 锚（空串 = 全局，非空 = 只取该项目的条目）+ auto 自动写入。
+     2026-10-31 之前这里还按 source 非空来卡 enabled，新版面板没有 source 字段，
+     结果 enabled 被永久压成 false —— 面板开了、球收到的却是关。现已按新模型校验。 */
+  const project = typeof m.project === "string" ? m.project.slice(0, 200) : "";
   const t = (o.tts && typeof o.tts === "object") ? o.tts : {};
   return {
     persona,
     gif: { enabled: g.enabled !== false, off: [...new Set(off)] },
-    memory: { enabled: !!m.enabled && !!source, source },
-    tts: { enabled: !!t.enabled },
+    memory: { enabled: !!m.enabled, project, auto: m.auto !== false },
+    /* 球只关心「开没开声音」和「能不能走离线包」，其余 TTS 参数留在面板侧，不必中转。 */
+    tts: { enabled: !!t.enabled, offline: t.offline !== false, gen: t.gen !== false },
   };
 }
 ipcMain.on("character", (_e, cfg) => {
@@ -3427,6 +3487,33 @@ safeHandle("storage-migrate", () => {
 
 safeHandle("storage-open", async (_e, kind) => storage.openSubdir(kind), () => ({ ok: false, path: null, error: "打开目录失败" }));
 
+/* ---------- 长期记忆引擎 IPC ----------
+ * 渲染进程（面板）通过这些通道读写记忆库；所有 fs 操作都在主进程内完成，
+ * 渲染进程拿不到路径、碰不到原始文件句柄。recall 供派发任务前注入上下文。 */
+safeHandle("memory-recall", (_e, query, opts) => memory.recall(query || "", opts || {}));
+safeHandle("memory-list", (_e, level, opts) =>
+  level ? memory.list(level, opts || {}) : memory.getAllActive());
+safeHandle("memory-add", (_e, entry) => {
+  const row = memory.insert(entry);
+  return { ok: true, row };
+}, () => ({ ok: false, error: "写入失败" }));
+safeHandle("memory-update", (_e, id, patch) => ({ ok: memory.update(id, patch || {}) }));
+safeHandle("memory-remove", (_e, id) => ({ ok: memory.remove(id) }));
+safeHandle("memory-stats", () => memory.stats());
+/* 压缩：挑候选与归档都放主进程算，渲染层只决定"压不压、拿哪一层"。
+   归档而非删除——原文留在 memory.json 里可回溯（status=archived 即退出召回与预算）。 */
+safeHandle("memory-compact-plan", (_e, level, opts) => {
+  const rows = memory.compactCandidates(level, opts || {});
+  return { level, count: rows.length, chars: rows.reduce((s, r) => s + String(r.content || "").length, 0), rows };
+}, () => ({ level, count: 0, chars: 0, rows: [], error: "规划失败" }));
+safeHandle("memory-archive", (_e, ids, meta) => ({ ok: true, archived: memory.archiveMany(ids, meta || {}) }));
+safeHandle("memory-prune", (_e, maxAgeDays) => {
+  const days = Number(maxAgeDays) > 0 ? Number(maxAgeDays) : 90;
+  return { ok: true, pruned: memory.pruneArchived(days * 86_400_000) };
+});
+
+
+
 /* ---------------- 录屏 / 截屏期间「隐藏控制台」 ----------------
  * 两条开关（设置 › 通道）：
  *   recHideConsole  录屏开始时把控制台**真的关掉**（不是只从采集里排除）
@@ -3534,9 +3621,14 @@ function createPickWin() {
   return pickWin;
 }
 
-/** 覆盖层还在就把自家窗口藏掉：同级置顶，留在屏幕上会盖住覆盖层，那块就框不了。 */
+/** 覆盖层还在就把自家窗口藏掉：同级置顶，留在屏幕上会盖住覆盖层，那块就框不了。
+ *
+ * ⚠️ 必须幂等（2026-10-30 修）：`pickRect` 每转一圈（含「重框」）都会调它，
+ * 而原来第一行是 `pickHiddenWins = []` —— 第二圈时窗口**已经隐藏**，
+ * `isVisible()` 全为 false → 一条都不记 → 结束时 `restoreAfterPick` 无事可做，
+ * 面板/悬浮球永久消失（用户只能去任务管理器杀进程）。已有记录就不重来。 */
 function hideForPick() {
-  pickHiddenWins = [];
+  if (pickHiddenWins.length) return;
   for (const w of [panel, ball, toolbar, subWin, borderWin]) {
     if (!w || w.isDestroyed()) continue;
     try { if (w.isVisible()) { pickHiddenWins.push(w); w.hide(); } } catch { /* 正在销毁 */ }
@@ -3550,8 +3642,17 @@ function restoreAfterPick() {
   pickHiddenWins = [];
 }
 
+/* 覆盖层是**复用**的（hide 不 destroy），页面里的 phase 会留在上一轮。
+   只 hide 不复位的话：上一轮停在 'busy'（"识别中…"）或 'confirm'（旧底图 + 旧框），
+   下一次 show 出来就是一团旧的定格画面，鼠标拖框被 `phase !== 'rect'` 挡掉 ——
+   用户看到的正是"框选后立即卡住、点什么都没反应"。所以收尾一律复位。 */
+function resetPickPage() {
+  sendToPick("pick-reset", null);
+}
+
 function closePickWin() {
   if (pickWin && !pickWin.isDestroyed()) { try { pickWin.hide(); } catch { /* ignore */ } }
+  resetPickPage();
 }
 
 function sendToPick(channel, payload) {
@@ -3589,6 +3690,9 @@ function pickRect(disp) {
   const win = createPickWin();
   if (!win || win.isDestroyed()) return Promise.resolve(null);
   win.setBounds({ x: disp.bounds.x, y: disp.bounds.y, width: disp.bounds.width, height: disp.bounds.height });
+  /* 开场先复位一次：万一上一轮是被强杀/异常收尾的，页面可能还停在 busy/confirm，
+     那道 `phase !== 'rect'` 会让这一轮的拖框完全没反应。复位是无害的幂等动作。 */
+  resetPickPage();
   win.show();
   win.focus();
   return awaitPick("rect");
@@ -3623,6 +3727,10 @@ ipcMain.on("pick-done", (_e, msg) => {
   if (kind === "rect") {
     pickResolve = null;
     pickPhase = "idle";
+    /* 这一轮等待结束了，60 秒兜底定时器必须一并撤掉 —— 它到点时 pickResolve 已经
+       是 null，只会空转一圈什么都不做，白白吊着一条定时器（早期还让它跟下一轮
+       的 timer 抢同一个变量）。 */
+    if (pickTimer) { clearTimeout(pickTimer); pickTimer = null; }
     const rect = msg.rect;
     const ok = rect && typeof rect.x === "number" && typeof rect.width === "number";
     r(ok ? rect : null);
@@ -3703,21 +3811,37 @@ async function ocrViaBridge(dataUrl) {
 }
 
 safeHandle("ocr-pick", async () => {
+  const t0 = Date.now();
   try {
     /* 从**鼠标所在的**那块屏弹覆盖层：多屏时不能在别处弹。 */
     const disp = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
     /* 整轮 = 框选 → 抓图 → OCR → 确认；点「重框」就再转一圈（覆盖层始终不关）。 */
     for (;;) {
       const rect = await pickRect(disp);
-      if (!rect) return { ok: false, cancelled: true };
+      if (!rect) { log("[pick] 已取消（框选阶段）"); return { ok: false, cancelled: true }; }
       const shot = await grabRegion(disp, rect);
-      if (!shot || !shot.dataUrl) return { ok: false, error: "没拿到屏幕图像（桌面捕获失败）" };
+      if (!shot || !shot.dataUrl) { log("[pick] 失败：桌面捕获没拿到图像"); return { ok: false, error: "没拿到屏幕图像（桌面捕获失败）" }; }
       const done = await ocrOnce(shot, rect);
       if (done.redo) continue;
+      log("[pick] 结束 " + (done.ok ? (done.text ? "拿到 " + done.text.length + " 字" : "没认出文字") : "未完成")
+        + "，整轮 " + (Date.now() - t0) + "ms");
       return done;
     }
   } catch (e) {
+    log("[pick] 异常：" + String((e && e.message) || e));
     return { ok: false, error: String((e && e.message) || e) };
+  } finally {
+    /* ⚠️ 这里必须无条件清场（2026-10-30 修，死锁级）。
+     * 覆盖层是**整屏压暗 + screen-saver 级置顶**，而自家窗口（面板 / 悬浮球）
+     * 在 `hideForPick` 里被藏掉了。原来只有"用户点了确定/取消"这一条路会
+     * `closePickWin() + restoreAfterPick()`；所有提前 return 的分支 ——
+     * 截图失败、OCR 一个字没认出来（empty）、任何异常 —— 都直接跑掉，
+     * 结果：暗色覆盖层永远压在整屏上、写着"识别中…"、面板也不会回来。
+     * 用户感受就是"框完立刻卡死，点什么都没反应"，只能杀进程。
+     * （2026-10-29 那次日志停在 `[pick] 区域 …` 之后就再无一行，正是此故。）
+     * 放在 finally 里，正常收尾重复调也无害：hide 幂等、restoreAfterPick 清空即空转。 */
+    closePickWin();
+    restoreAfterPick();
   }
 }, () => ({ ok: false, error: "取词通道不可用" }));
 
@@ -3746,6 +3870,359 @@ async function ocrOnce(shot, rect) {
     if (chosen.redo) return { redo: true };
     return { ok: true, text: String(chosen.text || "").trim(), dataUrl: shot.dataUrl };
 }
+
+/* ---------------- 录屏区域选择（覆盖层） ----------------
+ * 与「框选取词」同源（全屏透明覆盖层 + 藏自家窗口 + 挂死兜底），但**窗口不复用、
+ * 每轮新建**：region 只有单阶段（框好就走），没有 pick 那种 rect→busy→confirm
+ * 的状态机，复用反而要多维护一套复位协议（pick 那几个复用坑见上面的注释）。
+ *
+ * 产出是**相对主显示器的归一化比例**（0..1），不是像素：
+ *   · 面板存进 localStorage，换分辨率 / 改缩放比例后依然指得对地方；
+ *   · 真正下发给采集器时再按 scaleFactor 换成物理像素（DXGI 用物理像素）。
+ * ⚠️ native 链路只支持主显示器（--display 0），所以覆盖层只铺主屏。
+ */
+let regionWin = null;
+let regionPending = null;      // { resolve, timer, init }
+let regionHiddenWins = [];
+
+/** 0..1 的矩形；任何一项不合法就返回 null（= 全屏）。 */
+function normalizeRatio(r) {
+  if (!r || typeof r !== "object") return null;
+  const nums = ["x", "y", "w", "h"].map((k) => Number(r[k]));
+  if (!nums.every((v) => Number.isFinite(v))) return null;
+  const [x, y, w, h] = nums;
+  if (w <= 0 || h <= 0) return null;
+  const cx = Math.min(1, Math.max(0, x));
+  const cy = Math.min(1, Math.max(0, y));
+  return {
+    x: cx,
+    y: cy,
+    w: Math.min(1 - cx, Math.max(0, w)),
+    h: Math.min(1 - cy, Math.max(0, h)),
+  };
+}
+
+/** 比例 → 物理像素矩形（相对主显示器左上角）。null/全屏时返回 null（= 不裁剪）。 */
+function ratioToPhysical(ratio) {
+  const r = normalizeRatio(ratio);
+  if (!r) return null;
+  // 全屏不用裁剪：少传一个 --rect，采集器走的就是原路径
+  if (r.x <= 0.0001 && r.y <= 0.0001 && r.w >= 0.9999 && r.h >= 0.9999) return null;
+  let disp;
+  try { disp = screen.getPrimaryDisplay(); } catch { return null; }
+  const sf = disp.scaleFactor || 1;
+  const pw = disp.size.width * sf;
+  const ph = disp.size.height * sf;
+  const rect = {
+    x: Math.round(r.x * pw),
+    y: Math.round(r.y * ph),
+    w: Math.round(r.w * pw),
+    h: Math.round(r.h * ph),
+  };
+  if (rect.w < 16 || rect.h < 16) return null;   // 太小的区域没意义，按整屏走
+  return rect;
+}
+
+/** 藏自家窗口：覆盖层是 screen-saver 级置顶，同级窗口留在上面会盖住覆盖层。幂等。 */
+function hideForRegion() {
+  if (regionHiddenWins.length) return;
+  for (const w of [panel, ball, toolbar, subWin, borderWin, recbarWin]) {
+    if (!w || w.isDestroyed()) continue;
+    try { if (w.isVisible()) { regionHiddenWins.push(w); w.hide(); } } catch { /* 正在销毁 */ }
+  }
+}
+function restoreAfterRegion() {
+  for (const w of regionHiddenWins) {
+    if (!w || w.isDestroyed()) continue;
+    try { w.show(); } catch { /* ignore */ }
+  }
+  regionHiddenWins = [];
+}
+
+/** 结束一轮选择：清场 + settle。reason 只用于日志。 */
+function finishRegion(msg) {
+  const pending = regionPending;
+  if (!pending) return;
+  regionPending = null;
+  if (pending.timer) { clearTimeout(pending.timer); pending.timer = null; }
+  const win = regionWin;
+  regionWin = null;
+  if (win && !win.isDestroyed()) { try { win.destroy(); } catch { /* ignore */ } }
+  restoreAfterRegion();
+
+  const kind = msg && msg.kind;
+  if (kind !== "ok") {
+    log("[region] 已取消（" + (kind || "no-msg") + "）");
+    pending.resolve({ ok: false, cancelled: true });
+    return;
+  }
+  const dipRect = msg && msg.rect;
+  const init = pending.init || { dip: { w: 1, h: 1 }, sf: 1 };
+  const okRect = dipRect
+    && ["x", "y", "w", "h"].every((k) => Number.isFinite(Number(dipRect[k])))
+    && Number(dipRect.w) >= 8 && Number(dipRect.h) >= 8;
+  if (!okRect) {
+    log("[region] 覆盖层回传的矩形不合法，按取消处理");
+    pending.resolve({ ok: false, cancelled: true });
+    return;
+  }
+  const dw = Math.max(1, init.dip.w);
+  const dh = Math.max(1, init.dip.h);
+  const ratio = normalizeRatio({
+    x: Number(dipRect.x) / dw,
+    y: Number(dipRect.y) / dh,
+    w: Number(dipRect.w) / dw,
+    h: Number(dipRect.h) / dh,
+  });
+  log("[region] 选定 " + Math.round(dipRect.w) + "×" + Math.round(dipRect.h)
+    + " @ " + Math.round(dipRect.x) + "," + Math.round(dipRect.y)
+    + " → 比例 " + (ratio ? (ratio.w * 100).toFixed(1) + "% × " + (ratio.h * 100).toFixed(1) + "%" : "无"));
+  pending.resolve({
+    ok: true,
+    ratio,
+    dip: { x: Math.round(dipRect.x), y: Math.round(dipRect.y), w: Math.round(dipRect.w), h: Math.round(dipRect.h) },
+    phys: ratioToPhysical(ratio),
+    display: { w: dw, h: dh, sf: init.sf },
+  });
+}
+
+/** 覆盖层加载后主动来取初始状态（invoke，比"创建完再 send"少一个竞态）。 */
+safeHandle("region-init", () => {
+  const p = regionPending;
+  return p ? p.init : { ratio: { x: 0, y: 0, w: 1, h: 1 }, dip: { w: 1, h: 1 }, sf: 1 };
+}, () => ({ ratio: { x: 0, y: 0, w: 1, h: 1 }, dip: { w: 1, h: 1 }, sf: 1 }));
+
+ipcMain.on("region-done", (_e, msg) => { finishRegion(msg); });
+
+safeHandle("cap-region-pick", async (_e, opts) => {
+  if (regionPending) return { ok: false, error: "已经有一个选区覆盖层在显示了" };
+  const o = opts && typeof opts === "object" ? opts : {};
+  let disp;
+  try { disp = screen.getPrimaryDisplay(); }
+  catch (e) { return { ok: false, error: "拿不到主显示器信息：" + ((e && e.message) || String(e)) }; }
+
+  const init = {
+    ratio: normalizeRatio(o.ratio) || { x: 0, y: 0, w: 1, h: 1 },
+    dip: { w: disp.size.width, h: disp.size.height },
+    sf: disp.scaleFactor || 1,
+  };
+
+  let win;
+  try {
+    win = new BrowserWindow({
+      show: false, frame: false, transparent: true,
+      resizable: false, movable: false, focusable: true, hasShadow: false,
+      skipTaskbar: true, alwaysOnTop: true, backgroundColor: "#00000000",
+      fullscreenable: false, minimizable: false, maximizable: false,
+      webPreferences: {
+        contextIsolation: true,
+        preload: path.join(__dirname, "region-preload.js"),
+        backgroundThrottling: false,
+      },
+    });
+  } catch (e) {
+    return { ok: false, error: "创建选区窗口失败：" + ((e && e.message) || String(e)) };
+  }
+  regionWin = win;
+  win.on("closed", () => { if (regionWin === win) regionWin = null; });
+
+  /* ⚠️ pending 必须在 loadFile **之前**挂上：页面脚本一加载完就会 invoke
+     region-init 来取初始矩形，晚一步设它，取到的就是兜底全屏 ——
+     表现是"上次存的左半屏，这次打开覆盖层却是空的"。 */
+  const result = new Promise((resolve) => {
+    regionPending = {
+      resolve,
+      init,
+      timer: setTimeout(() => {
+        /* 挂死兜底：用户切走 / 忘了这层还压着 → 90 秒自己撤。
+           没有它，整屏会一直暗着，看起来就是死机（pick 那边踩过同样的坑）。 */
+        log("[region] 超时未操作，自动撤下覆盖层");
+        finishRegion({ kind: "timeout" });
+      }, 90000),
+    };
+  });
+
+  try {
+    win.setBounds(disp.bounds);
+    win.setAlwaysOnTop(true, "screen-saver");
+    await win.loadFile(path.join(__dirname, "region.html"));
+    /* 页面脚本已经跑过一轮（用的是兜底色），这里把主题强调色盖上去。
+       executeJavaScript 改的是 <html> 的内联变量，覆盖后整页即时重绘。 */
+    pushThemeVars();
+  } catch (e) {
+    finishRegion({ kind: "loadfail" });
+    return { ok: false, error: "选区覆盖层加载失败：" + ((e && e.message) || String(e)) };
+  }
+
+  hideForRegion();
+  try { win.show(); win.focus(); } catch { /* ignore */ }
+  return result;
+}, (_e, opts) => ({ ok: false, error: "选区通道不可用" }));
+
+/* ---------------- 摄像头小框 · 全屏摆位 ----------------
+ * 与录屏选区（region）同一套覆盖层套路，但**独立一套窗口与"藏了什么"记录**：
+ * 两者可能先后被打开，共用一份数组会把对方记下的窗口也恢复成可见。
+ *
+ * 为什么要有这一层（用户原话："预览模式也类似做嵌入整个屏幕，而不用小窗模拟"）：
+ * 面板里那个舞台只有三百多像素宽，要表示 1920 宽的画面只能放大 2.6 倍画示意图 ——
+ * 用户看到的尺寸/位置和真实屏幕对不上，也判断不出小框遮住了什么。
+ * 铺到真实桌面上、按真实比例画框，才是"所见即成片"。
+ */
+let camStageWin = null;
+let camStagePending = null;
+let camStageHiddenWins = [];
+
+function hideForCamStage() {
+  if (camStageHiddenWins.length) return;
+  for (const w of [panel, ball, toolbar, subWin, borderWin, recbarWin]) {
+    if (!w || w.isDestroyed()) continue;
+    try { if (w.isVisible()) { camStageHiddenWins.push(w); w.hide(); } } catch { /* 正在销毁 */ }
+  }
+}
+function restoreAfterCamStage() {
+  for (const w of camStageHiddenWins) {
+    if (!w || w.isDestroyed()) continue;
+    try { w.show(); } catch { /* ignore */ }
+  }
+  camStageHiddenWins = [];
+}
+
+function finishCamStage(msg) {
+  const pending = camStagePending;
+  if (!pending) return;
+  camStagePending = null;
+  if (pending.timer) { clearTimeout(pending.timer); pending.timer = null; }
+  const win = camStageWin;
+  camStageWin = null;
+  if (win && !win.isDestroyed()) { try { win.destroy(); } catch { /* ignore */ } }
+  restoreAfterCamStage();
+
+  const kind = msg && msg.kind;
+  if (kind !== "ok") {
+    log("[camstage] 已取消（" + (kind || "no-msg") + "）");
+    pending.resolve({ ok: false, cancelled: true });
+    return;
+  }
+  const c = msg && msg.cam;
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : NaN);
+  const geomOk = c && [c.bx, c.by, c.bw, c.bh].every((v) => Number.isFinite(num(v)))
+    && num(c.bw) > 0 && num(c.bh) > 0;
+  if (!geomOk) {
+    log("[camstage] 覆盖层回传的几何不合法，按取消处理");
+    pending.resolve({ ok: false, cancelled: true });
+    return;
+  }
+  /* 只做范围夹取，形状/比例的合法性仍交给 set-reccam 那一道（一处口径） */
+  const clamp01 = (v) => Math.min(1, Math.max(0, num(v)));
+  const size = (v) => Math.min(0.6, Math.max(0.05, num(v)));
+  const cam = {
+    shape: String(c.shape || "round"),
+    ratio: String(c.ratio || "4:3"),
+    bx: clamp01(c.bx),
+    by: clamp01(c.by),
+    bw: size(c.bw),
+    bh: size(c.bh),
+  };
+  log("[camstage] 摆位 " + (Math.round(cam.bw * 1000) / 10) + "% × "
+    + (Math.round(cam.bh * 1000) / 10) + "% @ "
+    + (Math.round(cam.bx * 1000) / 10) + "," + (Math.round(cam.by * 1000) / 10));
+  pending.resolve({ ok: true, cam });
+}
+
+safeHandle("cam-stage-init", () => {
+  const p = camStagePending;
+  return p ? p.init : {
+    cam: { shape: "round", ratio: "4:3", customRatio: "", bx: 0.76, by: 0.72, bw: 0.115, bh: 0.15 },
+    dip: { w: 1, h: 1 },
+    sf: 1,
+  };
+}, () => ({
+  cam: { shape: "round", ratio: "4:3", customRatio: "", bx: 0.76, by: 0.72, bw: 0.115, bh: 0.15 },
+  dip: { w: 1, h: 1 },
+  sf: 1,
+}));
+
+ipcMain.on("cam-stage-done", (_e, msg) => { finishCamStage(msg); });
+
+safeHandle("cam-stage-open", async (_e, opts) => {
+  if (camStagePending) return { ok: false, error: "已经有一个摆位层在显示了" };
+  const o = opts && typeof opts === "object" ? opts : {};
+  let disp;
+  try { disp = screen.getPrimaryDisplay(); }
+  catch (e) { return { ok: false, error: "拿不到主显示器信息：" + ((e && e.message) || String(e)) }; }
+
+  /* 初始几何由面板给（它才是 camPrefs 的主人）；缺项就按主进程的当前配置兜底 */
+  normalizeRecCam();
+  const src = (o.cam && typeof o.cam === "object") ? o.cam : state.recCam;
+  /* 录制区域（0..1 比例）：面板显式传，摆位层据此决定"框最远能摆到哪"。
+     不靠跨窗口读 localStorage —— 那依赖 file:// 同源共享，换个分区或写盘晚一拍就错。
+     面板全屏时传的是 {0,0,1,1} 而不是省略，所以这里"有 region 且合法"就一律照传。 */
+  const rgIn = (o.region && typeof o.region === "object") ? o.region : null;
+  const rgNum = rgIn ? ["x", "y", "w", "h"].map((k) => Number(rgIn[k])) : null;
+  const rgOk = !!rgNum && rgNum.every((v) => Number.isFinite(v))
+    && rgNum[2] > 0 && rgNum[3] > 0;
+  const init = {
+    cam: {
+      shape: src.shape || state.recCam.shape,
+      ratio: src.ratio || state.recCam.ratio,
+      customRatio: typeof src.customRatio === "string" ? src.customRatio : state.recCam.customRatio,
+      bx: Number.isFinite(Number(src.bx)) ? Number(src.bx) : state.recCam.bx,
+      by: Number.isFinite(Number(src.by)) ? Number(src.by) : state.recCam.by,
+      bw: Number.isFinite(Number(src.bw)) ? Number(src.bw) : state.recCam.bw,
+      bh: Number.isFinite(Number(src.bh)) ? Number(src.bh) : state.recCam.bh,
+    },
+    dip: { w: disp.size.width, h: disp.size.height },
+    sf: disp.scaleFactor || 1,
+    region: rgOk
+      ? { x: rgNum[0], y: rgNum[1], w: rgNum[2], h: rgNum[3] }
+      : null,
+  };
+
+  let win;
+  try {
+    win = new BrowserWindow({
+      show: false, frame: false, transparent: true,
+      resizable: false, movable: false, focusable: true, hasShadow: false,
+      skipTaskbar: true, alwaysOnTop: true, backgroundColor: "#00000000",
+      fullscreenable: false, minimizable: false, maximizable: false,
+      webPreferences: {
+        contextIsolation: true,
+        preload: path.join(__dirname, "camstage-preload.js"),
+        backgroundThrottling: false,
+      },
+    });
+  } catch (e) {
+    return { ok: false, error: "创建摆位窗口失败：" + ((e && e.message) || String(e)) };
+  }
+  camStageWin = win;
+  win.on("closed", () => { if (camStageWin === win) camStageWin = null; });
+
+  /* pending 必须先挂：页面一加载完就 invoke cam-stage-init（region 那边踩过这个坑） */
+  const result = new Promise((resolve) => {
+    camStagePending = {
+      resolve,
+      init,
+      timer: setTimeout(() => {
+        log("[camstage] 超时未操作，自动撤下摆位层");
+        finishCamStage({ kind: "timeout" });
+      }, 180000),
+    };
+  });
+
+  try {
+    win.setBounds(disp.bounds);
+    win.setAlwaysOnTop(true, "screen-saver");
+    await win.loadFile(path.join(__dirname, "camstage.html"));
+    pushThemeVars();
+  } catch (e) {
+    finishCamStage({ kind: "loadfail" });
+    return { ok: false, error: "摆位层加载失败：" + ((e && e.message) || String(e)) };
+  }
+
+  hideForCamStage();
+  try { win.show(); win.focus(); } catch { /* ignore */ }
+  return result;
+}, (_e, opts) => ({ ok: false, error: "摆位通道不可用" }));
 
 /* ---------------- Snipaste（截屏） ----------------
  * 三条通道都只做「一件具体的事」，不暴露 fs、不暴露通用 spawn：
@@ -4636,6 +5113,12 @@ safeHandle("cap-native-start", async (_e, opts) => {
     return { ok: false, error: "原生录屏组件不存在（native/dist/orb-cap.exe）" };
   }
   const o = opts && typeof opts === "object" ? opts : {};
+  /* 区域录制：接受 { rect }（物理像素）或 { ratio }（相对主屏的 0..1 比例）。
+     面板给的是 ratio —— 它不知道 DPI，也不该知道；换算只在这一处做。
+     ratio 为全屏 / 不合法时返回 null，采集器走原整屏路径。 */
+  const rect = (o.rect && typeof o.rect === "object" && Number(o.rect.w) > 0)
+    ? o.rect
+    : ratioToPhysical(o.ratio);
   const dir = storage.pathOf("recordings");
   try {
     fs.mkdirSync(dir, { recursive: true });
@@ -4658,6 +5141,7 @@ safeHandle("cap-native-start", async (_e, opts) => {
         fps: o.fps,
         bitrate: o.bitrate,
         display: o.display,
+        rect,
       });
     } catch (e) {
       /* 这里**不要**撤排除：setCaptureShield 现在是引用计数，内层减一次、
@@ -4665,8 +5149,9 @@ safeHandle("cap-native-start", async (_e, opts) => {
          ORB 自己）。撤排除统一交给外层那一次。 */
       throw e;
     }
-    log("[cap-native] 开始录制:", target, r.w + "x" + r.h + "@" + r.fps);
-    return { ok: true, mode: "native", w: r.w, h: r.h, fps: r.fps, path: target };
+    log("[cap-native] 开始录制:", target, r.w + "x" + r.h + "@" + r.fps,
+      rect ? ("区域 " + rect.x + "," + rect.y + " " + rect.w + "x" + rect.h) : "整屏");
+    return { ok: true, mode: "native", w: r.w, h: r.h, fps: r.fps, path: target, rect: rect || null };
   } catch (e) {
     setCaptureShield(false);   // 启动失败要把排除撤回来，否则用户永远截不到自己的界面
     log("[cap-native] 启动失败:", (e && e.message) || String(e));
@@ -5055,6 +5540,15 @@ ipcMain.handle("get-state", () => ({
     model: state.voice?.model ?? "whisper-1",
     lang: state.voice?.lang ?? "zh-CN",
     hasKey: !!(state.voice?.apiKey),
+    /* 在线语音合成（可选）。Key 明文不下发，只给 hasTtsKey —— 与上面同一口径。 */
+    ttsEngine: state.voice?.ttsEngine ?? "browser",
+    ttsEndpoint: state.voice?.ttsEndpoint ?? "",
+    ttsModel: state.voice?.ttsModel ?? "tts-1",
+    ttsFormat: state.voice?.ttsFormat ?? "mp3",
+    ttsVoice: state.voice?.ttsVoice ?? "alloy",
+    ttsInstruct: state.voice?.ttsInstruct ?? "",
+    ttsPersona: state.voice?.ttsPersona ?? {},
+    hasTtsKey: !!(state.voice?.ttsApiKey),
   },
   vision: {
     maxSteps: state.vision?.maxSteps ?? 12,
@@ -5249,13 +5743,25 @@ safeHandle("set-voice", (_e, patch) => {
   const cur = state.voice || { engine: "auto", endpoint: "", apiKey: "", model: "whisper-1", lang: "zh-CN" };
   // patch 必须是对象：渲染层万一传了字符串/null，展开后会污染出 "0"、"1"… 这种键
   const next = { ...cur, ...(patch && typeof patch === "object" ? patch : {}) };
-  if (next.apiKey === null) delete next.apiKey;   // 传 null 表示保持原 Key 不变
+  /* 传 null = 保持原 Key 不变。旧版写的是 `delete next.apiKey` —— 但 next 会整体
+     写回 state.voice，删键等于**把已存的 Key 抹了**，和注释描述的语义正好相反。
+     面板目前只在不改 Key 时"不带该字段"，所以一直没爆；但这是个随时会踩的坑，
+     改成还原旧值（等价于"什么都不做"）。 */
+  if (next.apiKey === null) next.apiKey = cur.apiKey || "";
+  /* 同上：传 null 表示保持原 Key。
+     ⚠️ 这里不能 delete —— next 是要整体写回 state.voice 的，删掉键等于把
+        已存的 Key 一起抹了（ASR 那条 apiKey 用的是 delete，语义上其实有同样的坑，
+        但面板从来不传 null，只在不改 Key 时**不带这个字段**，所以没爆）。
+        在线合成这边明确保守：null → 还原成 cur 的值。 */
+  if (next.ttsApiKey === null) next.ttsApiKey = cur.ttsApiKey || "";
   saveState({ voice: next });
   return {
     ok: true,
     voice: {
       engine: next.engine, endpoint: next.endpoint, model: next.model, lang: next.lang,
       hasKey: !!(next.apiKey),
+      /* Key 本身不回传渲染层，只给一个"存了没有"的布尔 —— 面板靠它显示状态。 */
+      hasTtsKey: !!(next.ttsApiKey),
     },
   };
 }, () => ({ ok: false, error: "语音设置保存失败（详见 .orbdata/orb.log）" }));
@@ -5302,6 +5808,68 @@ ipcMain.handle("asr-transcribe", async (_e, { endpoint, apiKey, model, audioB64,
     const j = await r.json().catch(() => ({}));
     const text = j.text || j.transcript || (Array.isArray(j.results) ? j.results.map((x) => x.text || x.transcript || "").join("") : "");
     return { ok: true, text: String(text || "") };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+});
+
+/**
+ * 在线语音合成（TTS）代理：面板把文本和端点/音色发过来，主进程代发 HTTP 请求。
+ * 存在的理由与 asr-transcribe 完全相同 —— 面板 CSP 只放行 127.0.0.1:19387，
+ * 渲染层发不出去；而且 API Key 不该出现在渲染层。
+ * 接口形态对齐 OpenAI /v1/audio/speech：{model, input, voice, response_format, speed}，
+ * 兼容这个形态的厂商/自建服务都能直接用。
+ * ⚠️ 失败一律返回 ok:false，由调用方回落到浏览器内置语音 —— 不能让用户因为
+ *    填错一个地址就彻底没声。
+ */
+ipcMain.handle("tts-online", async (_e, p) => {
+  const { endpoint, model, voice, text, format, speed, instruct } = (p && typeof p === "object") ? p : {};
+  if (!endpoint) return { ok: false, error: "未配置语音合成端点" };
+  /* 协议闸：这个通道会把主进程里的 TTS Key 当 Bearer 发出去，
+     放行任意字符串等于把密钥投到任意地址。本地自建（127.0.0.1）要保留。 */
+  try {
+    const u = new URL(String(endpoint));
+    if (u.protocol !== "https:" && u.protocol !== "http:") {
+      return { ok: false, error: "语音合成端点协议不支持（仅 http/https）" };
+    }
+  } catch {
+    return { ok: false, error: "语音合成端点不是合法 URL" };
+  }
+  const t = String(text || "").trim();
+  if (!t) return { ok: false, error: "要合成的文本为空" };
+  if (t.length > 800) return { ok: false, error: "文本过长（上限 800 字）" };
+  try {
+    const body = { model: String(model || "tts-1"), input: t, voice: String(voice || "alloy") };
+    if (format) body.response_format = String(format);
+    const sp = Number(speed);
+    if (sp > 0) body.speed = Math.min(4, Math.max(0.25, sp));
+    /* instructions 只有部分模型（gpt-4o-mini-tts 等）认，不认的会忽略这个字段，
+       不会报错 —— 所以无条件带上，让支持的服务能收到语气提示。 */
+    if (instruct) body.instructions = String(instruct).slice(0, 300);
+    const headers = { "Content-Type": "application/json" };
+    const key = (state.voice && state.voice.ttsApiKey) || "";
+    if (key) headers.Authorization = "Bearer " + key;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    let r;
+    try {
+      r = await fetch(endpoint, {
+        method: "POST", headers, body: JSON.stringify(body), signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      return { ok: false, error: "TTS HTTP " + r.status + "：" + txt.slice(0, 200) };
+    }
+    const ab = await r.arrayBuffer();
+    if (!ab || !ab.byteLength) return { ok: false, error: "服务端返回的音频为空" };
+    return {
+      ok: true,
+      mime: r.headers.get("content-type") || "audio/mpeg",
+      b64: Buffer.from(ab).toString("base64"),
+    };
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }

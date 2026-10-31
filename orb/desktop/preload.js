@@ -59,6 +59,7 @@ contextBridge.exposeInMainWorld("orb", {
      单独开通道而不复用 setVision：UI 标记不该混进视觉配置的写入语义。 */
   setWizardDone: (v) => ipcRenderer.invoke("set-wizard-done", v),
   asrTranscribe: (p) => ipcRenderer.invoke("asr-transcribe", p),
+  ttsOnline: (p) => ipcRenderer.invoke("tts-online", p),
   /* 本地 Whisper 状态（/api/asr 代理）：voice.js 在 engine=auto 时据此选择本地/浏览器引擎 */
   asrStatus: (opt) => ipcRenderer.invoke("asr-status", opt),
   startVoice: () => ipcRenderer.send("voice-start"),
@@ -98,6 +99,20 @@ contextBridge.exposeInMainWorld("orb", {
   storageMigrate: () => ipcRenderer.invoke("storage-migrate"),
   storageOpen: (kind) => ipcRenderer.invoke("storage-open", kind),
 
+  /* 长期记忆引擎（仿 dsh-meow-memory）：检索/读写都经主进程，渲染层只拿结果。
+     同样守白名单——不给 fs、不给通用 invoke。recall 用于派发任务前注入上下文。 */
+  memoryRecall: (query, opts) => ipcRenderer.invoke("memory-recall", query, opts || {}),
+  memoryList: (level, opts) => ipcRenderer.invoke("memory-list", level, opts || {}),
+  memoryAdd: (entry) => ipcRenderer.invoke("memory-add", entry),
+  memoryUpdate: (id, patch) => ipcRenderer.invoke("memory-update", id, patch),
+  memoryRemove: (id) => ipcRenderer.invoke("memory-remove", id),
+  memoryStats: () => ipcRenderer.invoke("memory-stats"),
+  memoryCompactPlan: (level, opts) => ipcRenderer.invoke("memory-compact-plan", level, opts || {}),
+  memoryArchive: (ids, meta) => ipcRenderer.invoke("memory-archive", ids, meta || {}),
+  memoryPrune: (maxAgeDays) => ipcRenderer.invoke("memory-prune", maxAgeDays),
+
+
+
   /* 屏幕录制：抓流与编码在渲染进程（MediaRecorder 直出 MP4），
      主进程负责落盘收尾。capChunk 传 ArrayBuffer，不接受 base64。 */
   capSources: () => ipcRenderer.invoke("cap-sources"),
@@ -114,6 +129,14 @@ contextBridge.exposeInMainWorld("orb", {
   capNativeStart: (opts) => ipcRenderer.invoke("cap-native-start", opts),
   capNativeCmd: (cmd) => ipcRenderer.invoke("cap-native-cmd", cmd),
   capNativeStop: () => ipcRenderer.invoke("cap-native-stop"),
+  /* 录制区域：弹一次全屏选区覆盖层，用户框一块 → 回 { ok, ratio, dip, phys }。
+     ratio 是相对主屏的 0..1 比例（面板就这么存），phys 是换算好的物理像素矩形。
+     录制时把 ratio 传回 capNativeStart —— 面板不碰 DPI 换算。 */
+  capRegionPick: (opts) => ipcRenderer.invoke("cap-region-pick", opts || {}),
+  /* 摄像头小框摆位：把预览从"面板内放大的小舞台"换成全屏覆盖层（真实比例）。
+     回 { ok, cam:{shape,ratio,bx,by,bw,bh} }；取消回 { ok:false, cancelled:true }。
+     落盘仍走 setRecCam —— 校验只有一处，别在这里再写第二套。 */
+  camStageOpen: (opts) => ipcRenderer.invoke("cam-stage-open", opts || {}),
 
   /* 截屏（Snipaste）：装没装 / 唤起框选 / 首跑引导卡已读。
      唤起后截图由 Snipaste 直写 <存储根>/screenshots，字节不经过 IPC。 */
@@ -199,6 +222,12 @@ contextBridge.exposeInMainWorld("orb", {
   /* 事件 */
   onDockState: (cb) => on("dock-state", cb),
   onPanelState: (cb) => on("panel-state", cb),
+  /* 面板被主进程唤出（window 'show'）：给渲染层跑「离开 ≥4 分钟再开」的问候判定，
+     绕过 hide()/show() 在部分环境不触发 visibilitychange 的问题。 */
+  onPanelShown: (cb) => on("panel-shown", cb),
+  /* 面板收起（window 'hide'）：把「收起时刻」交给渲染层落成 lastUserOpAt，
+     4 分钟间隔从真正收起起算。 */
+  onPanelHidden: (cb) => on("panel-hidden", cb),
   onBusy: (cb) => on("busy", cb),
   onMotion: (cb) => on("motion", cb),
   onAvatar: (cb) => on("avatar", cb),

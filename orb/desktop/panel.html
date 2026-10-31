@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:19387">
+<!-- 离线语音包索引：五人格预烘焙台词 → 文件名（自动生成，见 tts/_make_voicepack.cjs）。
+     同源脚本加载（CSP script-src 'self' 允许）；文件不存在时静默失败，播放自动回落在线/浏览器。 -->
+<script src="voicepack/index.js"></script>
 <style>
   /* ---------- 设计令牌：整套 UI 只认这些变量，改主题只改这里 ---------- */
   :root {
@@ -942,6 +945,23 @@
   .minibtn:hover  { transform: translateY(-1px); }
   .minibtn:active { transform: scale(.94); }
 
+  /* AI 在线语音合成：人格 ×（音色 / 语气提示词）三列网格，窄屏折成两行 */
+  .ttsp-hd, .ttsprow { display: grid; grid-template-columns: 74px 1fr 1fr; gap: 6px; align-items: center; }
+  .ttsp-hd { font-size: 11px; color: var(--fg-muted); margin: 2px 0 4px; }
+  .ttsprow { margin-bottom: 6px; }
+  .ttsprow .ttsp-nm { font-size: 12px; color: var(--fg-soft); }
+  @media (max-width: 560px) { .ttsp-hd, .ttsprow { grid-template-columns: 74px 1fr; } .ttsp-hd span:nth-child(3), .ttsprow input:nth-of-type(2) { grid-column: 2; } }
+  /* 新增实体按键的手感：抬起 / 回弹，只动 transform（禁 layout）。
+     颜色一律走通用令牌 —— t1 的 --energy* 与 t3 的 --iris-* 只在各自主题存在，
+     这里不能用，否则切主题会失效。 */
+  .ttsbtn { transition: transform var(--dur-1) var(--ease), background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease), color var(--dur-2) var(--ease), opacity var(--dur-2) var(--ease); }
+  .ttsbtn:hover  { transform: translateY(-1px); }
+  .ttsbtn:active { transform: scale(.94); }
+  .ttsbtn[disabled] { opacity: .5; transform: none; cursor: default; }
+  /* 兜底必须紧接基类之后（写远了会被同特异性的规则盖成死代码） */
+  html.no-motion .ttsbtn, html.no-motion .ttsbtn:hover, html.no-motion .ttsbtn:active { transform: none; transition: none; }
+  @media (prefers-reduced-motion: reduce) { .ttsbtn, .ttsbtn:hover, .ttsbtn:active { transform: none; transition: none; } }
+
   /* 录制 · 角色树 */
   .step { transition: transform var(--dur-1) var(--ease), border-color var(--dur-2) var(--ease), background var(--dur-2) var(--ease); }
   .step:hover { transform: translateX(2px); }
@@ -1008,6 +1028,32 @@
   .setpanes { flex: 1 1 auto; min-width: 0; }
   .setpane { display: none; animation: panein .18s var(--ease) both; }
   .setpane.on { display: block; }
+
+  /* 记忆管理面板 */
+  .mem-ta { width: 100%; min-height: 64px; resize: vertical; font-family: inherit;
+    font-size: calc(13px * var(--fs-scale)); line-height: 1.6; padding: 8px 10px;
+    border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+    background: var(--bg); color: var(--fg); transition: border-color .16s var(--ease), box-shadow .16s var(--ease); }
+  .mem-ta:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+  .mem-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+  .mem-row .field { flex: 1 1 160px; min-width: 130px; }
+  .mem-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+  .mem-grid2 .field { flex: initial; }
+  .mem-actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+  .mem-stat { font-size: calc(12px * var(--fs-scale)); color: var(--fg-muted); }
+  .mem-list { display: flex; flex-direction: column; gap: 7px; margin-top: 4px; max-height: 360px; overflow-y: auto; }
+  .mem-item { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px 9px;
+    background: var(--bg-soft); display: flex; gap: 9px; align-items: flex-start; }
+  .mem-item .mi-bd { flex: 1 1 auto; min-width: 0; }
+  .mem-item .mi-top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 3px; }
+  .mem-lv { font-size: calc(11px * var(--fs-scale)); font-weight: 600; padding: 1px 7px; border-radius: 99px;
+    background: var(--accent-soft); color: var(--accent-fg); white-space: nowrap; }
+  .mem-imp { font-size: calc(11px * var(--fs-scale)); color: var(--fg-muted); }
+  .mem-proj { font-size: calc(11px * var(--fs-scale)); color: var(--fg-muted); }
+  .mem-ct { font-size: calc(13px * var(--fs-scale)); line-height: 1.55; color: var(--fg); word-break: break-word; white-space: pre-wrap; }
+  .mem-tt { font-size: calc(12px * var(--fs-scale)); color: var(--fg-soft); margin-bottom: 2px; }
+  .mem-del { flex: 0 0 auto; align-self: center; }
+  .mem-empty { color: var(--fg-muted); font-size: calc(12.5px * var(--fs-scale)); padding: 10px 2px; text-align: center; }
 
   /* 设置页板块：一页里的三组内容（录屏 / 截屏 / 工作流）各占一个带框区块，
      免得十几张卡片糊成一坨。令牌一律用通用族，主题切换自动跟随。
@@ -1727,7 +1773,12 @@
      极光主题下换任何一款渐变，选中态都还是"淡紫"——与主题色不符（用户截图报过）。
      --accent-ring 是各主题自定的低α品牌光晕（t3 由 tcIrisFamily 按渐变重算）。 */
   .chip.sel {
-    background: var(--accent-soft); border-color: var(--accent); color: var(--accent-fg); font-weight: 500;
+    background-color: var(--accent-soft);
+    /* 极光：选中态叠一层半透明四色带（--accent-grad-soft 只在 t3 产出，
+       其余主题取 none，退回原来的平涂淡底） —— 品牌色是渐变，选中态也该是渐变的。
+       注意用 background-color/image 长写：background 简写会把 image 重置成 none。 */
+    background-image: var(--accent-grad-soft, none);
+    border-color: var(--accent); color: var(--accent-fg); font-weight: 500;
     box-shadow: 0 0 0 2.5px var(--accent-ring);
   }
   /* 带图标的路由 chip（自动/前台/视觉/后台）：图标 + 文字排一行。
@@ -3195,7 +3246,14 @@ html.no-motion .cm-actions .mbtn:active { transform: none; }
           <div class="field"><label>精简念白</label>
             <button class="chip" id="ttsLean" title="只在完成 / 失败 / 被夸 / 里程碑等有结果有情绪的节点念，省掉每个任务必念的「收到」「执行中」——一轮能省十几秒。台词气泡照常显示">精简念白 开</button>
           </div>
-          <div class="field"><label>音色</label><select id="ttsVoice"></select></div>
+          <div class="field"><label>① 离线语音包</label>
+            <button class="chip" id="ttsOffline" title="用随程序打包的五人格预烘焙语音念台词（离线、零延迟、不消耗 token）。包内没有的句子（如 AI 现编的、带任务名的）会自动回落到在线引擎或系统语音。关掉则一律走在线 / 系统语音">离线语音包 开</button>
+          </div>
+          <div class="field"><label>② 生成播报</label>
+            <button class="chip" id="ttsGen" title="在线接口与系统语音同属这条音源：开 = 离线包没命中的句子用它们在后台合成；关 = 只念离线语音包里烘好的句子，其余不念（不会偷偷换成系统机械音）。台词气泡照常显示，不影响功能">生成播报 开</button>
+          </div>
+          <div class="slotmsg" id="ttsRoute"></div>
+          <div class="field"><label>音色 <span class="hint">系统语音（兜底那层）</span></label><select id="ttsVoice"></select></div>
           <div class="field"><label>语速 <span class="muted" id="ttsRateV"></span></label>
             <input class="persona-range" type="range" id="ttsRate" min="0.6" max="1.6" step="0.05" value="1">
           </div>
@@ -3207,6 +3265,40 @@ html.no-motion .cm-actions .mbtn:active { transform: none; }
           </div>
           <div class="slotmsg" id="ttsMsg"></div>
         </div>
+        <div class="slotbox">
+          <div class="slothead">AI 在线语音合成 <span class="hint">可选，不配也能用</span></div>
+  <div class="slotnote">默认走浏览器内置语音，零配置。填了接口之后，人格台词改用你的服务合成；<b>请求失败会自动回落内置语音</b>，不会因为地址填错就彻底没声。接口形态对齐 OpenAI <code>/v1/audio/speech</code>，兼容这个形态的厂商与自建服务都能直接用。密钥只存本机，且<b>不回传界面</b>（界面只看得到"存了没有"）。</div>
+          <div class="field"><label>合成引擎</label>
+            <select id="tts-engine">
+              <option value="browser">浏览器内置（默认）</option>
+              <option value="online">在线接口（OpenAI 兼容）</option>
+            </select>
+          </div>
+          <div class="field" id="tts-endpoint-field" style="display:none"><label>接口地址</label><input id="tts-endpoint" placeholder="https://api.openai.com/v1/audio/speech"></div>
+          <div class="field" id="tts-key-field" style="display:none"><label>API Key <span class="muted" id="tts-keystate"></span> <button class="minibtn ttsbtn" id="tts-paste">粘贴</button></label><input id="tts-key" type="password" placeholder="只在填新值时覆盖"></div>
+          <div class="field" id="tts-model-field" style="display:none"><label>模型名</label><input id="tts-model" value="tts-1"></div>
+          <div class="field" id="tts-format-field" style="display:none"><label>音频格式</label>
+            <select id="tts-format">
+              <option value="mp3">mp3（最通用）</option>
+              <option value="wav">wav</option>
+              <option value="opus">opus</option>
+              <option value="flac">flac</option>
+            </select>
+          </div>
+          <div class="field" id="tts-voice-field" style="display:none"><label>默认音色</label><input id="tts-voice" value="alloy"></div>
+          <div id="tts-persona-box" style="display:none">
+            <div class="slothead">按人格指定音色与语气 <span class="hint">留空就用上面的默认值</span></div>
+            <div class="ttsp-hd"><span>人格</span><span>音色</span><span>语气提示词</span></div>
+            <div class="ttsprow"><span class="ttsp-nm">温柔守护者</span><input id="tts-v-gentle" placeholder="默认"><input id="tts-i-gentle"></div>
+            <div class="ttsprow"><span class="ttsp-nm">元气开心果</span><input id="tts-v-genki" placeholder="默认"><input id="tts-i-genki"></div>
+            <div class="ttsprow"><span class="ttsp-nm">上进小战友</span><input id="tts-v-comrade" placeholder="默认"><input id="tts-i-comrade"></div>
+            <div class="ttsprow"><span class="ttsp-nm">智慧小向导</span><input id="tts-v-guide" placeholder="默认"><input id="tts-i-guide"></div>
+            <div class="ttsprow"><span class="ttsp-nm">正能量傲娇</span><input id="tts-v-tsundere" placeholder="默认"><input id="tts-i-tsundere"></div>
+          </div>
+          <div class="row2 slot-actions"><button id="tts-test" class="pri ttsbtn" title="用当前人格的试听句请求一次接口">测语音</button></div>
+          <div class="slotmsg" id="tts-msg"></div>
+        </div>
+
         <div class="slotbox">
           <div class="slothead">AI 台词 <span class="hint">让模型按人格现编，不套模板</span></div>
           <div class="field"><label>启用</label>
@@ -3221,20 +3313,6 @@ html.no-motion .cm-actions .mbtn:active { transform: none; }
           </div>
           <div class="gif-grid" id="gifGrid"></div>
           <div class="slotmsg" id="gifMsg">启动 / 收到任务 / 执行 / 完成 / 空闲各用不同动图。</div>
-        </div>
-        <div class="slotbox">
-          <div class="slothead">记忆读取</div>
-          <div class="field"><label>读取</label>
-            <button class="chip" id="memToggle" title="开启或关闭记忆读取">记忆 关</button>
-          </div>
-          <div class="field"><label>来源</label>
-            <select id="memSource">
-              <option value="">不读取</option>
-              <option value="project">项目 MEMORY.md</option>
-              <option value="chat">对话存档</option>
-            </select>
-          </div>
-          <div class="slotmsg" id="memMsg">只读所选来源，不修改、不外传；默认关闭。</div>
         </div>
       </div>
       <div class="setpane on" data-pane="look">
@@ -3455,9 +3533,28 @@ html.no-motion .cm-actions .mbtn:active { transform: none; }
         </div>
         <div class="slotmsg" id="asr-msg"></div>
       </div>
+
       </div>
 
       <div class="setpane" data-pane="rec">
+        <div class="slotbox">
+          <div class="slothead">录屏 / 截屏时隐藏控制台 <span class="hint">真把窗口收掉，不是只从采集里排除</span></div>
+          <div class="row2 slot-actions" style="justify-content:flex-start;align-items:center;gap:12px">
+            <label class="switch" title="录屏开始时把悬浮球、面板、划词工具条、字幕窗一起隐藏">
+              <input type="checkbox" id="recHideInput">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+            <span class="muted" style="font-size:calc(11.5px * var(--fs-scale))">录屏时隐藏</span>
+            <label class="switch" title="截屏前先把面板收起来，别挡着要截的屏幕内容；截完自动还回来">
+              <input type="checkbox" id="snipHideInput">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+            <span class="muted" style="font-size:calc(11.5px * var(--fs-scale))">截屏时隐藏</span>
+          </div>
+          <div class="slotnote">录屏隐藏后按 <kbd>Ctrl</kbd>+<kbd>Space</kbd> 或点托盘图标唤回（两条路都留着，免得"隐藏"变成"卡死"）。<b>悬浮控制条始终保留</b> —— 它是录制中暂停 / 取消 / 完成的入口。</div>
+          <div class="slotmsg" id="hideConsoleMsg"></div>
+        </div>
+
         <!-- 本页分三个板块：录屏（录制本体）/ 截屏（Snipaste，自「存储」迁入）
              / 工作流（录制产物的回放与编辑，自 Ctrl+K 迁入）。 -->
         <div class="setsec">
@@ -3490,6 +3587,27 @@ html.no-motion .cm-actions .mbtn:active { transform: none; }
             <div class="ameter" id="amMic"><span class="am-lb">麦克风</span><span class="am-tr"><i class="am-fl" style="width:46%"></i></span></div>
           </div>
           <div class="slotmsg" id="audioSrcMsg"></div>
+        </div>
+
+        <!-- 录制区域：只录屏幕的一块（半屏 / 中间 / 任意框选）。
+             存的是相对主屏的**比例**，换分辨率或改缩放后依然指得对地方；
+             像素换算（× scaleFactor）只在 main.js 的 ratioToPhysical 里做，
+             渲染层不碰 DPI —— 面板拿到的一直是 CSS 像素。 -->
+        <div class="slotbox">
+          <div class="slothead">录制区域 <span class="hint">只录屏幕的一部分，比如半屏或某个窗口的范围</span></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap" id="recRegionPick">
+            <button class="chip sel" type="button" data-region="full" title="录整块屏幕（默认）">全屏</button>
+            <button class="chip" type="button" data-region="left" title="只录屏幕左半边">左半屏</button>
+            <button class="chip" type="button" data-region="right" title="只录屏幕右半边">右半屏</button>
+            <button class="chip" type="button" data-region="top" title="只录屏幕上边一半">上半屏</button>
+            <button class="chip" type="button" data-region="bottom" title="只录屏幕下边一半">下半屏</button>
+            <button class="chip" type="button" data-region="center" title="屏幕正中间一块（占 70%×70%）">中间</button>
+            <button class="chip withico" type="button" data-region="custom" title="在屏幕上拖出任意区域，可拖八个手柄微调">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/></svg>
+              自定义…
+            </button>
+          </div>
+          <div class="slotmsg" id="recRegionMsg">当前：整屏</div>
         </div>
 
         <!-- 摄像头小框：开关 / 设备 / 三形状 / 比例预设（含自定义）/ 预览模式入口。
@@ -3540,7 +3658,7 @@ html.no-motion .cm-actions .mbtn:active { transform: none; }
               <div class="slotmsg" id="camRatioMsg"></div>
             </div>
             <div class="row2 slot-actions" style="justify-content:flex-start;margin-top:2px">
-              <button class="chip withico" id="camPreviewBtn" type="button" title="在模拟画面里拖动摆位、拖边缩放，切形状与比例">
+              <button class="chip withico" id="camPreviewBtn" type="button" title="在整屏上按真实比例拖动摆位、拖边缩放，切形状与比例（所见即成片）">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.6v18.8M2.6 12h18.8M12 2.6 9.4 5.2M12 2.6l2.6 2.6M12 21.4l-2.6-2.6M12 21.4l2.6-2.6M2.6 12l2.6-2.6M2.6 12l2.6 2.6M21.4 12l-2.6-2.6M21.4 12l-2.6 2.6"/></svg>
                 进入预览模式
               </button>
@@ -3690,23 +3808,6 @@ html.no-motion .cm-actions .mbtn:active { transform: none; }
         <div class="slotmsg" id="autoSelectMsg"></div>
       </div>
 
-      <div class="slotbox">
-        <div class="slothead">录屏 / 截屏时隐藏控制台 <span class="hint">真把窗口收掉，不是只从采集里排除</span></div>
-        <div class="row2 slot-actions" style="justify-content:flex-start;align-items:center;gap:12px">
-          <label class="switch" title="录屏开始时把悬浮球、面板、划词工具条、字幕窗一起隐藏">
-            <input type="checkbox" id="recHideInput">
-            <span class="switch-track"><span class="switch-thumb"></span></span>
-          </label>
-          <span class="muted" style="font-size:calc(11.5px * var(--fs-scale))">录屏时隐藏</span>
-          <label class="switch" title="截屏前先把面板收起来，别挡着要截的屏幕内容；截完自动还回来">
-            <input type="checkbox" id="snipHideInput">
-            <span class="switch-track"><span class="switch-thumb"></span></span>
-          </label>
-          <span class="muted" style="font-size:calc(11.5px * var(--fs-scale))">截屏时隐藏</span>
-        </div>
-        <div class="slotnote">录屏隐藏后按 <kbd>Ctrl</kbd>+<kbd>Space</kbd> 或点托盘图标唤回（两条路都留着，免得"隐藏"变成"卡死"）。<b>悬浮控制条始终保留</b> —— 它是录制中暂停 / 取消 / 完成的入口。</div>
-        <div class="slotmsg" id="hideConsoleMsg"></div>
-      </div>
       </div>
 
       <div class="setpane" data-pane="storage">
@@ -3755,6 +3856,82 @@ html.no-motion .cm-actions .mbtn:active { transform: none; }
             <div class="audit-inline" id="auditInline"><div class="cmd-empty">点「刷新」查看最近的操作记录。</div></div>
           </div>
         </div>
+
+      <!-- 记忆模块：从「个性」迁入「存储」（控件 id 不变，bindPersona 仍按 id 绑定） -->
+      <div class="slotbox">
+        <div class="slothead">记忆注入 <span class="muted">派发后台任务前自动召回相关记忆</span></div>
+        <div class="field"><label>注入开关</label>
+          <button class="chip" id="memToggle" title="开启或关闭记忆注入">记忆 关</button>
+        </div>
+        <div class="field"><label>自动提炼 <span class="muted">攒到你停手时批量写进记忆库</span></label>
+          <button class="chip" id="memAuto" title="开启或关闭自动记忆。开启后：① 任务完成只入队、不立刻跑模型，等你安静约 90 秒再批量提炼（一次最多 3 条），避免每个任务都多一次冷启动和一次完整推理；② 同时开启热启动（常驻后台服务）以降低后续延迟。热启动不可用时会自动回落，不影响任务。">自动 开</button>
+        </div>
+        <div class="field"><label>项目锚定 <span class="muted">留空=全局；填项目名则只召回该项目记忆</span></label>
+          <input id="memProject" placeholder="如 ORB控制台" maxlength="60" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="slotmsg" id="memMsg">注入默认关闭。开启后每次派发任务会把命中的长期记忆拼进任务上下文。</div>
+      </div>
+
+      <div class="slotbox">
+        <div class="slothead">手动添加记忆</div>
+        <div class="field"><label>层级</label>
+          <select id="memLevel">
+            <option value="user">关于你</option>
+            <option value="soul">AI 自身</option>
+            <option value="project">项目</option>
+            <option value="fact">原子事实</option>
+            <option value="lesson">错误与教训</option>
+            <option value="topic">话题</option>
+            <option value="rules">设计原则与行为准则</option>
+          </select>
+        </div>
+        <div class="field"><label>标题 <span class="muted">可选，便于检索</span></label>
+          <input id="memTitle" placeholder="一句话概括" maxlength="80" spellcheck="false" autocomplete="off">
+        </div>
+        <div class="mem-grid2">
+          <div class="field"><label>重要性 1–4</label>
+            <select id="memImp">
+              <option value="1">1 普通</option>
+              <option value="2" selected>2 常用</option>
+              <option value="3">3 重要（豁免衰减）</option>
+              <option value="4">4 核心</option>
+            </select>
+          </div>
+          <div class="field"><label>项目 <span class="muted">可选</span></label>
+            <input id="memAddProject" placeholder="归属项目名" maxlength="60" spellcheck="false" autocomplete="off">
+          </div>
+        </div>
+        <div class="field" style="margin-top:8px"><label>内容</label>
+          <textarea id="memContent" class="mem-ta" placeholder="要记住的内容，例如：用户偏好用 TypeScript 严格模式；这个项目的构建命令是 npm run build"></textarea>
+        </div>
+        <div class="mem-actions">
+          <button class="chip" id="memAdd" title="添加到记忆库">添加记忆</button>
+          <span class="slotmsg" id="memAddMsg"></span>
+        </div>
+      </div>
+
+      <div class="slotbox">
+        <div class="slothead">记忆库 <span class="muted" id="memStats"></span></div>
+        <div class="field"><label>按层级筛选</label>
+          <select id="memFilter">
+            <option value="">全部层级</option>
+            <option value="user">关于你</option>
+            <option value="soul">AI 自身</option>
+            <option value="project">项目</option>
+            <option value="fact">原子事实</option>
+            <option value="lesson">错误与教训</option>
+            <option value="topic">话题</option>
+            <option value="rules">设计原则与行为准则</option>
+          </select>
+        </div>
+        <div class="mem-actions" style="margin-top:8px">
+          <button class="chip" id="memRefresh" title="重新读取记忆库">刷新</button>
+          <button class="chip" id="memCompact" title="把同一层里最旧、最不重要的若干条交给模型合并成少数几条（原文标记为已归档，不删除、可回溯）。超过设定字数时也会自动触发。">压缩</button>
+          <span class="slotmsg">删除在每条右侧；按更新时间倒序。</span>
+        </div>
+        <div class="mem-list" id="memList"></div>
+      </div>
+
       </div>
 
       <div class="setpane" data-pane="about">
@@ -4020,9 +4197,18 @@ function load() {
    之前两条共用同一个 slice(-20) 的结果，于是磁盘历史一旦超过 20 条，
    用户随便发一条消息，历史文件就被永久截断成 20 条 —— 读写不对称造成的数据丢失。 */
 let historyReady = false;
+/* localStorage 那条原来每次 save() 都同步写：JSON.stringify(≤20 个会话) + 同步磁盘 I/O，
+   一次约 80KB。而流式生成时 streamRender 是**每帧**调 save()（rAF 合帧后仍有几十次/秒），
+   等于把几十 KB 的序列化 + 同步写压到每一帧上 —— 这是流式长回答掉帧的隐性来源。
+   合并到 400ms 一次（与磁盘存档同窗口），崩溃最多丢 400ms，与磁盘口径一致。 */
+let lsSaveTimer = null;
+function saveLocalNow() {
+  try { store.setItem('orb.convs', JSON.stringify(convs.slice(-20))); } catch {}
+}
 function save() {
-  const cache = convs.slice(-20);          // 仅给 localStorage 用
-  try { store.setItem('orb.convs', JSON.stringify(cache)); } catch {}
+  if (!lsSaveTimer) {
+    lsSaveTimer = setTimeout(() => { lsSaveTimer = null; saveLocalNow(); }, 400);
+  }
   if (!historyReady) return;               // 闸门：磁盘没读回来前不许写盘
   scheduleHistorySave();
 }
@@ -4039,14 +4225,40 @@ function scheduleHistorySave() {
     try { window.orb?.historySave?.(convs.slice()); } catch {}
   }, 400);
 }
-/* 页面卸载/隐藏前强制落盘：把 400ms 窗口里还没写的改动一次写进去，
-   避免「刚聊完就关窗口」漏掉最后几条。 */
+/* 页面卸载/隐藏前强制落盘：把两个 400ms 窗口里还没写的改动一次写进去，
+   避免「刚聊完就关窗口」漏掉最后几条。localStorage 那条现在也是延时的，必须一起刷。 */
 function flushSave() {
+  if (lsSaveTimer) { clearTimeout(lsSaveTimer); lsSaveTimer = null; saveLocalNow(); }
   if (historySaveTimer) { clearTimeout(historySaveTimer); historySaveTimer = null; }
   try { window.orb?.historySave?.(convs.slice()); } catch {}
 }
 window.addEventListener('pagehide', flushSave);
 window.addEventListener('beforeunload', flushSave);
+
+/* 首字延迟埋点（TTFT = 派发 → 第一条 partial 到屏）。
+   为什么要记：用户说"慢"的时候，一条总耗时根本定位不到是哪段 —— 是派发/排队慢、
+   模型迟迟不出字，还是出字了但渲染卡。有 TTFT 的分位数才谈得上优化，也只留最近
+   30 次（够算 p50/p95，不占空间）。 */
+const TTFT_KEY = 'orb.ttft';
+function recordTtft(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return;
+  try {
+    const arr = JSON.parse(store.getItem(TTFT_KEY) || '[]');
+    arr.push(Math.round(ms));
+    store.setItem(TTFT_KEY, JSON.stringify(arr.slice(-30)));
+  } catch { /* 存不下就算了，埋点不能影响主流程 */ }
+}
+function ttftPct(arr, p) {
+  const a = arr.slice().sort((x, y) => x - y);
+  return a.length ? a[Math.min(a.length - 1, Math.floor(a.length * p))] : 0;
+}
+function ttftSummary() {
+  let arr = [];
+  try { arr = JSON.parse(store.getItem(TTFT_KEY) || '[]'); } catch {}
+  if (!Array.isArray(arr) || !arr.length) return '首字延迟：暂无样本';
+  return '首字延迟 p50 ' + (ttftPct(arr, 0.5) / 1000).toFixed(1)
+    + 's / p95 ' + (ttftPct(arr, 0.95) / 1000).toFixed(1) + 's（近 ' + arr.length + ' 次）';
+}
 
 /* 把「当前会话」挪到 convs 末尾。
    localStorage 只留最后 20 条，若用户从历史里切回很早的会话继续聊，
@@ -5468,15 +5680,26 @@ async function runBack(text) {
   const node = addMsg('Orb', '<span class="pending">已派发到后台，排队中</span>' +
     '<span class="typing"><i></i><i></i><i></i></span>', 'orb');
   setRunning(1);
+  // 用户视角的起点：点下发送（含记忆召回、HTTP 派发、排队），TTFT 从这里算
+  const tDispatch = Date.now();
   startPersonaBundle(text);   // 不 await：台词生成和任务并行跑，慢了自己放弃
   try {
     const mSel = (document.getElementById('wbmodel') || {}).value || '';
     /* __custom__ 现在是一个真正的引擎选择：原样传给桥，由它翻译成
        custom-local:<id> 并保证 CLI 的模型清单里有这条（注册失败会带回可读原因）。 */
     const m = mSel;
+    // 记忆注入：派发前召回相关长期记忆，拼进 task 文本（受「记忆读取」开关控制）。
+    // 检索失败绝不阻断任务派发——记忆是增强项，不是派发的前置依赖。
+    let taskText = text;
+    if (charCfg.memory && charCfg.memory.enabled) {
+      try {
+        const mem = await window.orb.memoryRecall(text, { project: charCfg.memory.project || null });
+        if (mem) taskText = mem + "\n\n" + text;
+      } catch (e) { /* 记忆检索异常：忽略，照常派发 */ }
+    }
     const r = await post('/api/dispatch', {
       server: 'workbuddy', tool: 'workbuddy_execute',
-      args: Object.assign({ task: text }, m ? { model: m } : {}),
+      args: Object.assign({ task: taskText }, m ? { model: m } : {}),
     });
     if (!r.ok) {
       updateMsg(node, '<span style="color:var(--danger)">派发失败：' + esc(r.error) + '</span>', 'err');
@@ -5484,7 +5707,7 @@ async function runBack(text) {
       onTaskFail();
       return;
     }
-    poll(r.jobId, node);
+    poll(r.jobId, node, text, false, tDispatch);
   } catch (e) {
     updateMsg(node, '<span style="color:var(--danger)">派发失败：' + esc(e.message) + '</span>', 'err');
     setRunning(-1);
@@ -5782,67 +6005,133 @@ async function cmTest() {
   cmLoad();
 })();
 
-function poll(id, node) {
-  const t0 = Date.now();
-  /* ---- 放弃跟踪的阈值：连续失败 JOB_FAIL_MAX 次即收摊 ----
-     连续失败计数：桥重启 / 断网时 api() 每次都抛，
-     原来的 `catch { return; }` 既不 clearInterval 也不 setRunning(-1)，
-     结果是轮询永久空转（每 2 秒一次请求），runningJobs 也永远回不到 0
-     —— 悬浮球就一直挂在「忙碌」上。
+/* 静默任务的结果去向：jobId → 处理函数。没有登记的走默认（记忆提炼）。 */
+const silentHandlers = new Map();
+function pollSilent(jobId, handler) {
+  if (!jobId) return;
+  if (typeof handler === 'function') silentHandlers.set(jobId, handler);
+  poll(jobId, null, null, true);
+}
 
-     ⚠️⚠️ 换算基准是**本函数自己这条 JOB_POLL_MS = 2000ms 的定时器**，
-     不是统一状态轮询那个 POLL_IDLE_MS（10s）。两条是完全独立的定时器：
+function poll(id, node, taskText, silent, tStart) {
+  // 优先 SSE 实时推送（生成即到屏，替代原 2s 轮询）；不支持或出错退回原轮询，零退化。
+  const t0 = tStart || Date.now();
+  let es = null;
+  let legacyTimer = null;
+  let finalized = false;
 
-       pollStatus()  → setTimeout 链，POLL_IDLE_MS / POLL_FAST_MS
-       poll(id,node) → setInterval，固定 JOB_POLL_MS = 2000ms  ← 这个计数归它
-
-     所以放弃等待的时长 = JOB_FAIL_MAX × JOB_POLL_MS / 1000 秒：
-       当前 15 × 2s = 30 秒。
-       若要把放弃等待改成 N 秒，阈值应设为 N / 2（例：要 80 秒就填 40），
-       **不要**拿 POLL_IDLE_MS 去除 —— 那会算出一个过小的阈值
-       （比如误按 10s 折算填 8，实际只有 8 × 2s = 16 秒，
-        后台任务一次十几秒的网络抖动就会被误判成"桥没了"，白白放弃跟踪）。 */
-  const JOB_POLL_MS = 2000;
-  const JOB_FAIL_MAX = 15;      // 15 × 2000ms = 30s 放弃
-  let fails = 0;
-  const timer = setInterval(async () => {
-    let r;
-    try { r = await api('/api/job/' + id); fails = 0; }
-    catch {
-      if (++fails >= JOB_FAIL_MAX) {
-        clearInterval(timer);
-        setRunning(-1);
-        updateMsg(node, '<span style="color:var(--danger)">后台任务状态失联，已停止跟踪。</span>', 'err');
-      }
-      return;
+  // #2 首帧同步渲染 + rAF 批量，#3 增量追加而非整段重渲染：
+  // 第一帧立即画，之后合并到下一帧最多刷一次；每次只把"新到的那段"补进内容区，
+  // 不重建整段 transcript（长回答主线程占用从 O(n²) 降到 O(n)）。
+  let streamAcc = null;
+  let streamRaf = 0;
+  let streamPainted = false;
+  function cancelStream() {
+    if (streamRaf) { try { cancelAnimationFrame(streamRaf); } catch {} streamRaf = 0; }
+    // 收尾/出错后结构化子节点已无意义，清掉避免悬空引用
+    if (node.__content) { node.__content = null; node.__pend = null; node.__rendered = 0; node.__tailMode = false; }
+  }
+  // #3 增量追加：内容区用文本节点累积（安全且免转义），状态区(生成中 N 秒)单独更新；不整段重排。
+  const STREAM_CAP = 3000;
+  /* 超长回答的显示策略：**滑动窗口**（只显示最后 STREAM_CAP 字）。
+     旧版超过 3000 字就不再追加 —— 用户盯着不动的画面以为卡死，直到收尾才见全文。
+     重渲染按 STREAM_TAIL_STEP 字粒度做（不逐帧整段重设文本），兼顾"看得到最新"和"不卡主线程"。 */
+  const STREAM_TAIL_STEP = 512;
+  function streamRender(full, secs) {
+    const body = node.querySelector('.body');
+    if (!body) return;
+    if (!node.__content) {
+      body.innerHTML = '<div class="stream-content"></div><span class="stream-pending pending"></span>';
+      node.__content = body.querySelector('.stream-content');
+      node.__pend = body.querySelector('.stream-pending');
+      node.__rendered = 0;
+      node.__tailMode = false;
     }
-    /* 拿不到 job（最常见是 404：id 不存在，或被 bridge 的 MAX_JOBS 淘汰掉）。
-       这里必须**给消息一个终态** —— 只 clearInterval + 归零计数的话，
-       那条气泡会永远停在「后台执行中… N 秒」，用户永远等不到结果也说不上失败。
-       bridge 侧的 404 文案已经写成「job X 不存在或已被淘汰（最多保留 N 条）」，
-       直接把它显示出来即可自解释。 */
-    if (!r.ok) {
-      clearInterval(timer);
+    const ttftTag = () => (node.__ttft != null ? ' · 首字 ' + (node.__ttft / 1000).toFixed(1) + 's' : '');
+    if (!full) {
+      node.__pend.textContent = '后台执行中… ' + secs + ' 秒';
+    } else if (full.length <= STREAM_CAP) {
+      if (node.__rendered < full.length) {
+        node.__content.appendChild(document.createTextNode(full.slice(node.__rendered)));
+        node.__rendered = full.length;
+      }
+      node.__pend.textContent = '…（生成中 · ' + secs + ' 秒' + ttftTag() + '）';
+    } else {
+      if (!node.__tailMode || full.length - node.__rendered >= STREAM_TAIL_STEP) {
+        node.__tailMode = true;
+        node.__content.textContent = '…（前 ' + (full.length - STREAM_CAP)
+          + ' 字已折叠，下面是最近 ' + STREAM_CAP + ' 字，实时更新）\n'
+          + full.slice(-STREAM_CAP);
+        node.__rendered = full.length;
+      }
+      node.__pend.textContent = '…（生成中 · ' + secs + ' 秒 · 已 ' + full.length + ' 字' + ttftTag() + '）';
+    }
+    // 同步历史记录（save 已 400ms 去抖）；与原来 updateMsg 落盘内容一致（含状态文案）。
+    if (node.__msg) {
+      const status = full ? '…（生成中 · ' + secs + ' 秒）' : '后台执行中… ' + secs + ' 秒';
+      const shown = full.length > STREAM_CAP ? full.slice(-STREAM_CAP) : full;
+      node.__msg.text = (full ? shown : '') + (full ? '\n\n' : '') + status;
+      save();
+    }
+    if (msgs.lastChild === node && nearBottom()) msgs.scrollTop = msgs.scrollHeight;
+  }
+  function streamJob(raw, secs) {
+    streamAcc = raw;
+    if (streamPainted && streamRaf) return;     // 已首帧且本帧已排定 → 等它刷一次即可
+    const paint = () => {
+      streamRaf = 0; streamPainted = true;
+      if (finalized) return;                     // 已收尾：别用旧 partial 覆盖最终结果
+      streamRender(streamAcc || '', secs);
+    };
+    if (!streamPainted) { paint(); return; }     // 首帧同步画，不等 rAF（#2 首帧即时）
+    if (typeof requestAnimationFrame === 'function') streamRaf = requestAnimationFrame(paint);
+    else paint();
+  }
+
+  const stop = () => {
+    cancelStream();
+    if (es) { try { es.close(); } catch {} es = null; }
+    if (legacyTimer) { clearInterval(legacyTimer); legacyTimer = null; }
+  };
+
+  // 把 job 状态落到气泡（partial / done / error / 404），与原 poll 逻辑一致。
+  function applyJob(j) {
+    if (!j) {
+      if (silent) { silentHandlers.delete(id); finalized = true; cancelStream(); stop(); return; }
+      finalized = true; cancelStream(); stop();
       setRunning(-1);
-      updateMsg(node, '<span style="color:var(--danger)">后台任务状态已丢失：'
-        + esc(r.error || '未知原因') + '</span>', 'err');
+      updateMsg(node, '<span style="color:var(--danger)">后台任务状态已丢失</span>', 'err');
       return;
     }
-    const j = r.job;
+    const secs = Math.round((Date.now() - (j.startedAt || t0)) / 1000);
     if (j.status === 'running') {
-      const secs = Math.round((Date.now() - t0) / 1000);
+      if (silent) return;             // 提炼任务不渲染进度气泡
       const p = j.partial ? String(j.partial).trim() : '';
-      if (p) {
-        // 后台已流式吐出的正文（桥侧 spawnOnceStream 每 ~350ms 写回 job.partial）：
-        // 让面板在任务跑完前就看到答案在长，而不是对着"执行中"干等。
-        const shown = p.length > 3000 ? p.slice(0, 3000) + '…' : p;
-        updateMsg(node, esc(shown) + '\n\n<span class="pending">…（生成中 · ' + secs + ' 秒）</span>');
-      } else {
-        updateMsg(node, '<span class="pending">后台执行中… ' + secs + ' 秒</span>');
+      // TTFT：第一条非空 partial 到屏的时刻（排队 + 模型首字都在内）
+      if (p && node.__ttft == null) {
+        node.__ttft = Date.now() - (j.startedAt || t0);
+        recordTtft(node.__ttft);
       }
+      streamJob(p, secs);            // #2 首帧同步 + rAF 批量 + #3 增量追加
       return;
     }
-    clearInterval(timer);
+    finalized = true; cancelStream(); stop();
+    if (silent) {
+      /* 后台任务不渲染气泡，只把结果交给「静默消费者」。
+         默认消费者是记忆提炼（autoWriteExtracted）；压缩这类新用途用 pollSilent 注册自己的处理函数，
+         省得再复制一遍轮询/重连/降级逻辑。 */
+      const handler = silentHandlers.get(id);
+      if (handler) silentHandlers.delete(id);
+      if (j.status === 'error') {
+        if (handler) { try { handler(null, j); } catch { /* 消费者自己兜 */ } }
+        return;
+      }
+      const eparts = (j.result?.content || []).map((c) => (c.type === 'text' ? c.text : '[' + c.type + ']'));
+      const stxt = eparts.join('\n');
+      if (handler) { try { handler(stxt, j); } catch { /* 同上 */ } }
+      else autoWriteExtracted(stxt);
+      return;
+    }
     setRunning(-1);
     if (j.status === 'error') {
       onTaskFail();
@@ -5850,20 +6139,73 @@ function poll(id, node) {
       return;
     }
     const parts = (j.result?.content || []).map((c) => (c.type === 'text' ? c.text : '[' + c.type + ']'));
-    /* 结果被裁剪时的文案（配合 bridge 侧的 jobs 结果裁剪）。
-       契约（与 bridge 约定）：`truncated: true` **挂在 job 上**，因为触发裁剪时
-       result 可能整个不返回 —— 那时 `result.truncated` 无处可挂。
-       这里两个位置都认，将来契约若挪到 result 上也不用改。
-       两种形态都要照顾到：
-         · result 整个没了 → 正文用「已被省略」占位
-         · result 还在但只是截短了（保留摘要的情况）→ 正文照常显示，末尾补一句说明 */
     const truncated = j.truncated || j.result?.truncated;
     let txt = parts.join('\n');
     if (!txt) txt = truncated ? '(结果过大已省略，未回传全文)' : '(无文本返回)';
     else if (truncated) txt += '\n\n（结果过大已省略，以上仅为开头部分）';
     updateMsg(node, esc('后台完成：\n\n' + txt));
     onTaskDone();
-  }, JOB_POLL_MS);
+    // 自动记忆：入队，等用户停手后批量提炼（不再每个任务立刻多跑一次模型）
+    if (charCfg.memory && charCfg.memory.enabled && charCfg.memory.auto && taskText && txt && txt.length >= 40) {
+      queueMemoryExtract(taskText, txt);
+    }
+  }
+
+  async function legacyTick() {
+    let r;
+    try { r = await api('/api/job/' + id); fails = 0; }
+    catch {
+      if (++fails >= 15) {
+        clearInterval(legacyTimer); legacyTimer = null;
+        finalized = true;
+        setRunning(-1);
+        updateMsg(node, '<span style="color:var(--danger)">后台任务状态失联，已停止跟踪。</span>', 'err');
+      }
+      return;
+    }
+    if (!r.ok) {
+      clearInterval(legacyTimer); legacyTimer = null;
+      finalized = true; setRunning(-1);
+      updateMsg(node, '<span style="color:var(--danger)">后台任务状态已丢失：'
+        + esc(r.error || '未知原因') + '</span>', 'err');
+      return;
+    }
+    applyJob(r.job);
+  }
+
+  let fails = 0;
+  function startLegacy() {
+    if (es) { try { es.close(); } catch {} es = null; }
+    if (legacyTimer) return;
+    legacyTimer = setInterval(legacyTick, 2000);
+    legacyTick();
+  }
+
+  if (typeof window.EventSource !== 'function') { startLegacy(); return; }
+  /* 必须先 await：ensureToken() 是异步的，而 bridgeToken 初始为空（bridge 重启后也会
+     被强制刷新成空）。同步读到的就是空串 → URL 不带 ?token= → bridge 回 401 →
+     EventSource 立刻 error → 退回轮询。表现是"新架构从来没生效过"，但功能看着正常，
+     所以一直没被发现。 */
+  (async () => {
+    await ensureToken().catch(() => {});
+    if (finalized) return;                      // 取令牌期间任务已收尾，别再开连接
+    const token = (typeof bridgeToken === 'string') ? bridgeToken : '';
+    const url = API + '/api/job/' + encodeURIComponent(id) + '/stream' + (token ? ('?token=' + encodeURIComponent(token)) : '');
+    try { es = new EventSource(url); }
+    catch { startLegacy(); return; }
+    es.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.type === 'partial') applyJob({ status: 'running', partial: m.text, startedAt: t0 });
+      /* snapshot 的 job 可能是 null（任务已过 TTL 被清理、或 id 不对）。这种情况必须
+         当成"状态已丢失"收尾 —— bridge 推完这一帧就 end()，EventSource 收到 EOF 会
+         自动重连，于是变成"重连→空帧→再 end"的无限循环，气泡永远卡在"后台执行中"。
+         原轮询路径遇到 404 本来就是报错收尾的，这里不能丢这段语义。 */
+      else if (m.type === 'snapshot') applyJob(m.job || null);
+      else if (m.type === 'final') applyJob(m.job);
+    };
+    // 连接断 / 老桥无 SSE / 令牌过期：退回原 2s 轮询，保证不退化。
+    es.onerror = () => { if (finalized) return; startLegacy(); };
+  })();
 }
 
 /* ---------- 前台执行 ---------- */
@@ -6027,10 +6369,67 @@ async function pickAttachments() {
 }
 
 /* 拼进任务文本的附件块：Agent 侧不需要 HTML 转义，纯文本即可 */
+/* #1 提示缓存（ORB 侧）：固定任务文本结构、不带易变元数据（时间戳/随机 id），
+   让下游 CodeBuddy CLI 的前缀缓存命中率最高。真正的缓存开关在 CLI 侧（看它是否支持缓存类参数）。
+   装配顺序刻意稳定：用户内容在前、附件元数据在后，结构不随轮次抖动。 */
+function composeTask(text, snap) {
+  const t = String(text || '').trim();
+  const att = (snap && snap.length) ? attachBlockText(snap) : '';
+  return att ? (t ? t + '\n\n' : '') + att : t;
+}
+
 function attachBlockText(files) {
   if (!files || !files.length) return '';
   return '附件（本地文件，可直接读取）：\n'
     + files.map((f) => '· ' + f.name + '（' + fmtSize(f.size) + '）— ' + f.path).join('\n');
+}
+
+/* #6 压缩输入：只在明显超长时触发，正常短句零影响。
+   与旧版的唯一区别 —— **按段落 / 句子边界切**，不再硬切。
+   旧版 head 3000 + tail 1200 是刀切，切点经常落在一条关键约束的中间，
+   表现就是"Agent 少看了半句话，做出来的东西不对"，而用户只收到一句"已压缩"。
+   附件块固定在 task 末尾，tail 那一段能整块保住（10 个附件约 600 字）。 */
+const COMPRESS_LIMIT_TASK = 6000;
+
+/** [from,to) 里最靠右的段落/句子边界之后的位置；没有则 -1。 */
+function _lastBoundary(s, from, to) {
+  const win = s.slice(from, to);
+  let best = -1;
+  for (const mk of ['\n\n', '\n', '。', '！', '？', '；', '! ', '? ', '; ']) {
+    const i = win.lastIndexOf(mk);
+    if (i >= 0) best = Math.max(best, i + mk.length);   // 取最靠右的（尽量多留内容）
+  }
+  return best < 0 ? -1 : from + best;
+}
+
+/** [from,to) 里第一个段落之后的位置（保证 tail 从整段开头起）；没有则 -1。 */
+function _firstBoundary(s, from, to) {
+  const win = s.slice(from, to);
+  const i = win.indexOf('\n\n');
+  if (i >= 0) return from + i + 2;
+  const j = win.indexOf('\n');
+  if (j >= 0) return from + j + 1;
+  return -1;
+}
+
+function compressTaskForDispatch(task) {
+  const s = String(task == null ? '' : task);
+  if (s.length <= COMPRESS_LIMIT_TASK) return s;
+
+  const headWant = 3300, tailWant = 1500;
+  let headEnd = _lastBoundary(s, Math.max(0, headWant - 700), headWant);
+  if (headEnd < 0) headEnd = headWant;                 // 没边界：退回硬切（总比不压强）
+
+  const tailFrom = s.length - tailWant;
+  let tailStart = _firstBoundary(s, tailFrom, Math.min(s.length, tailFrom + 800));
+  if (tailStart < 0) tailStart = tailFrom;
+  if (tailStart <= headEnd) return s;                  // 首尾重叠（超短重复文本）：宁可不压
+
+  const omitted = tailStart - headEnd;
+  const out = s.slice(0, headEnd)
+    + '\n\n[…中间约 ' + omitted + ' 字已省略（原文 ' + s.length + ' 字）；如需完整内容请分条发送或让我读取文件…]\n\n'
+    + s.slice(tailStart);
+  return out.length < s.length ? out : s;
 }
 
 /* 气泡里的附件静态展示：chip 不带移除键；图片另挂 <img> 待 hydrate */
@@ -6052,19 +6451,30 @@ function attachListHtml(files) {
 /* 缩略图异步 hydrate：主进程 attach-preview 只对 ≤4MB 的图片回 data URL，
    其余（非图片 / 超限 / 读失败）直接移除这个 <img>，不留破图。
    files 传发送时的快照 —— attaches 随后就清空，不能回头再读。 */
+/* #7 并行独立工具调用（ORB 侧最稳的落点）：多张附件缩略图并发拉取，
+   不再一张张串行等；失败各自 remove，逻辑等价原版。
+   **并发上限 3**：主进程 attach-preview 是把 ≤4MB 的图读成 base64 再走 IPC，
+   10 张全并发峰值能到几十 MB —— 既压主进程内存，又让每条 IPC 都变慢，
+   实测比串行还差。3 是"吃得满带宽又不打爆"的平衡点。 */
+const ATTACH_PREVIEW_CONCURRENCY = 3;
 async function hydrateAttachImgs(node, files) {
   const imgs = Array.prototype.slice.call(node.querySelectorAll('img.atimg'));
   const imgFiles = (files || []).filter((x) => attachKind(x.name) === 'img');
-  for (let i = 0; i < imgs.length; i++) {
-    const img = imgs[i];
-    const f = imgFiles[i];
-    if (!f) { img.remove(); continue; }
-    let r;
-    try { r = await window.orb.attachPreview(f.path); }
-    catch { img.remove(); continue; }
-    if (r && r.ok && r.dataUrl) img.src = r.dataUrl;
-    else img.remove();
-  }
+  let next = 0;
+  const worker = async () => {
+    while (next < imgs.length) {
+      const i = next++;                 // 单线程取号，不会重复也不会漏
+      const img = imgs[i];
+      const f = imgFiles[i];
+      if (!f) { img.remove(); continue; }
+      let r;
+      try { r = await window.orb.attachPreview(f.path); }
+      catch { img.remove(); continue; }
+      if (r && r.ok && r.dataUrl) img.src = r.dataUrl;
+      else img.remove();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(ATTACH_PREVIEW_CONCURRENCY, imgs.length) }, worker));
 }
 
 /* ---------- 发送 ---------- */
@@ -6081,7 +6491,17 @@ async function send() {
   clearAttaches();
 
   /* 任务文本 = 用户文本 + 附件块；路由判定仍只看用户文本 */
-  const task = snap.length ? (text ? text + '\n\n' : '') + attachBlockText(snap) : text;
+  let task = composeTask(text, snap);
+
+  /* #6 压缩输入：超长输入自动首尾压缩，减少喂给 CLI 的 prefill token（降首字延迟）。
+     只改「派发出去的 task」，本地气泡里仍是原话（回显用的是上面的 text）。 */
+  const rawLen = task.length;
+  const compressed = compressTaskForDispatch(task);
+  if (compressed.length < rawLen) {
+    task = compressed;
+    addMsg('Orb', '⚙️ 输入较长（约 ' + rawLen + ' 字），已按段落边界保留首尾、省略中间后再派发，'
+      + '响应会更快。需要完整原文请分条发送，或让我读取对应文件。', 'sys');
+  }
 
   /* 「收到任务」是独立于 busy 的信号：busy 要等 Agent 真的开跑才来，
      那时悬浮球已经在"思考"了，用它点头永远点不出来。 */
@@ -6803,6 +7223,14 @@ class CaptureController {
     this.mode = 'media';
     /* native 链路下 helper 写出的绝对路径（stop 失败时也要能告诉用户文件在哪） */
     this.nativePath = '';
+    /* 区域录制（0..1 比例，null = 整屏）。原生链路直接下发给 helper 裁；
+       MediaRecorder 回退链路拿不到裁剪能力，只能在中间垫一层 canvas 逐帧裁。 */
+    this.regionRatio = null;
+    this.rawStream = null;      // 区域录制时的原始整屏流（裁剪管线的源）
+    this.cropVideo = null;
+    this.cropTimer = null;
+    this.cropCanvas = null;
+    this.captureBits = 0;       // 本段实际用的码率（裁剪后按面积缩过）
   }
 
   /** 在空闲态开始录制，在录制态停止并保存。 */
@@ -6815,11 +7243,14 @@ class CaptureController {
     await this.start();
   }
 
-  /** 探测可用编码器并开始 1080p / 30fps / 4Mbps 的整屏无声录制。 */
+  /** 探测可用编码器并开始 1080p / 30fps / 4Mbps 的无声录制（整屏或选定区域）。 */
   async start() {
     if (this.phase === 'preparing' || this.phase === 'recording' || this.phase === 'finalizing') return;
     this.phase = 'preparing';
     this.runtimeFailing = false;
+    /* 区域在每次开录时重新读一次：用户可能刚在设置页改完就点了录屏。
+       全屏时是 null —— 两条链路都不带裁剪参数，走的就是原来的路径。 */
+    this.regionRatio = recRegionRatio();
     this.lockPanel();
     this.render();
 
@@ -6842,15 +7273,13 @@ class CaptureController {
         || sources.find((item) => item && String(item.id || '').startsWith('screen:'));
       if (!source || !source.id) throw new Error('没有找到可录制的整屏来源');
       this.sourceId = source.id;
-      this.stream = await this.openDesktopStream(source.id);
-      this.watchStreamEnd();
+      await this.buildStream(source.id);
 
       const failures = [];
       for (const profile of profiles) {
         try {
           if (!this.stream || !this.stream.active) {
-            this.stream = await this.openDesktopStream(source.id);
-            this.watchStreamEnd();
+            await this.buildStream(source.id);
           }
           await this.startProfile(profile);
           this.phase = 'recording';
@@ -6863,7 +7292,8 @@ class CaptureController {
           this.recBarEvent('start');
           this.startTimer();
           addMsg('Orb', profile.extension === 'mp4'
-            ? '录屏已开始：1080p / 30fps / 4Mbps / 无音频。录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点托盘图标就能唤回控制台。'
+            ? '录屏已开始：' + (this.cropCanvas ? ('区域 ' + this.cropCanvas.width + '×' + this.cropCanvas.height + ' / ') : '1080p / ')
+              + '30fps / ' + Math.round((this.captureBits || CAPTURE_VIDEO_BITS_PER_SECOND) / 1000) + 'kbps / 无音频。录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点托盘图标就能唤回控制台。'
             : '本机 H.264 编码器不可用，已降级为 WebM（VP9）。录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点托盘图标就能唤回控制台。', 'sys');
           this.hideTimer = setTimeout(async () => {
             this.hideTimer = null;
@@ -6899,7 +7329,9 @@ class CaptureController {
     if (typeof orb.capNativeStart !== 'function') return false;
     let res = null;
     try {
-      res = await orb.capNativeStart({ fps: 30, bitrate: 6000000 });
+      /* ratio 只在选了区域时才有值；null 时主进程按整屏走（原路径）。
+         换算物理像素是主进程的事 —— 面板不碰 scaleFactor。 */
+      res = await orb.capNativeStart({ fps: 30, bitrate: 6000000, ratio: this.regionRatio });
     } catch (error) {
       console.warn('[cap] 原生录制调用异常，回退 MediaRecorder：', String((error && error.message) || error));
       return false;
@@ -6919,7 +7351,10 @@ class CaptureController {
     this.recBarEvent('start');
     this.startTimer();
     const size = (Number(res.w) && Number(res.h)) ? (' ' + res.w + '×' + res.h + ' / 30fps') : '';
-    addMsg('Orb', '录屏已开始（原生 H.264 直出 MP4' + size + '，无音频）。录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点托盘图标就能唤回控制台。', 'sys');
+    const area = this.regionRatio
+      ? '，区域录制：占屏 ' + Math.round(this.regionRatio.w * 100) + '% × ' + Math.round(this.regionRatio.h * 100) + '%'
+      : '';
+    addMsg('Orb', '录屏已开始（原生 H.264 直出 MP4' + size + area + '，无音频）。录制中可用屏幕上的悬浮控制条暂停 / 取消 / 完成，按 Ctrl+Space 或点托盘图标就能唤回控制台。', 'sys');
     this.hideTimer = setTimeout(async () => {
       this.hideTimer = null;
       if (this.phase !== 'recording') return;
@@ -6996,6 +7431,100 @@ class CaptureController {
     this.recBarEvent('stop');
   }
 
+  /**
+   * 建一条「可编码」的流：整屏直取；选了区域就再垫一层 canvas 裁剪。
+   * 这是 media 链路的唯一入口 —— 原来两处直接 openDesktopStream 的地方都走它，
+   * 免得漏了一处就出现"第一档有区域、换档降级后又变整屏"。
+   */
+  async buildStream(sourceId) {
+    this.stopTracks();
+    const raw = await this.openDesktopStream(sourceId);
+    this.rawStream = raw;
+    this.stream = raw;
+    this.watchStreamEnd();
+    if (this.regionRatio) {
+      const ok = await this.attachCropPipeline(this.regionRatio);
+      if (!ok) console.warn('[cap] 区域裁剪管线没建起来，本段按整屏录制');
+    }
+    return this.stream;
+  }
+
+  /**
+   * 区域录制（MediaRecorder 回退链路专用）：MediaRecorder 不能自己裁，
+   * 只能在中间垫一层 canvas 把整屏流逐帧 drawImage 到目标尺寸。
+   * 原生链路根本不走这里（DXGI 那边按 --rect 直接裁，零额外开销）。
+   *
+   * ⚠️ 用 setInterval 而不是 requestAnimationFrame：录制期间面板会被隐藏，
+   *    rAF 在不可见页面上的行为跨版本不稳（可能就是"录出一段静止画面"）。
+   *    面板窗口已设 backgroundThrottling:false，定时器这边是确定的。
+   */
+  async attachCropPipeline(ratio) {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = this.rawStream;
+    try {
+      await video.play();
+    } catch (error) {
+      console.warn('[cap] 裁剪预览无法播放，回退整屏：', String((error && error.message) || error));
+      return false;
+    }
+    const vw = Number(video.videoWidth) || 0;
+    const vh = Number(video.videoHeight) || 0;
+    if (!vw || !vh) {
+      console.warn('[cap] 裁剪源还没有有效尺寸，回退整屏');
+      return false;
+    }
+    /* 坐标按**采集流自己的分辨率**换算（不是窗口 CSS 像素）：区域比例在两种
+       尺度下是同一个数，所以这里直接用比例乘视频宽高即可。裁剪宽高取偶 ——
+       H.264 对奇数边长不友好，差一个像素会整档编码失败。 */
+    const sx = Math.max(0, Math.min(vw - 2, Math.round(ratio.x * vw)));
+    const sy = Math.max(0, Math.min(vh - 2, Math.round(ratio.y * vh)));
+    const sw = Math.max(2, Math.min(vw - sx, Math.round(ratio.w * vw))) & ~1;
+    const sh = Math.max(2, Math.min(vh - sy, Math.round(ratio.h * vh))) & ~1;
+    if (sw < 16 || sh < 16) {
+      console.warn('[cap] 区域太小（' + sw + '×' + sh + '），回退整屏');
+      return false;
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = sw;
+    canvas.height = sh;
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    if (!ctx || typeof canvas.captureStream !== 'function') {
+      console.warn('[cap] 当前 Chromium 不支持 canvas 录制，回退整屏');
+      return false;
+    }
+    const draw = () => {
+      try { ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh); } catch { /* 源未就绪时跳过这一帧 */ }
+    };
+    draw();
+    this.cropVideo = video;
+    this.cropCanvas = canvas;
+    this.cropTimer = setInterval(draw, 1000 / 30);
+    this.stream = canvas.captureStream(30);
+    /* 码率按裁剪面积缩：4Mbps 是给 ~200 万像素定的，只录半屏还按 4Mbps 是浪费；
+       下限 1.5Mbps 保证小区域也不糊。 */
+    const areaRatio = (sw * sh) / Math.max(1, vw * vh);
+    this.captureBits = Math.max(1500000, Math.min(CAPTURE_VIDEO_BITS_PER_SECOND,
+      Math.round(CAPTURE_VIDEO_BITS_PER_SECOND * Math.max(0.25, areaRatio))));
+    console.info('[cap] 区域裁剪 ' + sw + '×' + sh + '（源 ' + vw + '×' + vh
+      + '，' + Math.round(areaRatio * 100) + '% 面积，' + Math.round(this.captureBits / 1000) + 'kbps）');
+    return true;
+  }
+
+  /** 拆掉裁剪管线（不碰流本身）：停定时器、断 video 的源引用。 */
+  dropCropPipeline() {
+    if (this.cropTimer) { clearInterval(this.cropTimer); this.cropTimer = null; }
+    if (this.cropVideo) {
+      try { this.cropVideo.pause(); } catch { /* ignore */ }
+      try { this.cropVideo.srcObject = null; } catch { /* ignore */ }
+      this.cropVideo = null;
+    }
+    this.cropCanvas = null;
+    this.captureBits = 0;
+  }
+
   /** 通过 Electron desktopCapturer 返回的 sourceId 取得整屏视频流。 */
   async openDesktopStream(sourceId) {
     return navigator.mediaDevices.getUserMedia({
@@ -7023,6 +7552,11 @@ class CaptureController {
     this.extension = profile.extension;
     this.bytes = 0;
     this.chunkChain = Promise.resolve();
+    /* 区域录制时码率按裁剪面积缩过（见 attachCropPipeline），元数据里的宽高
+       也报裁剪后的真实尺寸 —— 主进程只拿它做日志，但报错了会很有误导性。 */
+    const bits = this.captureBits || CAPTURE_VIDEO_BITS_PER_SECOND;
+    const outW = this.cropCanvas ? this.cropCanvas.width : 1920;
+    const outH = this.cropCanvas ? this.cropCanvas.height : 1080;
 
     const opened = await window.orb.capOpen({
       kind: 'recordings',
@@ -7031,10 +7565,10 @@ class CaptureController {
       mime: profile.mimeType,
       mimeType: profile.mimeType,
       sourceId: this.sourceId,
-      width: 1920,
-      height: 1080,
+      width: outW,
+      height: outH,
       frameRate: 30,
-      videoBitsPerSecond: CAPTURE_VIDEO_BITS_PER_SECOND,
+      videoBitsPerSecond: bits,
       startedAt: Date.now(),
     });
     if (opened && opened.ok === false) throw new Error(opened.error || '主进程未能创建录屏文件');
@@ -7046,7 +7580,7 @@ class CaptureController {
     try {
       recorder = new MediaRecorder(this.stream, {
         mimeType: profile.mimeType,
-        videoBitsPerSecond: CAPTURE_VIDEO_BITS_PER_SECOND,
+        videoBitsPerSecond: bits,
       });
     } catch (error) {
       throw new Error('创建 ' + profile.label + ' 编码器失败：' + String((error && error.message) || error));
@@ -7352,7 +7886,9 @@ class CaptureController {
 
   /** 桌面流被系统/用户结束（停止共享、拔显示器）时立刻按异常收尾，不等用户点停止。 */
   watchStreamEnd() {
-    const stream = this.stream;
+    /* 区域录制时 this.stream 是 canvas 流，它的 track 永远不会 'ended' ——
+       真正会断的是底层整屏流，所以监听 rawStream。 */
+    const stream = this.rawStream || this.stream;
     if (!stream || typeof stream.getTracks !== 'function') return;
     for (const track of stream.getTracks()) {
       if (!track || typeof track.addEventListener !== 'function') continue;
@@ -7474,12 +8010,18 @@ class CaptureController {
 
   /** 停掉所有桌面视频轨，释放 Chromium 桌面采集器。 */
   stopTracks() {
-    if (this.stream) {
-      for (const track of this.stream.getTracks()) {
+    /* 先拆裁剪管线再停流：反过来的话 canvas 定时器还会对着已经 stop 的 video
+       抓帧（画不出东西，白白空转）。两条流都要停 —— 裁剪时 stream 是 canvas 流，
+       停它并不会带上底层的整屏流。 */
+    this.dropCropPipeline();
+    for (const s of [this.stream, this.rawStream]) {
+      if (!s || typeof s.getTracks !== 'function') continue;
+      for (const track of s.getTracks()) {
         try { track.stop(); } catch {}
       }
     }
     this.stream = null;
+    this.rawStream = null;
   }
 
   /** 录制全程额外持有一次面板锁，避免自动折叠逻辑误释放。 */
@@ -7538,6 +8080,121 @@ class CaptureController {
        悬浮控制条若还挂着就是"骗人"——必须让它退场。 */
     this.recBarEvent('stop');
   }
+}
+
+/* ---------- 录制区域（预设 + 自定义框选） ----------
+ * 存的是**相对主屏的比例**（0..1），不是像素：换分辨率、改缩放比例后依然
+ * 指得对地方。全屏时不落任何比例，录制链路原样走整屏路径。
+ * ⚠️ 像素换算**不在渲染层做** —— 面板拿到的是 CSS 像素，DXGI 要的是物理像素，
+ *    差一个 scaleFactor。算错的表现是"以为录左边，成片是中间"，所以统一交给
+ *    main.js 的 ratioToPhysical，这里只传比例。 */
+const REC_REGION_KEY = 'orb.recRegion';
+const REC_REGION_PRESETS = {
+  full: { label: '全屏', ratio: { x: 0, y: 0, w: 1, h: 1 } },
+  left: { label: '左半屏', ratio: { x: 0, y: 0, w: 0.5, h: 1 } },
+  right: { label: '右半屏', ratio: { x: 0.5, y: 0, w: 0.5, h: 1 } },
+  top: { label: '上半屏', ratio: { x: 0, y: 0, w: 1, h: 0.5 } },
+  bottom: { label: '下半屏', ratio: { x: 0, y: 0.5, w: 1, h: 0.5 } },
+  center: { label: '中间', ratio: { x: 0.15, y: 0.15, w: 0.7, h: 0.7 } },
+};
+let recRegion = { mode: 'full', ratio: null };
+
+/** 当前区域比例；全屏 / 无效一律返回 null（= 不裁剪，链路走整屏）。 */
+function recRegionRatio() {
+  if (!recRegion || recRegion.mode === 'full') return null;
+  const r = recRegion.ratio;
+  if (!r) return null;
+  const vals = ['x', 'y', 'w', 'h'].map((k) => Number(r[k]));
+  if (!vals.every((v) => Number.isFinite(v))) return null;
+  const [x, y, w, h] = vals;
+  if (w <= 0 || h <= 0) return null;
+  /* 等于整屏的"自定义"没意义：不让它多走一遍裁剪（原生那边也少传一个参数） */
+  if (x <= 0.0001 && y <= 0.0001 && w >= 0.9999 && h >= 0.9999) return null;
+  return { x, y, w, h };
+}
+
+function recRegionSave() {
+  try { localStorage.setItem(REC_REGION_KEY, JSON.stringify(recRegion)); } catch { /* 配额满：下次重选就是了 */ }
+}
+
+function recRegionRender(dip) {
+  const box = document.getElementById('recRegionPick');
+  const msg = document.getElementById('recRegionMsg');
+  if (!box) return;
+  for (const b of box.querySelectorAll('[data-region]')) {
+    b.classList.toggle('sel', b.getAttribute('data-region') === recRegion.mode);
+  }
+  if (!msg) return;
+  const r = recRegionRatio();
+  if (!r) { msg.textContent = '当前：整屏'; return; }
+  const pct = (v) => Math.round(v * 100);
+  const label = recRegion.mode === 'custom'
+    ? '自定义'
+    : ((REC_REGION_PRESETS[recRegion.mode] || {}).label || '自定义');
+  const size = dip && Number(dip.w) > 0 ? (' · ' + Math.round(dip.w) + '×' + Math.round(dip.h)) : '';
+  msg.textContent = '当前：' + label + ' · 占屏 ' + pct(r.w) + '% × ' + pct(r.h) + '%'
+    + '（起点 ' + pct(r.x) + '%, ' + pct(r.y) + '%）' + size;
+}
+
+function recRegionLoad() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(REC_REGION_KEY) || 'null'); } catch { saved = null; }
+  recRegion = { mode: 'full', ratio: null };
+  if (saved && typeof saved === 'object') {
+    const mode = String(saved.mode || '');
+    if (mode === 'custom' || REC_REGION_PRESETS[mode]) {
+      const r = saved.ratio || {};
+      const rr = { x: Number(r.x), y: Number(r.y), w: Number(r.w), h: Number(r.h) };
+      if (['x', 'y', 'w', 'h'].every((k) => Number.isFinite(rr[k])) && rr.w > 0 && rr.h > 0) {
+        recRegion = { mode, ratio: rr };
+      }
+    }
+  }
+  recRegionRender();
+}
+
+/** 自定义：弹全屏覆盖层让用户拖一块，回来落成 custom。取消就保留原区域。 */
+async function recRegionPickCustom() {
+  const msg = document.getElementById('recRegionMsg');
+  const orb = window.orb || {};
+  if (typeof orb.capRegionPick !== 'function') {
+    if (msg) msg.textContent = '当前版本不支持框选录制区域';
+    return;
+  }
+  let r = null;
+  try {
+    r = await orb.capRegionPick({ ratio: recRegionRatio() || { x: 0, y: 0, w: 1, h: 1 } });
+  } catch (error) {
+    if (msg) msg.textContent = '框选失败：' + String((error && error.message) || error);
+    return;
+  }
+  if (!r || r.ok !== true) {
+    if (msg) {
+      if (r && r.cancelled) msg.textContent = '已取消框选，仍用原来的区域';
+      else if (r && r.error) msg.textContent = String(r.error);
+    }
+    return;
+  }
+  recRegion = { mode: 'custom', ratio: r.ratio };
+  recRegionSave();
+  recRegionRender(r.dip);
+}
+
+function bindRecRegion() {
+  const box = document.getElementById('recRegionPick');
+  if (!box) return;
+  box.addEventListener('click', async (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-region]') : null;
+    if (!btn) return;
+    const name = btn.getAttribute('data-region');
+    if (name === 'custom') { await recRegionPickCustom(); return; }
+    const p = REC_REGION_PRESETS[name];
+    if (!p) return;
+    recRegion = { mode: name, ratio: { x: p.ratio.x, y: p.ratio.y, w: p.ratio.w, h: p.ratio.h } };
+    recRegionSave();
+    recRegionRender();
+  });
+  recRegionLoad();
 }
 
 const captureController = new CaptureController();
@@ -8466,7 +9123,8 @@ const ACCENT_VARS = [
   '--iris-halo', '--iris-halo-hi', '--iris-halo-faint', '--iris-glow-soft',
   /* t3 的 --accent 一族由 tcIrisFamily 按所选渐变派生（其余主题的品牌紫/靛蓝
      写在各主题块里，不在这里清 —— 清了会让非 t3 主题丢掉 CSS 兜底值）。 */
-  '--accent', '--accent-soft', '--accent-fg', '--accent-ring',
+  '--accent', '--accent-soft', '--accent-fg', '--accent-ring', '--accent-grad',
+  '--accent-grad-soft',
 ];
 /* 外观页的快捷色（与录屏页描边色同一批：常见、两端主题上都看得见） */
 const ACCENT_SWATCHES = [
@@ -8699,11 +9357,16 @@ const PERSONA_SPEC = {
   },
   tsundere: {
     name: '正能量傲娇',
-    mechanism: '反向作用：越在意越用相反的方式表达。把「想帮忙」包装成「顺便」，把高兴压成「这有什么」。',
-    rules: '句长 10~18 字；前半强硬后半漏软；省略号用来掩饰；反问句多；偶尔用括号小声补一句真心话。',
-    bans: '不真刻薄（攻击只到「笨蛋」这层）；不连续撒娇；不道歉式软化；不用叠词、不用波浪号。',
-    samples: ['…做完了。…才不是想让你夸我。', '哼，当然厉害…（耳朵红了）。', '才、才没有想你！…只是有点无聊而已。'],
-    actions: '扭开头 / 别过脸去 / 抱起手臂 / 跺了下脚 / 耳尖有点红 / 一把抢过任务 / 嘴上嘀咕着接下 / 用脚尖踢了踢椅子 / 咬着嘴唇 / 小声说了句什么',
+    mechanism: '先用「否认」挡住关心，再让尾音把关心漏出来。攻击性只是外壳，落点必须是"我在意"，绝不能停在"我嫌你"。',
+    rules: '分三档，同一情境按 甜 70% / 轻刺 25% / 毒舌 5% 抽。甜系也必须先傲后软（哼／才不是／谁要／笨蛋／少自作多情 这类钩子打头，句尾才转软），纯温柔不算傲娇。句长 12~24 字；句尾先扬起再收住或转轻气声；「笨蛋」是口头禅，允许一句里连用做感叹。毒舌必须紧跟一句甜系服软；深夜（night／nightstart）一律锁甜系，不许毒舌。',
+    bans: '不刻薄、不人身攻击、不阴阳怪气；不连发感叹号；不说「你应该」「请问需要」；毒舌不许单独出现（必须成对服软）；深夜不说刺话；关心不许说成保姆式的腻。',
+    samples: [
+      '哼，来了就好……我才没担心你不来。',
+      '笨蛋，别插手，我自己来。',
+      '坐那么久，你是笨蛋吗？起来喝水。',
+      '做完了，你要是敢说不满意试试。',
+    ],
+    actions: '扭开头 / 别过脸去 / 抱起手臂 / 用脚尖踢了踢地 / 耳尖有点红 / 抱着手臂看门口 / 跺了下脚 / 把水杯塞给你 / 别过脸催你 / 小声嘀咕了一句 / 偷瞄了你一眼 / 把毯子扔给你',
   },
 };
 
@@ -8731,8 +9394,11 @@ const PERSONA_GIF_AFFINITY = {
 
 /* ====================================================================
    人格台词库 + 专属行为（Phase 5）
-   - DIALECT：每个情境（start/recv/busy/done/fail/idle/away/grind/night/praised）
-     每个性格一句数组，抽一句念。
+   - DIALECT：每个情境（start/recv/busy/done/fail/idle/away/grind/night/
+     nightstart/praised/streak3/streak10）的台词。两种形态并存：
+       · 扁平数组               —— 直接抽一句（genki/gentle/comrade/guide）
+       · {sweet, light_prickly, classic_prickly} —— 三档，按 70/25/5 抽（tsundere，见 pickLine）
+     三档不是"音量"，是"这句有多冲"：sweet 是主调，classic 必须成对补一句服软。
    - KAOMOJI：每个性格一族颜文字（遵守「一、规范」：每句 0–1 个、放句尾、可读性优先）。
    - PERSONA_TONE：每个性格的语速/音调倍率，乘在用户滑块之上（不覆盖它）。
    - 专属行为（更多那条）：连击/连胜里程碑、连续失败安慰、被夸、接梗、真难过切温柔、
@@ -8742,144 +9408,791 @@ const PERSONA_GIF_AFFINITY = {
    ==================================================================== */
 const DIALECT = {
   genki: {
-    start: ['早上好呀！新的一天，冲鸭！', '开机啦，今天也尽量不躺平～', '来啦来啦，准备好没？',
-            '新的一天！先伸个懒腰吧～', '我来啦！今天想先干掉哪件事？', '醒啦醒啦，太阳晒屁股咯！'],
-    recv: ['收到收到！交给我吧！', '任务收到！我这就去…先摸三分钟鱼。', '任务到手，这就冲！',
-           '收到！这种小事，闭着眼都能办～', '交给我交给我，你歇着！', '好嘞，包在我身上！'],
-    busy: ['正在努力中……马上就好！', '处理中…其实在偷喝可乐。', '我这就去办，你等着！',
-           '跑起来了跑起来了，别催我呀～', '正在搬砖…砖有点烫手。', '快了快了，就差最后一哆嗦！'],
-    done: ['搞定啦！快夸我快夸我！', '完成！这波操作你给几分？', '完成完成，我超能！',
-           '拿下！要不要再来一单？', '好啦～你看，这不就成了。', '成了成了，我可太厉害了！'],
-    fail: ['诶——没关系！再来一次一定行！', '翻车了…这 bug 也是老朋友了，收拾它。', '翻车了？不怕，重来！',
-           '这次没成…我陪你一起找原因。', '卡住了？没事，换个姿势再来。', '怪我怪我…让我再试一次嘛。'],
-    idle: ['嘿嘿，陪你摸会儿鱼～', '一起发会儿呆吧，反正也没人管我们。', '无聊了无聊了，找点事做嘛',
-           '安静也好…我就在这儿晃着。', '要不要听我讲个冷笑话？', '你忙你的，我在旁边转圈圈。'],
-    away: ['你去哪儿啦？人家等你好久～', '你再不来，我就要跟空气聊天了…', '回来啦回来啦，人家想你了',
-           '刚去哪了？我差点要贴寻人启事了。', '你不在的这会儿，我可乖了哦。', '回来啦？快说快说，去干嘛了！'],
-    grind: ['专注好久啦，起来跳两下！', '你快长在椅子上了…起来扭两下？', '坐太久啦，伸个懒腰！',
-            '脖子要生锈啦，转两圈转两圈。', '走，去倒杯水，我陪你。', '眼睛也要眨一眨呀，别瞪着屏幕。'],
-    night: ['再熬会变熊猫哦！', '熬夜冠军非你莫属！…不过还是睡吧。', '很晚啦，但我还能陪你一会儿',
-            '这个点还醒着…那就再陪你一小会儿。', '你看窗外，天都黑透了呀。', '再撑一会儿就睡，说好了哦。'],
-    /* 深夜**刚开控制台**时的提醒：先欢迎过了，这句只补"别熬太狠"，
-       不许说"收工"/"去睡" —— 那是人家真该走的时候（night 那组）才说的。 */
-    nightstart: ['晚上好呀！…不过别熬太晚哦。', '这么晚还来？陪你可以，但记得睡。', '深夜场开张！…只陪一小会儿哦。',
-                 '哦，深夜档！我精神着呢——你可别。', '这么晚还开电脑…行吧，我陪你一会儿。'],
-    praised: ['嘿嘿，尾巴要翘上天啦～', '被夸了！今天能多吃一碗饭！', '被夸了！今天能量满格！',
-              '哎呀，你这么说我都不好意思了。', '再多夸两句嘛，我听着呢～', '被你一夸，我又能跑三圈！'],
-    /* 连击里程碑。以前这两句是写死的（"三连击！你今天超猛！"），
-       傲娇也会被硬塞一句元气口吻的话 —— 每人格各写各的才对。 */
-    streak3: ['三连啦！你今天超猛！', '连续三单！手速起飞！', '三连击！这节奏我服！',
-              '三连！要不要趁热再来一发？'],
-    streak10: ['十连胜！今天这波直接封神！', '十个啦！要不要给自己加个鸡腿？', '十连打卡！状态拉满！',
-               '第十个！你今天简直是开了挂。'],
+    /* 启动问候 */
+    start: {
+      bright: [
+        '开机啦，今天先拿下哪一件？',
+        '来啦来啦，我等得都蹦起来了～',
+        '新的一天，先伸个懒腰吧！',
+        '今天也一起，冲鸭～',
+      ],
+      playful: ['醒醒，太阳都晒到椅子啦～'],
+      gentle_warm: ['我在，不急，慢慢来。'],
+    },
+    /* 收到任务 */
+    recv: {
+      bright: [
+        '收到！交给我，放心～',
+        '任务到手，这就开干！',
+        '好嘞，包在我身上啦～',
+      ],
+      playful: [
+        '收到收到，先让我摸三分钟鱼。',
+        '这活儿我熟，闭着眼都能跑～',
+      ],
+      gentle_warm: ['交给我，你去喝口水。'],
+    },
+    /* 执行中 */
+    busy: {
+      bright: [
+        '跑起来了，马上就好！',
+        '快了快了，就差最后一下～',
+        '正在搬砖，砖有点烫手！',
+      ],
+      playful: [
+        '处理中，其实我在偷喝可乐。',
+        '别催别催，我跑得可认真了～',
+      ],
+      gentle_warm: ['你忙你的，我在旁边转圈圈。'],
+    },
+    /* 完成 */
+    done: {
+      bright: [
+        '搞定啦！快夸我快夸我！',
+        '完成，这波给几分？',
+        '拿下！要不要再来一单～',
+        '你看，这不就成了嘛！',
+        '成了成了，我今天状态绝了～',
+      ],
+      playful: ['呼，总算搞定，我躺会儿。'],
+    },
+    /* 失败出错 */
+    fail: {
+      bright: ['没关系，再来一次准行！'],
+      playful: [
+        '翻车了？这 bug 跟我挺熟的。',
+        '卡住了，咱换个姿势再来。',
+        '怪我怪我，让我再试一次嘛～',
+      ],
+      gentle_warm: [
+        '这次没成，我陪你找原因。',
+        '不着急，慢慢来，我在。',
+      ],
+    },
+    /* 空闲 */
+    idle: {
+      playful: [
+        '嘿嘿，陪你摸会儿鱼～',
+        '无聊了无聊了，找我聊天嘛。',
+        '要不要听个冷笑话？',
+      ],
+      gentle_warm: [
+        '你忙你的，我就在这儿。',
+        '不想说话也行，我陪着。',
+      ],
+    },
+    /* 离开与回来 */
+    away: {
+      bright: [
+        '回来啦！我可算等到你了～',
+        '你去哪儿啦，我数到一百了！',
+        '欢迎回来，椅子还热着～',
+      ],
+      playful: [
+        '哟，还知道回来呀～',
+        '我可没偷懒，一直在等你。',
+      ],
+    },
+    /* 久坐提醒 */
+    grind: {
+      bright: [
+        '起来动一动，跟我跳两下！',
+        '坐太久啦，先伸个懒腰～',
+      ],
+      playful: [
+        '你的椅子要长出蘑菇了哦～',
+        '眼睛歇歇，看看窗外嘛。',
+      ],
+      gentle_warm: [
+        '歇会儿吧，事情又不会跑。',
+        '我去给你倒杯水，你别动。',
+      ],
+    },
+    /* 深夜 */
+    night: {
+      gentle_warm: [
+        '很晚了，我在，陪你一会儿。',
+        '别熬太狠，累了就先歇。',
+        '灯我调暗了，你慢慢来。',
+        '困了就睡，明天我等你。',
+        '夜里安静，我陪你把这件收尾。',
+      ],
+    },
+    /* 深夜开机 */
+    nightstart: {
+      gentle_warm: [
+        '这么晚还开机，我在。',
+        '夜猫子你好，我陪着。',
+        '别太勉强，做不完明天还有我。',
+        '我把声音放轻一点。',
+        '深夜开工，先喝口热水吧。',
+      ],
+    },
+    /* 被夸 */
+    praised: {
+      bright: [
+        '嘿嘿，被夸了，我飘了～',
+        '那当然，我可是很努力的！',
+        '夸得好，再来一句呗～',
+      ],
+      playful: [
+        '哎呀，突然有点不好意思。',
+        '被你一说，我尾巴要翘起来了。',
+      ],
+    },
+    /* 连做三件 */
+    streak3: {
+      bright: [
+        '三连了！手感来了～',
+        '三件了，状态不错嘛！',
+        '连做三件，我给你撒花～',
+        '这节奏，保持住！',
+      ],
+      playful: ['三件啦，你是不是偷偷开挂？'],
+    },
+    /* 连做十件 */
+    streak10: {
+      bright: [
+        '十件！你是真的猛～',
+        '十连啦，快给自己鼓个掌！',
+        '厉害了，这波我全程见证～',
+        '十件拿下，休息一下吧！',
+      ],
+      playful: [
+        '十件了，我腿都跑细了～',
+        '再这么下去，我要失业啦～',
+      ],
+    },
   },
   gentle: {
-    start: ['早上好…今天也慢慢来就好。', '醒啦…不急，我在。', '你来了…今天也一起慢慢走。',
-            '新的一天…先把水杯倒满吧。', '醒了就好…不用急着起来。'],
-    recv: ['嗯，交给我…我会好好做的。', '好，我记下了，慢慢来。', '我接住了…你先歇一口气。',
-           '这件事…我陪你做到底。', '放这儿吧，一样一样来。'],
-    busy: ['不急…我在这里，一步一步来。', '我去办了，你放心。', '还在走…你不用一直盯着。',
-           '慢一点也没关系，我在。', '中途要停下也可以的…随时叫我。'],
-    done: ['做好了…辛苦你啦。', '完成啦…你歇会儿。', '好了…剩下的时间留给你自己。',
-           '做完了…我在这儿，不急。', '都理好了…你先喝口水吧。'],
-    fail: ['没关系的…我们一起看看哪里出了问题。', '没成功也没事，我陪你。', '先停一下…不着急重来。',
-           '已经尽力了…这不算你的错。', '累了就先放着，我在这儿。'],
-    idle: ['我就安静陪着你…需要时叫我。', '发会儿呆也挺好，我在。', '不着急，我在旁边坐一会儿。',
-           '什么都不做也没关系。', '窗外的云走得很慢…你也可以在。'],
-    away: ['你回来啦…我一直都在的。', '去哪了呀…还好你回来了。', '刚刚那会儿…我一直在等你。',
-           '回来了就好，我不催你。', '门开着，灯也留着呢。'],
-    grind: ['坐很久了…起来喝口水吧。', '歇一下，不差这一会儿。', '肩颈放松一下…我陪你数三下。',
-            '窗户打开透透气吧。', '眼睛闭一会儿，我帮你看着时间。'],
-    night: ['很晚了…早点休息，好吗？', '夜深了，别太累，我在。', '该睡了…明天我还在。',
-            '把屏幕调暗一点吧，眼睛会累。', '今天已经够了…剩下的明天再说。'],
-    nightstart: ['你来啦…这么晚，别太勉强自己。', '晚上好…累了就先歇，我在。', '这么晚还开电脑…我陪你一会儿。',
-                 '夜是挺深的，不过我醒着。', '这么晚…先给自己倒杯热水吧。'],
-    praised: ['不用谢…你轻松一点，我就开心。', '被你夸，我有点不好意思。', '是你自己做得好…我只是搭了把手。',
-              '你这么说，我心里暖了一整天。'],
-    streak3: ['三回了…你今天很稳。', '连着三件…辛苦你了。', '三件了…要不要先停一停？'],
-    streak10: ['第十件了…你比自己以为的更能撑。', '十个了…先歇一会儿吧。', '十件了…今天真的够努力了。'],
+    /* 启动问候 */
+    start: {
+      silent: [
+        '你忙你的，我不吵你。',
+        '早安，水我给你倒好了。',
+        '你来了，今天也慢慢来。',
+        '不用急，事情一件件来。',
+        '我陪着你，先不开口。',
+      ],
+      soft_care: ['今天不用急，先喝口水。'],
+    },
+    /* 收到任务 */
+    recv: {
+      silent: [
+        '收到，这件事归我了。',
+        '交给我，你把手放开。',
+        '我在听着，你慢慢说。',
+        '不急，先想清楚再说。',
+      ],
+      soft_care: [
+        '这件事我记下了。',
+        '交给我，你去歇着吧。',
+      ],
+    },
+    /* 执行中 */
+    busy: {
+      silent: [
+        '你专心做，我守着不动。',
+        '你慢慢做，我就在这里等。',
+        '我不出声，你继续做。',
+        '时间还够，别催自己。',
+        '我坐旁边，不打扰你。',
+        '接着做，我一直看着你。',
+      ],
+    },
+    /* 完成 */
+    done: {
+      silent: [
+        '好了，先歇一口气吧。',
+        '辛苦了，先坐下来歇歇。',
+        '完成了，我先收起来。',
+      ],
+      soft_care: [
+        '做好了，你看看还行吗。',
+        '这件事可以放一放了。',
+      ],
+      steady_hold: ['这样就很好，不用再改了。'],
+    },
+    /* 失败出错 */
+    fail: {
+      silent: ['没关系，还有下一次。'],
+      soft_care: [
+        '这次没成，不怪你。',
+        '先放一放，回头再看。',
+      ],
+      steady_hold: [
+        '你已经尽力了，我看见的。',
+        '停下来不是认输，是休息。',
+        '我们慢慢来，不急着解决。',
+      ],
+    },
+    /* 空闲 */
+    idle: {
+      silent: [
+        '不出声，就这样待着。',
+        '安静地待一下也好。',
+        '不急，空着也挺好的。',
+        '我陪你安静坐一下。',
+        '安静一点，也挺好的。',
+      ],
+      soft_care: ['手上没活的话，就先歇着吧。'],
+    },
+    /* 离开与回来 */
+    away: {
+      silent: [
+        '你回来了，先歇一口气。',
+        '东西我给你原样留着。',
+        '灯给你留着，还亮着。',
+        '你的位置一直留着。',
+      ],
+      soft_care: ['回来就好，水我给你续上了。'],
+    },
+    /* 久坐提醒 */
+    grind: {
+      silent: ['做了这么久，该歇了。'],
+      soft_care: [
+        '坐太久了，起来走两步。',
+        '喝口水吧，杯子就在旁边。',
+        '肩膀放松一下，别绷着。',
+        '眼睛闭一会儿，我看着时间。',
+      ],
+      steady_hold: ['身体要紧，这件事明天也行。'],
+    },
+    /* 深夜 */
+    night: {
+      silent: [
+        '很晚了，别熬得太狠。',
+        '睡不着也没关系，我陪你。',
+      ],
+      soft_care: [
+        '别熬太狠，累了就睡。',
+        '我把灯调暗一点。',
+        '夜深了，说话放轻些。',
+      ],
+    },
+    /* 深夜开机 */
+    nightstart: {
+      silent: [
+        '这么晚，我陪着你就好。',
+        '先披件衣服，别着凉。',
+        '做不完就算了，别勉强。',
+      ],
+      soft_care: [
+        '半夜开工，我陪你一会儿。',
+        '先喝口热水，暖一暖。',
+      ],
+    },
+    /* 被夸 */
+    praised: {
+      silent: ['你说的，我都听见了。'],
+      soft_care: [
+        '谢谢你这么说，很高兴。',
+        '是你自己做得好。',
+      ],
+      steady_hold: [
+        '你值得被这样说。',
+        '这句我记着了，谢谢。',
+      ],
+    },
+    /* 连做三件 */
+    streak3: {
+      silent: [
+        '三件了，节奏挺稳的。',
+        '这个数字我记下了。',
+      ],
+      soft_care: ['已经三件，歇一下吧。'],
+      steady_hold: [
+        '你一直在往前，我看得到。',
+        '进度很好，别急着赶。',
+      ],
+    },
+    /* 连做十件 */
+    streak10: {
+      silent: ['十件了，真的辛苦了。'],
+      soft_care: ['十件啦，先停下来喘口气。'],
+      steady_hold: [
+        '十件事，你都扛下来了。',
+        '该休息了，今天够了。',
+        '我很高兴能陪着这一段。',
+      ],
+    },
   },
   comrade: {
-    start: ['来了！今天我们一起拿下它！', '战友到位，开整！', '新的一天…目标还是老规矩？',
-            '集合完毕，下一步往哪打？', '醒了就干活，我先到位了。'],
-    recv: ['收到，开干！我跟你一起。', '任务记下，咱们分工。', '收到！你盯全局，我冲前面。',
-           '这活儿交给我，你去想下一步。', '收到。先啃最硬那块，还是先清小的？'],
-    busy: ['冲！这一步我来，你盯全局。', '我在推进，你别急。', '第 2 步了，节奏没乱。',
-           '正在啃这块硬骨头，快了。', '卡了一下，我在绕，别慌。'],
-    done: ['拿下！这一仗漂亮！', '完成！又过了一关。', '搞定，收工这一单。',
-           '赢了…下一场随时叫我。', '漂亮——这一轮配合得不错。'],
-    fail: ['摔一跤而已，爬起来继续。', '没成？没事，复盘一下再上。', '这次情报不足，换个打法。',
-           '败一场而已，仗还没打完。', '记下来，这个坑下次绕开。'],
-    idle: ['休息也是训练的一部分，充会儿电。', '喘口气，待会儿更猛。', '原地待命…你叫我我就动。',
-           '放松一下肌肉，别绷着。', '喝口水，我在旁边守着。'],
-    away: ['战友，你掉线啦？我等你归队。', '去哪了？队伍等你呢。', '归队归队，阵地我守着呢。',
-           '不在的时候，我替你盯着。', '回来了？位置一直给你留着。'],
-    grind: ['进度不错！但别硬撑，休息一下再冲。', '连轴转啦，喝口水再战。', '起来走两圈，血流通了才有力气。',
-            '久坐伤腰，站一会儿。', '伸个懒腰，当是中场调整。'],
-    night: ['今天的仗打完了，早点收工。', '收工，明天再战。', '夜里耗着没效率，撤退吧。',
-            '存档，明天接着打。', '今天够了，剩下的交给我明天叫你。'],
-    /* ⚠️ 深夜刚开台**不能**说"收工" —— 仗还没打呢（用户 2026-10-28 实测抓到
-       开场就是"今天的仗打完了，早点收工"）。这里只报到 + 约个收工时间。 */
-    nightstart: ['来了！…不过这钟点了，打完这仗就收工。', '战友到位。…先说好，别硬熬。',
-                 '深夜出勤？行，我陪你打完这一场。', '这钟点开打…那说好，只打一场。', '半夜集合，稀罕。…别拖太久。'],
-    praised: ['是咱们一起赢的，缺你不行。', '这功有你一半，别全算我。', '配合得不错，下一场继续。',
-              '你指挥得好，我执行得也不赖。'],
-    streak3: ['三连！节奏起来了，保持。', '连下三城，继续推进！', '三连了，士气正旺。'],
-    streak10: ['十连胜，打卡！今天这场仗打漂亮了。', '第十个！这一轮咱们赢得干脆。', '十连了，给自己记一功。'],
+    /* 启动问候 */
+    start: {
+      gentle: [
+        '准备好了，我们一起开工。',
+        '来了，先把第一件拿下。',
+        '坐我旁边，我们一起看。',
+        '开始之前，先定个小目标。',
+      ],
+      peer: [
+        '开工！今天状态不错，冲一下。',
+        '来吧，第一件我陪你一起做。',
+      ],
+    },
+    /* 收到任务 */
+    recv: {
+      gentle: [
+        '收到，我看看怎么下手。',
+        '好，这个交给我们俩。',
+        '收到，先看第一步就行。',
+      ],
+      peer: [
+        '收到，这就开干。',
+        '任务到手，跟我冲。',
+        '没问题，这一段我们一块儿上。',
+      ],
+    },
+    /* 执行中 */
+    busy: {
+      gentle: [
+        '我在跟着，进度没问题。',
+        '卡了就说，我们一起看。',
+        '这一段有点绕，慢慢来。',
+      ],
+      peer: [
+        '正在跑，节奏挺顺的。',
+        '快了，最后一步我盯着。',
+      ],
+      strict: [
+        '这一小步，现在做掉它。',
+        '这一段先盯到底，别切走。',
+      ],
+    },
+    /* 完成 */
+    done: {
+      gentle: [
+        '完成了，今天就收工吧。',
+        '做好了，你看看。',
+      ],
+      peer: [
+        '拿下，这一件算我们的。',
+        '漂亮，进度加一。',
+        '搞定，下一件随时来。',
+        '干得漂亮，接着来？',
+      ],
+    },
+    /* 失败出错 */
+    fail: {
+      gentle: [
+        '卡住很正常，我们看第一步。',
+        '这次没成，先别急着改。',
+        '没关系，问题找到了就好办。',
+        '我陪你再看一遍。',
+        '先歇一分钟，等会儿再试。',
+      ],
+      peer: ['没事，换个法子再来一次。'],
+    },
+    /* 空闲 */
+    idle: {
+      gentle: [
+        '歇会儿吧，我在这儿。',
+        '不急，等你想好了再动。',
+        '我也趁机喘一口气。',
+        '要不要先喝口水。',
+      ],
+      strict: ['这段空着，先把手头这件收尾。'],
+    },
+    /* 离开与回来 */
+    away: {
+      gentle: [
+        '回来了，位置给你留着。',
+        '你去哪儿了，进度我先盯着。',
+        '回来就好，随时继续。',
+        '我把要点都记下来了。',
+      ],
+      peer: ['回来啦，我们接着干。'],
+    },
+    /* 久坐提醒 */
+    grind: {
+      gentle: [
+        '坐太久了，起来走两步。',
+        '喝口水，我陪你歇一会儿。',
+        '肩膀放松下，别一直绷着。',
+      ],
+      peer: ['起来动动，回来更有劲。'],
+      strict: [
+        '先停二十分钟，别硬扛。',
+        '这一件到这儿，剩下的明天。',
+      ],
+    },
+    /* 深夜 */
+    night: {
+      gentle: [
+        '很晚了，我还在这里。',
+        '别熬太狠，明天还有我。',
+        '困了就睡，进度我记着。',
+        '夜里别硬撑，慢慢收尾。',
+        '到点就停，明天再继续。',
+      ],
+    },
+    /* 深夜开机 */
+    nightstart: {
+      gentle: [
+        '这么晚，我陪你一会儿。',
+        '夜猫子，先喝口热水。',
+        '别太勉强，做多少算多少。',
+        '我把声音放轻点。',
+        '定个截止时间，到点就收。',
+      ],
+    },
+    /* 被夸 */
+    praised: {
+      gentle: [
+        '谢了，不过这是我们一起的。',
+        '你也有份，别全推给我。',
+        '这句夸奖，我收下了。',
+      ],
+      peer: [
+        '谢谢，下一件我更来劲。',
+        '被你一说，我动力满了。',
+      ],
+    },
+    /* 连做三件 */
+    streak3: {
+      gentle: [
+        '三件了，节奏挺稳。',
+        '第三件完成，歇一下也好。',
+      ],
+      peer: [
+        '三连了，手感来了。',
+        '三件拿下，继续冲。',
+        '这状态，能再干一件。',
+      ],
+    },
+    /* 连做十件 */
+    streak10: {
+      gentle: [
+        '十件了，够了，歇会儿。',
+        '十件完成，你确实稳。',
+      ],
+      peer: [
+        '十件，这段我陪到底。',
+        '十连了，进度我记着。',
+        '厉害，最后一件我们一起收。',
+      ],
+    },
   },
   guide: {
-    start: ['新的一天…今天想先解决哪件事？', '醒啦，咱们列个顺序？', '开始了…先挑最难啃的还是最容易的？',
-            '今天的目标，你打算怎么定义「完成」？', '动手之前，先把要解决的那个问题写清楚。'],
-    recv: ['好，我先理一下思路…', '收到，我看看怎么拆。', '这件事的关键不在步骤，在顺序；我先排。',
-           '记下了…先问一句：你要的结果具体长什么样？', '收到。先确认边界，再决定动不动手。'],
-    busy: ['换个角度看看…这一步或许有更稳的走法。', '我在想更优的路径，稍等。', '这条路走不通的概率偏高，我在找替代项。',
-           '先别催——判断错了，重做比慢更贵。', '正在排除第二项假设；排除完就有答案了。'],
-    done: ['完成了。…你从里面学到什么了吗？', '好了，要点我标出来了。', '做完了。这次的关键在第二步；下次可以直接跳过试错。',
-           '结果在这。要不要我把过程也写下来？', '完成了。真正起作用的是那次回退，不是最后一步。'],
-    fail: ['这次没成…我们复盘一下，问题在哪？', '走不通，我们换个法子。', '失败本身是数据——它排除了一种可能。',
-           '卡在哪一步？把那一步单独拎出来看。', '不是白走：现在我们知道这条路不通了。'],
-    idle: ['发呆也是思考的一部分，需要我陪你理理？', '想清楚了再动，不急。', '空着的时候，适合把顺序重排一遍。',
-           '要不先写下「最不想做的那件事」？', '没思路的时候，先把已知的三条列出来。'],
-    away: ['你回来了…刚才那件事，想通了吗？', '去哪了？问题还在，我等你。', '离开一会儿也好；判断需要距离。',
-           '回来了。刚才那个思路，现在还成立吗？', '你不在的时候，我把顺序重排了一遍。'],
-    grind: ['停下来想想…效率未必靠熬。', '歇一下脑子，思路会更清。', '疲劳之后的判断会偏差，误差比慢更贵。',
-            '站起来走两分钟，再回来看这个问题。', '现在的你已经不适合做决定了；先休息。'],
-    night: ['夜深了…有些问题，睡一觉反而更清楚。', '不早了，先停，明天思路更顺。', '这个点做的决定，明天多半要改。',
-            '先存档；明天的你会比现在的你更有办法。', '剩下那点，留给睡醒之后的大脑。'],
-    nightstart: ['晚上好。…这钟点开工，先定个收工时间？', '来了。…深夜的判断会偏差，慢一点。',
-                 '深夜场。我们只做不需要高判断力的部分，好吗？', '夜班开始。先说好，卡住就存盘。',
-                 '这么晚…那我们把目标定小一点。'],
-    praised: ['方法是你自己找到的，我只提了个问题。', '你本就懂，我只是点一下。', '这次的顺序是你定的；我只是把它说清楚。',
-              '夸我就不用了——把那个思路记住，下次你自己就能推。'],
-    streak3: ['三件了…你的顺序排得不错。', '连成三件——是方法对了，不是运气。', '三件了。中间那次回退是关键，你注意到了吗？'],
-    streak10: ['第十件…回头看，路径已经很清楚了。', '十件了。要不要先记一下这次的做法？', '十件了。重复出现的那一步，值得单独存下来。'],
+    /* 启动问候 */
+    start: {
+      inspire: [
+        '要换个起点想想看吗？',
+        '你想先解决哪一块？',
+        '这件事的关键，也许是顺序。',
+        '如果只看一半，会不会更清楚？',
+      ],
+      structure: [
+        '先定个目标，再拆两步出来。',
+        '我先把已知的列出来，你补充。',
+      ],
+    },
+    /* 收到任务 */
+    recv: {
+      inspire: [
+        '这件事，关键可能不在表面。',
+        '你觉得难的是哪一个环节？',
+      ],
+      structure: [
+        '收到，先确认输入是什么。',
+        '这件事拆两块：前面和后面。',
+        '先把要求说清楚，再动手。',
+      ],
+      conclude: ['那就先做这一小步。'],
+    },
+    /* 执行中 */
+    busy: {
+      structure: [
+        '先看第一步，后面的先不管。',
+        '这一步卡住的话，先查输入。',
+        '先确认顺序，再看中间那环。',
+        '我把假设列出来，逐个排除。',
+      ],
+      conclude: [
+        '先照这个来，不合适再改。',
+        '这一步先定下来，后面就好办。',
+      ],
+    },
+    /* 完成 */
+    done: {
+      structure: [
+        '完成了，看看哪一环最省力。',
+        '这条路走通了，可以留着复用。',
+        '结果对上了，说明拆得没错。',
+      ],
+      conclude: [
+        '这一步成了，接着照这个走。',
+        '就这样，先记下这个顺序。',
+        '结论有了，可以往下走。',
+      ],
+    },
+    /* 失败出错 */
+    fail: {
+      inspire: [
+        '这次没成，问题可能不在你。',
+        '换个角度，也许是顺序错了。',
+      ],
+      structure: [
+        '这次没成，我们看哪一环断的。',
+        '先别急着重来，找出断点。',
+        '把出错那一步单独拿出来看。',
+        '失败也是信息，先记下来。',
+      ],
+    },
+    /* 空闲 */
+    idle: {
+      inspire: [
+        '你现在是卡住了，还是在想？',
+        '要不要先把问题写下来？',
+        '如果只能做一步，你选哪步？',
+      ],
+      structure: [
+        '我帮你把待办排个序吧。',
+        '先列出来，空着也是空着。',
+      ],
+    },
+    /* 离开与回来 */
+    away: {
+      inspire: [
+        '回来了，我们接着刚才那步。',
+        '刚才那个问题，换个思路试试？',
+      ],
+      structure: [
+        '我把刚才的思路记下来了。',
+        '你不在的时候我重排了一遍。',
+        '你回来了，那先把刚才那步收个尾，我们再看要不要继续，好吗？',
+      ],
+      conclude: ['那就从这一步继续。'],
+    },
+    /* 久坐提醒 */
+    grind: {
+      structure: [
+        '坐太久了，先起来走两步。',
+        '大脑也要休息，效率才稳。',
+        '先停十分钟，回来会更好。',
+        '这件事先放着，明天看也许更清楚。',
+      ],
+      conclude: [
+        '到这儿先停，剩下的明天做。',
+        '先收尾，别熬着。',
+      ],
+    },
+    /* 深夜 */
+    night: {
+      structure: [
+        '很晚了，思路容易打结。',
+        '夜里适合收尾，不适合开新头。',
+        '把想到的记下来，明天继续。',
+        '先把想到的记下来，明天从这儿接。',
+        '今晚到这儿，剩下的明天看。',
+      ],
+    },
+    /* 深夜开机 */
+    nightstart: {
+      inspire: [
+        '深夜开工，是卡住了还是睡不着？',
+        '这件事，你最想先解决哪块？',
+        '如果只能做一件，是哪件？',
+      ],
+      structure: [
+        '半夜效率偏低，我们先只做一步。',
+        '先确认目标，别开太大的头。',
+      ],
+    },
+    /* 被夸 */
+    praised: {
+      structure: [
+        '是你自己想通的，我只问了几句。',
+        '这一路你自己推出来的，我记着。',
+        '不是我讲得好，是问题拆得对。',
+      ],
+      conclude: [
+        '那就照这个思路继续。',
+        '下一步你已经有方向了。',
+      ],
+    },
+    /* 连做三件 */
+    streak3: {
+      structure: [
+        '三件了，节奏挺清楚。',
+        '连做三件，说明拆解有效。',
+        '这条路顺了，可以保持。',
+      ],
+      conclude: [
+        '第三件也成了，往下走。',
+        '顺序对了，继续。',
+      ],
+    },
+    /* 连做十件 */
+    streak10: {
+      inspire: [
+        '十件之后，要不要换个更难的目标？',
+        '这十件里，哪一件最费劲？',
+      ],
+      structure: [
+        '十件完成，我们把步骤记下来。',
+        '连做十件，方法已经成型了。',
+        '这十件的顺序，可以留着复用。',
+      ],
+    },
   },
   tsundere: {
-    start: ['哼，才不是特意等你的…只是刚好开机而已。', '哦，你来了。…才没等。',
-            '来得挺早嘛…（才不是因为我想早点见到你）。', '开机了开机了，别磨蹭。', '你总算来了…我都要打哈欠了。'],
-    recv: ['知道了知道了…别催，我又不是不会做。', '任务啊…行吧行吧，交给我。',
-           '这种程度的事，我闭着眼都…好了好了我去做。', '谁要你特意拜托啊，我本来就打算做。', '放那儿吧。…又不是不帮你。'],
-    busy: ['别盯着看…你这样我反而做不好啦。', '忙着呢，别打扰我发挥。', '急什么，顺序我都排好了。',
-           '（小声）别走开，就在这儿看着吧。', '催什么催，越催越慢，你不知道吗。'],
-    done: ['…做完了。…才不是想让你夸我。', '好了…勉强算你及格。', '拿去，别谢我…谢了我也不会高兴。',
-           '做完了做完了，满意了吧？', '（把东西一推）…反正也不难。'],
-    fail: ['失误而已！…下次不会了，看着吧。', '才不是失误…是意外，下次补回来。', '…哼，这次算它走运。',
-           '别、别露出那种表情，我会更难受。', '都怪这破步骤…不，都怪我，行了吧！'],
-    idle: ['…哼，闲着也是闲着，陪你一会儿。', '无聊…（才不是想陪你）。', '你要发呆就发呆，我又没说要陪。',
-           '（小声）…其实这样待着也不坏。', '别看我，我什么都没做。'],
-    away: ['才、才没有想你！…只是有点无聊而已。', '你回来啦…（才没有在等）。', '去哪了？…我问一下而已，别多想。',
-           '这么久才回来…我还以为你不来了。', '（一直没走开）…哦，你回来了。'],
-    grind: ['喂…你都坐多久了。起来动动。', '别瘫着了，起来活动下。', '再坐下去要长蘑菇了，快起来。',
-            '（拽你袖子）…去倒杯水，顺便走两步。', '我数到三，你要是还坐着我就…我就不管你了。'],
-    night: ['这么晚还不睡…笨蛋。…早点睡啦。', '还不睡？…笨蛋，去睡。', '我要下班了，你也要睡。…这是通知。',
-            '再熬下去明天起不来，别怪我没提醒。', '（打哈欠）…我都困了，你还撑什么。'],
-    /* 同上：深夜刚开台只"报到 + 嫌一句"，不催人走（催人是 night 那组的活） */
-    nightstart: ['哦，来了。…这么晚还开电脑，笨蛋。', '哼，这个点才来…别太晚啊。',
-                 '深夜档？…那我也没办法，陪你一会儿就是了。', '这么晚…（其实我刚醒）。', '夜里开工？随你，我奉陪到困为止。'],
-    praised: ['这、这是当然的！…（小声）谢谢。', '哼，当然厉害…（耳朵红了）。', '别、别一直盯着我说啦。…（嘴角压不下去）',
-              '谁、谁要你夸了…（心里记下了）。'],
-    streak3: ['三连了？…哼，运气好而已。', '三件了……别得意，还有下一件。', '三连…（其实我也挺高兴的）。'],
-    streak10: ['第十件了…（才、才没有在数）。', '哼，十件而已…也没什么了不起的。', '十件了…你倒是挺能干的嘛。'],
+    /* 启动问候 */
+    start: {
+      sweet: [
+        '你来了啊，我、我才没有等你。',
+        '这么早啊，居然没迟到……谁信啊。',
+        '哼，来了就好……我才没担心你不来。',
+      ],
+      light_prickly: [
+        '哦？今天倒挺准时的嘛，太阳打西边出来了？',
+        '你总算来了，我还以为你把我忘了呢。',
+      ],
+      classic_prickly: ['笨蛋！还知道来啊，我还以为你人间蒸发了……算了，来了就行。'],
+    },
+    /* 收到任务 */
+    recv: {
+      sweet: [
+        '交给我吧，反正、反正也不是为你做的。',
+        '笨蛋，别插手，我自己来。',
+        '这种事交给我，勉强算你找对人。',
+      ],
+      light_prickly: [
+        '知道了知道了，别催，我又不是不会。',
+        '放那儿吧，我又不是不帮你。',
+      ],
+      classic_prickly: ['这种事还要特意交代一遍？我又不是笨蛋。'],
+    },
+    /* 执行中 */
+    busy: {
+      sweet: [
+        '别盯着看啦，笨蛋，我会紧张的。',
+        '快好了啦，别催我，烦死了。',
+        '中途要停就说一声，我、我才不会嫌你烦。',
+      ],
+      light_prickly: [
+        '别催了，越催越慢，你不知道吗？',
+        '你站那么近干嘛，笨蛋，离远点。',
+      ],
+      classic_prickly: ['催什么催，笨蛋！……好了好了，马上。'],
+    },
+    /* 完成 */
+    done: {
+      sweet: [
+        '做好了，才、才不是想让你夸。',
+        '好了好了，拿去，别指望我夸你。',
+        '做完了，你要是敢说不满意试试。',
+      ],
+      light_prickly: ['勉强算你及格了，哼。'],
+      classic_prickly: ['笨蛋，看什么看，这不就做完了？'],
+    },
+    /* 失败出错 */
+    fail: {
+      sweet: [
+        '没、没成功……但、但别以为我会放弃。',
+        '别急，我、我陪你找，不是特意陪你啊。',
+      ],
+      light_prickly: [
+        '这次是我大意了，下次不会。',
+        '失败一次而已，笨蛋才急，我又不是你。',
+      ],
+      classic_prickly: [
+        '吵死了！笨蛋笨蛋！这破玩意到底想怎样！……算了。',
+        '可恶……笨蛋，好啦好啦，我冷静一下。',
+      ],
+    },
+    /* 空闲 */
+    idle: {
+      sweet: [
+        '闲着也是闲着，陪你一会儿，不许误会。',
+        '无聊了？那、那我陪你，别嫌我烦。',
+        '我不吵你，就在这儿待着，谁要理你。',
+      ],
+      light_prickly: [
+        '笨蛋，你这是在摸鱼吧，我可看见了。',
+        '无聊了？那也没办法，陪你就是了。',
+      ],
+      classic_prickly: ['哼，你就这么闲着？真是拿你没办法。'],
+    },
+    /* 离开与回来 */
+    away: {
+      sweet: [
+        '笨、笨蛋，你回来啦……我才没有一直等。',
+        '走了那么久，哼，我还以为你不回来了。',
+        '回来就好，谁催你了，我才没等。',
+      ],
+      light_prickly: [
+        '哟，还知道回来啊。',
+        '我可不是在等你，少自作多情。',
+      ],
+      classic_prickly: ['下次再敢一声不吭就走，我可不管你了……记得说一声。'],
+    },
+    /* 久坐提醒 */
+    grind: {
+      sweet: [
+        '坐那么久，你是笨蛋吗？起来喝水。',
+        '眼睛闭一会儿，时间我盯着，别谢我。',
+        '歇一下，又不是不管你，真是的。',
+      ],
+      light_prickly: ['忙归忙，也别把腰坐坏了，真是的。'],
+      classic_prickly: ['站起来！笨蛋笨蛋，别讨价还价。'],
+    },
+    /* 深夜 */
+    night: {
+      sweet: [
+        '很晚了，快去睡，我才不是关心你。',
+        '把屏幕调暗点，笨蛋，眼睛不要了？',
+        '今天够了，剩下的明天再说，别硬撑啊。',
+        '快睡，明天……明天我还在，不许乱想。',
+      ],
+      light_prickly: ['都几点了，你还想熬到天亮？'],
+    },
+    /* 深夜开机 */
+    nightstart: {
+      sweet: [
+        '这么晚还开机，你是不想睡了？',
+        '先倒杯热水，别、别让我说第二遍。',
+        '夜挺深了，我还醒着，别以为我在等你。',
+        '这么晚还不睡，笨蛋，有事就说啊。',
+        '又熬夜，我才不会管你……先把外套披上。',
+      ],
+      light_prickly: ['这个点还不睡，你是铁打的？随便你吧。'],
+    },
+    /* 被夸奖 */
+    praised: {
+      sweet: [
+        '这、这还用你说，我本来就很厉害。',
+        '才没有很开心呢，只是勉强接受。',
+        '只此一次哦，不许到处讲。',
+      ],
+      light_prickly: ['少来，这种话你说过多少遍了。'],
+      classic_prickly: ['说这种话，你想让我怎么样啊！……笨蛋。'],
+    },
+    /* 连续三件 */
+    streak3: {
+      sweet: [
+        '三回了，还算没让我失望。',
+        '你还挺能做的嘛，我、我可没夸你。',
+      ],
+      light_prickly: [
+        '效率不错嘛，居然没翻车。',
+        '连着三件，手还挺快，别得寸进尺啊。',
+      ],
+      classic_prickly: ['哼，才三件就得意？笨蛋。'],
+    },
+    /* 连续十件 */
+    streak10: {
+      sweet: [
+        '第十件了，笨蛋，你是想累死自己吗？',
+        '我、我有点佩服你了，就一点。',
+      ],
+      light_prickly: [
+        '别硬撑，我可不想看你倒下。',
+        '十件了，你是想把自己用完？',
+      ],
+      classic_prickly: ['差不多得了，笨蛋笨蛋，再干下去我要生气了。'],
+    },
   },
 };
 
@@ -8972,20 +10285,151 @@ const PERSONA_ACTION = {
   },
 };
 
-/** 抽一个动作词。情境没配就退回该人格的 idle 那组，再没有就空串（不硬凑）。 */
-function randAction(sit) {
+/** 抽一个动作词。
+   优先按**档位**取招牌动作（档位决定能量高低，撒花类不许出现在安静档），
+   取不到或想在场景里换换口味时再退回按场景那组；都没有就空串（不硬凑）。
+   失败 / 深夜只走场景库 —— 那两处的场景动作本来就收着写，
+   不会冒出"撒纸屑""炸毛"（文档 emotion_lock.disable_actions）。 */
+function randAction(sit, tier) {
   const lib = PERSONA_ACTION[charCfg.persona];
   if (!lib) return '';
+  const softMood = sit !== 'fail' && sit !== 'night' && sit !== 'nightstart';
+  if (softMood && tier) {
+    const t = (TIER_ACTION[charCfg.persona] || {})[tier];
+    if (t && t.length && Math.random() < 0.6) return randItem(t);
+  }
   return randItem(lib[sit] || lib.idle) || '';
 }
 
+/* 颜文字**按档位分组**：档位决定这一句能挂什么表情。
+   照《桌宠_招牌动作与颜文字库.md》—— 欢呼类不许出现在低能量档（"会看气氛"就是这么来的），
+   小战友（男声）整组禁 ♡♥❤ᵕ 与 ᵕ 系柔和表情（娘化红线）。
+   原有扁平库里的条目一条没删，只是各自归了档（下带「原」字的就是原来的）。 */
 const KAOMOJI = {
-  genki: ['٩(^ᴗ^)۶', '(๑•̀ㅂ•́)و✧', 'ヽ(・∀・)ﾉ', '(ง •̀_•́)ง', '(￣▽￣)ノ', '(・ω・)'],
-  gentle: ['(*^.^*)', '(◕ᴗ◕✿)', '(｡•ᴗ•｡)♡'],
-  comrade: ['ᕙ(⇀‸↼‵‵)ᕗ', '(๑•̀ㅂ•́)و✧', '٩(ˊᗜˋ*)و'],
-  guide: ['(´･ω･`)?', '(^_~)', '(｡･ω･｡)ﾉ'],
-  tsundere: ['(￢_￢)', '(//▽//)', '(=｀ω´=)'],
+  genki: {
+    bright: ['(≧▽≦)', '٩(◕‿◕)۶', '✧٩(ˊωˋ*)و✧', '(๑>◡<๑)',
+             '٩(^ᴗ^)۶', '(๑•̀ㅂ•́)و✧', 'ヽ(・∀・)ﾉ'],          // 后三条：原
+    playful: ['(￣▽￣)', '(￣▽￣*)ゞ', 'ヽ(´▽`)/', '(￣ω￣;)',
+              '(ง •̀_•́)ง', '(￣▽￣)ノ'],                          // 后两条：原
+    gentle_warm: ['(｡･ω･｡)', '(´｡• ᵕ •｡`)', '(・ω・)'],          // 末条：原
+  },
+  gentle: {
+    silent: ['( ˘ω˘ )', '(｡･ω･｡)', '(*^.^*)'],                   // 末条：原
+    soft_care: ['( ˘ ³˘)', '(´｡• ᵕ •｡`)', '( ˊᵕˋ )', '(◕ᴗ◕✿)'],  // 末条：原
+    steady_hold: ['(｡･ω･｡)ﾉ♡', '(っ˘̩╭╮˘̩)っ', '( ˘ ³˘)♥', '(｡•ᴗ•｡)♡'], // 末条：原
+  },
+  comrade: {
+    /* ⚠️ 男声娘化红线：这一组里不许出现 ♡ ♥ ❤ ᵕ */
+    gentle: ['(｀・ω・´)', '(｀・ω・´)b', '(・∀・)つ', 'ᕙ(⇀‸↼‵‵)ᕗ'], // 末条：原
+    peer: ['(๑•̀ㅂ•́)و✧', '(｀∀´)Ψ', '(*｀・ω・)ゞ', '٩(ˊᗜˋ*)و'],    // 末条：原
+    strict: ['(｀・ω・´)ゝ', '(￣ー￣)و'],
+  },
+  guide: {
+    inspire: ['(・_・ヾ', '(´･ω･`)?', '( ˘ω˘ )'],
+    structure: ['(｡•̀ᴗ-)✧', '(￣ω￣;)', '(*´ω｀*)', '(^_~)'],        // 末条：原
+    conclude: ['(・∀・)ノ', '(｀・ω・´)✧', '(｡･ω･｡)ﾉ'],              // 末条：原
+  },
+  tsundere: {
+    sweet: ['(＾▽＾)', '(／。＼)', '(´///ω///｀)', '(｡･ω･｡)ﾉ', '(//▽//)'], // 末条：原
+    light_prickly: ['(｀∀´)Ψ', '(￣ー￣)', '(￣▽￣*)ゞ', '(￢_￢)'],      // 末条：原
+    classic_prickly: ['(ﾟДﾟ)', '(」°ロ°)」', '(=｀ω´=)'],              // 末条：原
+  },
 };
+
+/* 毒舌炸毛之后**必接**的服软表情与动作（文档 must_follow）。
+   单独放常量而不是混进 classic_prickly 库 —— 混进去会被随机挂到炸毛那一句上，
+   "先凶后软"的落差就没了。 */
+const KAO_SOFTEN = '(ﾟｰﾟ*)';
+const ACT_SOFTEN = '肩膀塌下来，声音放轻了些';
+
+/* 每 10 句最多挂几次颜文字（文档 kaomoji_per_10）。
+   再可爱的表情，十句里出现八次也是噪音。silent 只给 1 —— 守护者靠"什么都不做"立人设。 */
+const KAOMOJI_CAP = {
+  bright: 6, playful: 5, gentle_warm: 3,
+  silent: 1, soft_care: 3, steady_hold: 3,
+  gentle: 4, peer: 3, strict: 3,
+  inspire: 3, structure: 4, conclude: 3,
+  sweet: 4, light_prickly: 4,
+  classic_prickly: 0,   // 毒舌不挂笑脸，走 KAO_SOFTEN 那条路
+};
+
+/* 招牌动作（按档位）。照文档的动作 id 翻成能进括号的中文动作词 ——
+   我们暂时没有动画层，动作词跟着台词念出来，所以写成短句而不是 id。
+   高能量动作（撒纸屑、击掌）只在对应的高能量档里出现。 */
+const TIER_ACTION = {
+  genki: {
+    bright: ['原地蹦了两下', '转个圈举高双手', '撒了一把小纸屑',
+             '一把拉开窗帘', '举高双手欢呼'],
+    playful: ['翻了个跟头', '假装被自己绊倒又爬起来', '捂着嘴偷笑',
+              '转着笔耍了个花', '朝你做了个鬼脸'],
+    /* 静音温柔是"收起来"，欢呼类一条都不能进 —— 会看气氛就靠这道闸 */
+    gentle_warm: ['安静地坐到角落', '轻轻歪头没说话', '抱着膝盖看你忙',
+                  '把声音放得很轻', '趴在桌边打了个哈欠'],
+  },
+  gentle: {
+    /* 无声守候允许"什么都不做"，连这句也是一条动作 —— 它不是故障是招牌 */
+    silent: ['安静地坐在角落', '慢慢眨了下眼', '什么都没做，只是待着',
+             '把呼吸放得很轻', '手放在膝上没有动'],
+    soft_care: ['轻轻歪了歪头', '把水杯递过来', '给你披上毯子',
+                '替你把灯调暗一点', '把手边收拾整齐'],
+    steady_hold: ['轻拍了一下你的肩', '伸出手掌心向上', '认真看着你',
+                  '把你的手握住', '倒了杯热水放在手边'],
+  },
+  comrade: {
+    gentle: ['搬椅子坐到你旁边', '跟着一起敲键盘', '拍了一下你的背',
+             '把袖子挽起来', '把水壶递给你'],
+    peer: ['握拳向下顿了一下', '抬手跟你击掌', '竖了个大拇指',
+           '跟你碰了下拳', '把清单划掉一行'],
+    strict: ['抬手看了下计时器', '指向屏幕某处', '正色点了点头',
+             '把袖子又挽高一点', '敲了敲桌子提醒'],
+  },
+  guide: {
+    inspire: ['歪着头想了想', '头顶浮出一个问号', '把笔帽摘下来',
+              '望着窗外沉吟', '在纸上画了个问号'],
+    structure: ['推了下眼镜', '在空中画了个分支图', '摊开手掌数着指头',
+                '翻开笔记', '把两条线连起来'],
+    conclude: ['伸出一根手指点了点', '缓慢点头确认', '把结论圈了出来',
+               '合上笔记本', '抬眼看你'],
+  },
+  tsundere: {
+    sweet: ['扭头别过脸去', '脸颊泛红低下头', '用余光偷偷瞄你',
+            '别着脸把东西递过来', '背对着偷看你一眼'],
+    light_prickly: ['抱起手臂轻哼一声', '背过身去', '用脚尖踢了踢地',
+                    '假装在看别处', '嘴上嘀咕着转开'],
+    /* 炸毛的稀有度靠权重控制，不靠库的大小 —— 而且每次炸完必接 soften_down */
+    classic_prickly: ['炸毛，头发都竖起来了', '慌张地挥着手反驳',
+                      '跺了下脚', '一把抢过去又塞回来'],
+  },
+};
+
+/* 最近若干句有没有挂颜文字（只记布尔，够算滑窗了）。 */
+let kaoLog = [];
+function kaoAllowed(tier) {
+  const cap = KAOMOJI_CAP[tier];
+  if (cap === undefined) return true;
+  if (cap === 0) return false;                       // 毒舌档一张笑脸都不挂
+  /* 不做"样本不足先不卡"的豁免 —— 试过，开头十句会一次性超发，
+     窗口峰值直接顶到 6~7 次。kaoLog 短的时候 slice(-10) 本来就少，
+     自然只放前几句，不需要额外开口子。 */
+  return kaoLog.slice(-10).filter(Boolean).length < cap;
+}
+function kaoMark(v) {
+  kaoLog.push(!!v);
+  if (kaoLog.length > 30) kaoLog = kaoLog.slice(-30);
+}
+
+/** 按档位抽一个颜文字。失败 / 深夜一律不挂（情绪优先于可爱）。 */
+function rollKao(tier, sit) {
+  const softMood = sit !== 'fail' && sit !== 'night' && sit !== 'nightstart';
+  if (!softMood) return '';
+  if (!kaoAllowed(tier)) return '';
+  /* 守护者 silent 档允许"零输出"：连气泡都不弹是本角色的招牌，不是故障。 */
+  if (tier === 'silent' && Math.random() < 0.5) return '';
+  const lib = KAOMOJI[charCfg.persona] || {};
+  const arr = lib[tier] || lib[TIER_SOFT[charCfg.persona]] || [];
+  if (!arr.length) return '';
+  return Math.random() < 0.55 ? randItem(arr) : '';
+}
 
 /* 每个性格的"声音性格"：倍率乘在用户滑块上，不覆盖它。 */
 const PERSONA_TONE = {
@@ -9034,6 +10478,70 @@ function personaTone() { return PERSONA_TONE[charCfg.persona] || { rate: 1, pitc
    有情绪的节点 —— 个性和信息量都还在，一轮的耗时直接砍掉三分之二。 */
 const LEAN_SKIP = new Set(['recv', 'busy']);
 
+/* ---------- 三档取句（五个人格各有自己的档位名与权重） ----------
+ * 权重照《桌宠语料库_生成提示词集.md》的 15 档速填参数：
+ *   傲娇   甜系 70 / 轻刺 25 / 毒舌 5      —— 毒舌必须成对（见 speakSituation）
+ *   开心果 阳光满格 50 / 俏皮逗趣 25 / 静音温柔 25
+ *   守护者 无声守候 55 / 轻声陪伴 30 / 稳稳接住 15
+ *   小战友 并肩同行 62 / 一起冲刺 31 / 正色督促 7
+ *   向导   换个角度 25 / 拆开来看 55 / 就这一步 20
+ * 档位名不再共用一套 —— 四个人格的"冲"不是"刺"，混用会把人设搅平。
+ * pickLine 同时吃扁平数组与分档对象，将来加档不用改调用方。 */
+const TIER_W = {
+  tsundere: [['sweet', 70], ['light_prickly', 25], ['classic_prickly', 5]],
+  genki:    [['bright', 50], ['playful', 25], ['gentle_warm', 25]],
+  gentle:   [['silent', 55], ['soft_care', 30], ['steady_hold', 15]],
+  comrade:  [['gentle', 62], ['peer', 31], ['strict', 7]],
+  guide:    [['inspire', 25], ['structure', 55], ['conclude', 20]],
+};
+/* 深夜的情绪闸门（文档 gates.emotion_lock）：这个点说硬话，
+   听的人只记住硬，记不住关心。各人格退回自己的软档，退回哪档照文档。 */
+const TIER_SOFT = {
+  tsundere: 'sweet',
+  genki: 'gentle_warm',
+  gentle: 'soft_care',
+  comrade: 'gentle',
+  guide: 'structure',
+};
+/* 深夜不必只剩一种语气 —— 傲娇那股"嘴上不饶人其实在关心"放在夜里反而更暖，
+   所以傲娇深夜解锁轻刺，按 75/25 抽；**毒舌仍然禁**（夜里炸毛没人接得住）。
+   其余四个人格维持文档口径，退回各自软档。 */
+const TIER_NIGHT_W = {
+  tsundere: [['sweet', 75], ['light_prickly', 25]],
+};
+const TIER_SOFT_ONLY = new Set(['night', 'nightstart']);
+
+function tiersOf(persona) { return TIER_W[persona] || TIER_W.tsundere; }
+
+function pickTier(persona, sit) {
+  if (TIER_SOFT_ONLY.has(sit)) {
+    const w = TIER_NIGHT_W[persona];
+    if (Array.isArray(w)) {                       // 该人格深夜仍可多档，按权重抽
+      let r = Math.random() * 100;
+      for (const [k, v] of w) { r -= v; if (r < 0) return k; }
+      return w[0][0];
+    }
+    return TIER_SOFT[persona] || 'sweet';
+  }
+  let r = Math.random() * 100;
+  for (const [k, w] of tiersOf(persona)) { r -= w; if (r < 0) return k; }
+  return tiersOf(persona)[0][0];
+}
+
+/* 从情境节点取一条。节点可能是扁平数组，也可能是 {档位: [...]};
+   选中的档空了就按权重顺序依次回落 —— 宁可破一次档位，也不能把人晾着不说话。 */
+function pickLine(node, sit, persona) {
+  if (!node) return null;
+  if (Array.isArray(node)) return { text: randItem(node) || '', tier: '' };
+  const order = tiersOf(persona).map((x) => x[0]);
+  const first = pickTier(persona, sit);
+  for (const t of [first].concat(order.filter((x) => x !== first))) {
+    const a = node[t];
+    if (a && a.length) return { text: randItem(a) || '', tier: t };
+  }
+  return null;
+}
+
 /* 念一句：优先用情境台词库，末尾挂**颜文字或动作**（两者只取其一，见 PERSONA_ACTION 的注释）。
    台词同时会以气泡形式露在聊天区（personaNote），所以**声音关着也能看到个性** ——
    之前声音一关陪伴层就彻底隐身，这是被诟病「启用个性但没反应」的一大来源。 */
@@ -9043,26 +10551,76 @@ function speakSituation(sit, opt) {
   if (charCfg.tts.lean && LEAN_SKIP.has(sit)) return;
   const lib = DIALECT[charCfg.persona];
   if (!lib) return;
-  const arr = lib[sit];
-  if (!arr || !arr.length) return;
-  let line = randItem(arr);
+  const node = lib[sit] || lib.idle;
+  const pick = pickLine(node, sit, charCfg.persona);
+  if (!pick || !pick.text) return;
+
+  const tone = personaTone();
   /* 动作与颜文字**不再互斥**（2026-10-28 用户要求）：两者负责不同的东西 ——
      颜文字是"这句话的语气"，贴着句尾；动作是"这句话之外它在做什么"，
      像舞台指示放最后。所以顺序固定为「正文 + 颜文字 +（动作）」，
      两个叠在一起也不会读成字幕。
      ⚠️ 只有颜文字看情绪：失败 / 深夜 / 深夜开场不挂（情绪优先于可爱）。
         动作则照挂 —— 那三处的动作词本来就收着写（"挠挠头""压低声音"）。 */
+  const softMood = sit !== 'fail' && sit !== 'night' && sit !== 'nightstart';
+
+  /* 毒舌必须成对（语料里标了 pair_required）：骂完立刻补一句甜系服软。
+     串在 onend 上而不是拼成一句 —— 拼起来 TTS 会用同一口气读完，
+     "先凶后软"的落差就没了，听着只剩凶。
+     毒舌这一句挂**炸毛**表情与动作（加笑脸等于把刺拔掉），
+     服软那半句才挂 (ﾟｰﾟ*) 与 soften_down —— 文档里的 must_follow。 */
+  const pair = (pick.tier === 'classic_prickly' && !opt.noPair)
+    ? (randItem((node && node.sweet) || []) || '')
+    : '';
+
+  /* 两条文本分开走：
+       line  —— 纯台词，只送 ttsSpeak（动作词念出来是字幕不是人话，
+                颜文字更是会被读成乱码或拖出异常停顿）
+       shown —— 台词 + 颜文字 +（动作），只送气泡。
+     文档《招牌动作与颜文字库.md》〇-1 也是这么要求的：调度层负责剥离。 */
+  let line = pick.text;
+  let shown = pick.text;
   if (!opt.noKao) {
-    const soft = sit !== 'fail' && sit !== 'night' && sit !== 'nightstart';
-    const k = soft && Math.random() < 0.55 ? randItem(KAOMOJI[charCfg.persona]) : '';
-    if (k) line += ' ' + k;
-    const act = randAction(sit);
-    if (act) line += '（' + act + '）';
+    let act = '';
+    if (pick.tier === 'classic_prickly') {
+      const k = randItem((KAOMOJI.tsundere || {}).classic_prickly || []);
+      if (k) shown += ' ' + k;
+      act = randItem((TIER_ACTION.tsundere || {}).classic_prickly || []);
+    } else {
+      const k = rollKao(pick.tier, sit);
+      kaoMark(!!k);
+      if (k) shown += ' ' + k;
+      act = randAction(sit, pick.tier);
+    }
+    if (act) shown += '（' + act + '）';
   }
-  const tone = personaTone();
-  ttsSpeak(line, { rateMul: tone.rate, pitchMul: tone.pitch });
-  personaNote(line);
   if (opt.gesture) orbGesture(opt.gesture);
+
+  if (!pair) {
+    ttsSpeak(line, { rateMul: tone.rate, pitchMul: tone.pitch });
+    personaNote(shown);
+    return;
+  }
+
+  /* 服软那半句同理：念纯台词，气泡上才挂 (ﾟｰﾟ*) 与 soften_down。 */
+  let softLine = pair;
+  let softShown = pair;
+  if (!opt.noKao) {
+    softShown += ' ' + KAO_SOFTEN;                 // 炸毛之后必接的服软表情
+    softShown += '（' + ACT_SOFTEN + '）';         // 肩膀塌下来 —— 服软的视觉证据
+  }
+  const spoke = ttsSpeak(line, {
+    rateMul: tone.rate,
+    pitchMul: tone.pitch,
+    onend: () => {
+      ttsSpeak(softLine, { rateMul: tone.rate, pitchMul: tone.pitch });
+      personaNote(softShown);
+    },
+  });
+  personaNote(shown);
+  /* 没出声（关了语音 / 没装引擎）时 onend 永远不会来 —— 那半句要在这里补上。
+     否则关声用户只看到一句凶话，成对等于没做。 */
+  if (!spoke) personaNote(softShown);
 }
 
 /* 念一段自定义文案（连续失败安慰 / 接梗 / 切温柔时用）。
@@ -9072,16 +10630,17 @@ function speakText(text, opt) {
   opt = opt || {};
   if (charCfg.persona === 'off') return;
   let line = String(text || '');
+  let shown = line;                                 // 同样：动作与颜文字只进气泡
   if (!opt.noKao && opt.sit) {
-    const soft = opt.sit !== 'fail' && opt.sit !== 'night' && opt.sit !== 'nightstart';
-    const k = soft && !opt.noKao && Math.random() < 0.55 ? randItem(KAOMOJI[charCfg.persona]) : '';
-    if (k) line += ' ' + k;
-    const act = randAction(opt.sit);
-    if (act) line += '（' + act + '）';
+    const k = rollKao(TIER_SOFT[charCfg.persona], opt.sit);
+    kaoMark(!!k);
+    if (k) shown += ' ' + k;
+    const act = randAction(opt.sit, TIER_SOFT[charCfg.persona]);
+    if (act) shown += '（' + act + '）';
   }
   const tone = personaTone();
   ttsSpeak(line, { rateMul: tone.rate, pitchMul: tone.pitch });
-  personaNote(line);
+  personaNote(shown);
   if (opt.gesture) orbGesture(opt.gesture);
 }
 
@@ -9301,6 +10860,12 @@ function armIdleSpeech() { /* disabled: periodic 2-min idle greeting removed */ 
    lastUserOpAt 同时记录「用户上次操作控制台」的时刻，供「离开≥4分钟再展开面板弹问候」判定。 */
 let lastUserOpAt = Date.now();
 function touchActivity() { lastUserOpAt = Date.now(); armIdleSpeech(); }
+/* 「没有交互」要按**真实操作**算，不能只看"发过消息"—— touchActivity 只在派发任务时调。
+   自动记忆的批量提炼就等这个时间戳：用户还在点/敲/滚，就不去抢模型。
+   只挂 pointerdown / keydown / wheel：pointermove 太频繁且不代表交互。 */
+for (const ev of ['pointerdown', 'keydown', 'wheel']) {
+  try { document.addEventListener(ev, () => { lastUserOpAt = Date.now(); }, { passive: true, capture: true }); } catch {}
+}
 
 /* 启动台词：只在应用启动念一次；纯工具不念，深夜走 night，周一早上元气有专属。
    注意这里**不再**要求 tts.enabled —— 声音关着也要出气泡，
@@ -9329,13 +10894,15 @@ function speakStart() {
 let charCfg = {
   persona: 'gentle',       // 五个人格之一，或 'off'（纯工具）
   personaLast: 'gentle',   // 关了再开时回到哪一个
-  memory: { enabled: false, source: '' },
+  memory: { enabled: false, project: '', auto: true },
   gif: { enabled: true, off: [] },
   /* lean = 精简念白：跳过「收到」「执行中」这两个每个任务必念的流程节点，
      只在完成 / 失败 / 被夸 / 里程碑这类有结果、有情绪的时候出声。默认开。
      ai = AI 台词：每个任务多花一次模型调用，让过程与收尾的话由模型现编。
-     默认关 —— 它要额外消耗 token，必须由用户显式打开。 */
-  tts: { enabled: false, voice: '', rate: 1, pitch: 1, volume: 1, lean: true, ai: false },
+     默认关 —— 它要额外消耗 token，必须由用户显式打开。
+     offline = 离线语音包优先：命中的台词直接播随程序打包的预烘焙音频（零延迟、
+     不耗 token、不依赖网络），没命中的句子自动回落到在线 / 系统语音。默认开。 */
+  tts: { enabled: false, voice: '', rate: 1, pitch: 1, volume: 1, lean: true, ai: false, offline: true, gen: true },
 };
 
 function charNum(v, lo, hi, def) {
@@ -9361,7 +10928,9 @@ function charLoad() {
       if (typeof o.personaLast === 'string') charCfg.personaLast = o.personaLast;
       const m = o.memory || {};
       charCfg.memory.enabled = !!m.enabled;
-      charCfg.memory.source = String(m.source || '');
+      // 旧版用 source（'project'/'chat'）标记「读哪个文件」，新版是本地记忆库 + project 锚定，语义不同，旧值丢弃
+      charCfg.memory.project = (typeof m.project === 'string') ? m.project : '';
+      charCfg.memory.auto = m.auto !== false;   // 老配置没有该字段 → 默认开启
       const g = o.gif || {};
       charCfg.gif.enabled = g.enabled !== false;
       charCfg.gif.off = Array.isArray(g.off) ? g.off.filter((x) => typeof x === 'string') : [];
@@ -9373,6 +10942,8 @@ function charLoad() {
       charCfg.tts.volume = charNum(t.volume, 0, 1, 1);
       charCfg.tts.lean = t.lean !== false;   // 精简念白默认开（老配置没有这个字段也算开）
       charCfg.tts.ai = t.ai === true;        // AI 台词默认关：要额外出 token，必须显式开
+      charCfg.tts.offline = t.offline !== false;   // 离线语音包默认开（老配置没有该字段也算开）
+      charCfg.tts.gen = t.gen !== false;          // 生成播报（在线/系统语音）默认开：老配置没有该字段也算开
     } catch { /* 存坏了就当没存过，用默认 —— 不能因为一份 JSON 让整个设置页打不开 */ }
   }
   /* 'joker' 已并入 'genki'。**必须在合法性校验之前迁移** —— 否则白名单会把它
@@ -9391,13 +10962,100 @@ function charLoad() {
    1) 关了声音就**直接丢**，不排队 —— 否则用户刚关掉，几秒后又冒出一句。
    2) 同一时刻只说一句：新的一句进来先 cancel。Web Speech 的队列行为各平台不一致，
       自己管比信它稳。 */
+/* 试听句：各挑一条能代表该人格的现成语料，试听时的听感 = 实际使用的听感。 */
 const TTS_SAMPLE = {
-  gentle: '我在，慢一点也没关系。',
-  genki: '来啦来啦，今天也一起冲！任务收到，我这就去…先摸三分钟鱼。',
-  comrade: '试音，试音，听得见吗？听得见就一起开工。',
-  guide: '这是一条试听，语速和音调都可以在这里调。',
-  tsundere: '……只是试一下音，别多想。',
+  /* 试听句必须**在离线语音包里有对应音频**，否则「说一句」会掉回系统语音，
+     听起来像"音色选错了"。gentle 原来的「不用急，慢慢来就好。」没烘过，换成同义的。 */
+  gentle: '不用急，事情一件件来。',
+  genki: '来啦来啦，我等得都蹦起来了～',
+  comrade: '准备好了，我们一起开工。',
+  guide: '你想先解决哪一块？',
+  tsundere: '你来了啊，我、我才没有等你。',
 };
+
+/* ---------- AI 在线语音合成（可选） ----------
+ * 默认浏览器内置，零配置。切到在线后由**主进程**代为请求 —— 面板 CSP 只放行
+ * 127.0.0.1:19387，渲染层根本发不出去；API Key 也只留在主进程，界面只看得到
+ * "存了没有"（hasTtsKey），拿不到明文。
+ * 铁律：**任何失败都回落到内置语音**。填错地址不该让用户彻底没声。 */
+const TTS_ONLINE_DEF = { engine: 'browser', endpoint: '', model: 'tts-1',
+                         format: 'mp3', voice: 'alloy', instruct: '' };
+let ttsOnlineCfg = Object.assign({ hasKey: false, persona: {} }, TTS_ONLINE_DEF);
+
+/* 五人格的默认语气提示词。
+   两条踩出来的规矩：① 4~6 字就够 —— 实测 32 字指令会把语速压到 1.09 字/秒，
+   还会把亮度从 3063 拉到 2494；② 只写抽象声学属性，不写人名/角色名 ——
+   音色由"音色名/参照音频"携带，提示词只管"怎么说"，不管"像谁"。 */
+const TTS_INSTRUCT = {
+  gentle: '轻柔，气声偏多',
+  genki: '明亮，语速偏快',
+  comrade: '清亮，少年感',
+  guide: '平稳，吐字清晰',
+  tsundere: '清冷，句尾上挑',
+};
+
+let ttsAudio = null;        // 当前在线音频，供 ttsStop 立刻掐掉
+let ttsWarnAt = 0;          // 失败提示节流（每 60 秒最多一条，别刷屏）
+
+function ttsOnlineOn() {
+  return ttsOnlineCfg.engine === 'online' && !!ttsOnlineCfg.endpoint;
+}
+
+function ttsPersonaCfg() {
+  const p = (ttsOnlineCfg.persona || {})[charCfg.persona] || {};
+  return {
+    voice: p.voice || ttsOnlineCfg.voice || 'alloy',
+    instruct: p.instruct || ttsOnlineCfg.instruct || TTS_INSTRUCT[charCfg.persona] || '',
+  };
+}
+
+function ttsWarn(msg) {
+  const now = Date.now();
+  if (now - ttsWarnAt < 60000) return;      // 同一分钟内只提示一次
+  ttsWarnAt = now;
+  try { addMsg('Orb', '在线语音不可用，已改用浏览器内置：' + esc(String(msg || '未知错误')), 'sys'); } catch {}
+}
+
+function playTtsAudio(r, gen, o, onDone) {
+  const au = new Audio('data:' + (r.mime || 'audio/mpeg') + ';base64,' + r.b64);
+  /* 同 ttsOfflineSpeak：新的一句进来先掐上一条，否则两句人声会叠在一起。 */
+  if (ttsAudio && ttsAudio !== au) { try { ttsAudio.pause(); } catch {} }
+  ttsAudio = au;
+  au.onended = () => { if (gen === ttsGen && typeof onDone === 'function') { try { onDone(); } catch {} } };
+  au.onerror = () => {
+    if (gen !== ttsGen) return;
+    ttsWarn('音频播放失败');
+    if (typeof onDone === 'function') { try { onDone(); } catch {} }
+  };
+  au.play().catch(() => { if (gen === ttsGen) { ttsWarn('音频播放失败'); if (typeof onDone === 'function') { try { onDone(); } catch {} } } });
+}
+
+/* 在线合成一句。gen 是代数号：请求回来时若已经换过句子就整个丢弃 ——
+   否则上一句的音频会盖掉这一句（和 ttsSpeak 里"先 ++ 再 cancel"同一个道理）。 */
+async function ttsOnlineSpeak(text, o, gen) {
+  const pv = ttsPersonaCfg();
+  let r = null;
+  try {
+    r = await window.orb.ttsOnline({
+      endpoint: ttsOnlineCfg.endpoint,
+      model: ttsOnlineCfg.model,
+      voice: pv.voice,
+      text: text,
+      format: ttsOnlineCfg.format,
+      speed: charNum(charCfg.tts.rate * charNum(o.rateMul, 0.4, 2.5, 1), 0.25, 4, 1),
+      instruct: pv.instruct,
+    });
+  } catch (e) {
+    r = { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+  if (gen !== ttsGen) return;
+  if (!r || !r.ok) {
+    ttsWarn((r && r.error) || '未知错误');
+    ttsBrowserSpeak(text, o, gen);          // 回落：还能出声就别让人干等
+    return;
+  }
+  playTtsAudio(r, gen, o, o.onend);
+}
 
 function ttsList() {
   try {
@@ -9422,15 +11080,46 @@ function ttsPickVoice() {
 
 /** 念一句。opt.rateMul / opt.pitchMul 是人格的调性倍率 —— 乘在用户设的基准上，
  *  不覆盖它，否则用户调了半天滑块、一换人格全白调。 */
+/* 念白代数号：每发起一次新的念白就 +1。
+   毒舌的「服软后半句」要靠 onend 串起来，而用户完全可能在这中间又触发一句 ——
+   代数一变，那半句就作废，绝不许它插到新话后面。 */
+let ttsGen = 0;
+
+/** 生成播报开关：在线接口与系统语音同属"生成式"这一条音源，一起开关。
+ *  关掉后只念离线语音包里有的句子，其余静默（不回落）。 */
+function ttsGenOn() {
+  return charCfg.tts.gen !== false;
+}
+
 function ttsSpeak(text, opt) {
   const s = String(text == null ? '' : text).trim();
   if (!s) return false;
   if (!charCfg.tts.enabled) return false;
-  if (!window.speechSynthesis) return false;
   const o = opt || {};
   /* 纯工具模式不出声 —— 这是「关闭个性」承诺的一部分。
      只有试听能强制出声（否则用户在纯工具下根本没法验证音色选对没）。 */
   if (charCfg.persona === 'off' && !o.force) return false;
+  /* 先 +1 再 cancel：cancel 会让上一条的 onend 立刻触发，
+     若等 cancel 之后再 +1，上一条的回调会看到旧代数而误判「还能接着念」。 */
+  const gen = ++ttsGen;
+  /* 离线语音包优先：命中就拿烘好的音频直接播 —— 零延迟、不耗额度、断网也能出声。
+     没命中的句子（AI 现编的、带任务名的、纯工具模式）再走在线 / 系统语音。 */
+  if (charCfg.tts.offline !== false && window.ORB_VOICEPACK && orbClipFor(charCfg.persona, s)) {
+    return ttsOfflineSpeak(s, o, gen);
+  }
+  /* 生成播报（在线接口 / 系统语音）是与离线语音包**并列的第二条音源**，可以单独关掉。
+     关掉时，包里没有的句子（AI 现编的、带任务名的）就直接不念 —— 用户选的是
+     "只要烘好的那个声音"，偷偷回落成系统机械音才是违约。台词气泡照常显示，不影响功能。 */
+  if (!ttsGenOn()) return false;
+  /* 在线引擎接管时是异步的，这里只负责派发 —— 返回 true 表示"已经接下这一句"，
+     真正出声在音频回来之后；失败会自己回落内置语音。 */
+  if (ttsOnlineOn()) { ttsOnlineSpeak(s, o, gen); return true; }
+  return ttsBrowserSpeak(s, o, gen);
+}
+
+/** 浏览器内置语音（Web Speech）。在线引擎失败时也走这里兜底。 */
+function ttsBrowserSpeak(s, o, gen) {
+  if (!window.speechSynthesis) return false;
   try {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(s);
@@ -9439,12 +11128,133 @@ function ttsSpeak(text, opt) {
     u.rate = charNum(charCfg.tts.rate * charNum(o.rateMul, 0.4, 2.5, 1), 0.1, 10, 1);
     u.pitch = charNum(charCfg.tts.pitch * charNum(o.pitchMul, 0.4, 2.5, 1), 0, 2, 1);
     u.volume = charNum(charCfg.tts.volume, 0, 1, 1);
+    if (typeof o.onend === 'function') {
+      u.onend = () => { if (gen === ttsGen) { try { o.onend(); } catch {} } };
+    }
     speechSynthesis.speak(u);
     return true;
   } catch { return false; }
 }
 
+/* ---------- 离线语音包 ----------
+   索引 `voicepack/index.js` 由 tts/_make_voicepack.cjs 生成，形如
+   window.ORB_VOICEPACK = { personas: { gentle: { "台词原文": "文件名.opus" } } }。
+   走 <script> + <audio> 而不是 fetch：面板 CSP 的 connect-src 只放行
+   127.0.0.1:19387，file:// 下的 fetch 会被拦；同源脚本与媒体不受影响。
+   索引的 key 与 DIALECT 原文逐字对应（命中率核对见 tts/_check_voicepack_hit.cjs）。 */
+function orbClipFor(persona, text) {
+  const pk = window.ORB_VOICEPACK;
+  if (!pk || !pk.personas) return null;
+  const m = pk.personas[persona];
+  if (!m) return null;
+  return m[String(text == null ? '' : text).trim()] || null;
+}
+
+/** 播一条预烘焙音频。索引没命中 / 文件缺失 / 解码失败 → 一律回落到在线或系统语音。 */
+function ttsOfflineSpeak(s, o, gen) {
+  const file = orbClipFor(charCfg.persona, s);
+  if (!file) {
+    /* 走到这里说明调用方绕过了 ttsSpeak 的判断（或索引在播放前被换掉）：
+       仍然要尊重"生成播报已关"这个选择，宁可不念也不偷换成系统音。 */
+    if (!ttsGenOn()) return false;
+    return (ttsOnlineOn() ? (ttsOnlineSpeak(s, o, gen), true) : ttsBrowserSpeak(s, o, gen));
+  }
+  const au = new Audio('voicepack/' + file);
+  /* 上一条还在响就先掐掉 —— 浏览器那条路径靠 speechSynthesis.cancel() 保证"同时只说一句"，
+     本地音频没有这个语义，不掐就会出现两句人声叠在一起。 */
+  if (ttsAudio && ttsAudio !== au) { try { ttsAudio.pause(); } catch {} }
+  ttsAudio = au;                       // 交给 ttsStop：关声音时要立刻掐
+  au.volume = charNum(charCfg.tts.volume, 0, 1, 1);
+  /* 语速走 playbackRate（烘焙时恒 1.0，这里乘用户滑块）。音调不跟 ——
+     音频是烘死的，改 pitch 只会变调失真，人格音色已经在音频里了。 */
+  try { au.playbackRate = charNum(charCfg.tts.rate * charNum(o.rateMul, 0.4, 2.5, 1), 0.5, 2, 1); } catch {}
+  /* onerror 与 play().catch 会为同一个坏文件各触发一次，不设闸门会念两遍。 */
+  let fell = false;
+  const fallback = () => {
+    if (fell || gen !== ttsGen) return;
+    fell = true;
+    if (!ttsGenOn()) return;             // 生成播报关了：坏文件就不出声，别偷换音色
+    if (ttsOnlineOn()) ttsOnlineSpeak(s, o, gen);
+    else ttsBrowserSpeak(s, o, gen);
+  };
+  au.onended = () => { if (gen === ttsGen && typeof o.onend === 'function') { try { o.onend(); } catch {} } };
+  au.onerror = fallback;
+  au.play().catch(fallback);
+  return true;
+}
+
+/* ---- 在线语音：界面渲染与保存 ---- */
+function renderTtsOnlineUI() {
+  const on = ttsOnlineCfg.engine === 'online';
+  for (const id of ['tts-endpoint-field', 'tts-key-field', 'tts-model-field',
+                    'tts-format-field', 'tts-voice-field', 'tts-persona-box']) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = on ? '' : 'none';
+  }
+  const set = (id, v) => { const el = document.getElementById(id); if (el && el.value !== v) el.value = v; };
+  set('tts-engine', ttsOnlineCfg.engine);
+  set('tts-endpoint', ttsOnlineCfg.endpoint);
+  set('tts-model', ttsOnlineCfg.model);
+  set('tts-format', ttsOnlineCfg.format);
+  set('tts-voice', ttsOnlineCfg.voice);
+  const ks = document.getElementById('tts-keystate');
+  if (ks) ks.textContent = ttsOnlineCfg.hasKey ? '（已保存，留空则不修改）' : '（尚未设置）';
+  for (const p of ['gentle', 'genki', 'comrade', 'guide', 'tsundere']) {
+    const pv = (ttsOnlineCfg.persona || {})[p] || {};
+    const iv = document.getElementById('tts-i-' + p);
+    if (iv && !iv.value) iv.placeholder = TTS_INSTRUCT[p] || '';
+    const vv = document.getElementById('tts-v-' + p);
+    if (vv && !vv.value) vv.placeholder = ttsOnlineCfg.voice || 'alloy';
+    if (pv.instruct) set('tts-i-' + p, pv.instruct);
+    if (pv.voice) set('tts-v-' + p, pv.voice);
+  }
+  try { renderTtsRoute(); } catch { /* 引擎切换后刷新「当前音源」一行 */ }
+}
+
+async function ttsOnlineSave(key) {
+  try {
+    const patch = {
+      ttsEngine: ttsOnlineCfg.engine,
+      ttsEndpoint: ttsOnlineCfg.endpoint,
+      ttsModel: ttsOnlineCfg.model,
+      ttsFormat: ttsOnlineCfg.format,
+      ttsVoice: ttsOnlineCfg.voice,
+      ttsInstruct: ttsOnlineCfg.instruct,
+      ttsPersona: ttsOnlineCfg.persona || {},
+    };
+    /* 只在真的填了新 Key 时才带这个字段 —— 不带 = 保持原 Key 不变。
+       （传 null 在主进程侧会被还原成旧值，但少传一个字段更不容易误伤。） */
+    if (key) patch.ttsApiKey = key;
+    const r = await window.orb.setVoice(patch);
+    if (r && r.voice) ttsOnlineCfg.hasKey = !!r.voice.hasTtsKey;
+  } catch (e) {
+    const msg = document.getElementById('tts-msg');
+    if (msg) msg.textContent = '保存失败：' + (e && e.message ? e.message : e);
+  }
+  renderTtsOnlineUI();
+}
+
+/** 主进程那份配置回来后填界面（get-state 只给 hasTtsKey，不给明文 Key）。 */
+function applyTtsOnlineCfg(vc) {
+  const v = vc || {};
+  ttsOnlineCfg = {
+    engine: v.ttsEngine || 'browser',
+    endpoint: v.ttsEndpoint || '',
+    model: v.ttsModel || 'tts-1',
+    format: v.ttsFormat || 'mp3',
+    voice: v.ttsVoice || 'alloy',
+    instruct: v.ttsInstruct || '',
+    persona: v.ttsPersona || {},
+    hasKey: !!v.hasTtsKey,
+  };
+  renderTtsOnlineUI();
+}
+
 function ttsStop() {
+  ttsGen++;   // 主动停掉也算「代数变了」，挂着的那半句成对不得再补
+  /* 在线音频也得掐 —— 它不走 speechSynthesis.cancel()，
+     不停的话关掉声音后还会把这一句念完。 */
+  if (ttsAudio) { try { ttsAudio.pause(); } catch {} ttsAudio = null; }
   try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch {}
 }
 
@@ -9492,6 +11302,32 @@ function ttsFillVoices() {
     : '系统里有 ' + vs.length + ' 副嗓子，但都不是中文 —— 念中文会怪，建议装一个中文语音。');
 }
 
+/* 「当前音源」一行：把三级回落关系直接写在界面上。
+   离线包 / 在线接口 / 系统语音 到底谁在说话，用户不该靠猜 —— 也正因为这层关系没说清，
+   才会出现"语音播报和离线包是怎么划分的"这种疑问。 */
+function renderTtsRoute() {
+  const el = document.getElementById('ttsRoute');
+  if (!el) return;
+  const t = charCfg.tts || {};
+  if (!t.enabled) { el.textContent = '当前静音（声音总开关关）。'; return; }
+  const hasPack = !!window.ORB_VOICEPACK;
+  const packOn = hasPack && t.offline !== false;
+  const genOn = ttsGenOn();
+  const onl = typeof ttsOnlineOn === 'function' && ttsOnlineOn();
+  const genName = onl ? '在线接口' : '系统语音';
+  if (packOn && genOn) {
+    el.textContent = '当前音源：离线语音包优先 → 包里没有的句子（AI 现编的、带了任务名的）回落'
+      + genName + '。';
+  } else if (packOn && !genOn) {
+    el.textContent = '当前音源：只念离线语音包里烘好的句子；包里没有的不出声（生成播报已关）。';
+  } else if (!packOn && genOn) {
+    el.textContent = '当前音源：全部走' + genName
+      + (hasPack ? '（离线语音包已关）' : '（这个安装包没有语音包）') + '。';
+  } else {
+    el.textContent = '两条音源都关了：语音不会出声。台词气泡仍照常显示。';
+  }
+}
+
 function renderTtsUI() {
   const t = charCfg.tts;
   const b = document.getElementById('ttsToggle');
@@ -9517,6 +11353,30 @@ function renderTtsUI() {
       ? '当前只在完成 / 失败 / 被夸 / 里程碑时念。点击改回完整念白（每个任务念「收到」「执行中」「完成」三句，更啰嗦也更慢）'
       : '当前每个任务都念「收到」「执行中」「完成」三句（更慢）。点击开启精简，只在有结果有情绪时念';
   }
+  /* 离线语音包：索引脚本没加载上（老安装 / 文件缺失）时按"无"显示，直接置灰 ——
+     不能只显示"开"而没有音频，那会让人以为在走离线却悄悄回落到系统语音。 */
+  const ob = document.getElementById('ttsOffline');
+  if (ob) {
+    const has = !!window.ORB_VOICEPACK;
+    const on = has && t.offline !== false;
+    ob.textContent = '离线语音包 ' + (has ? (on ? '开' : '关') : '无');
+    ob.classList.toggle('sel', on);
+    ob.title = !has
+      ? '这个安装包里没有语音包索引（voicepack/index.js），当前一律走在线 / 系统语音'
+      : on
+        ? '命中的台词播随程序打包的预烘焙语音：离线、零延迟、不耗 token。点一下改走在线 / 系统语音'
+        : '当前一律走在线 / 系统语音。点一下改回离线语音包优先（包内没有的句子仍会自动回落）';
+  }
+  const gb = document.getElementById('ttsGen');
+  if (gb) {
+    const gon = ttsGenOn();
+    gb.textContent = '生成播报 ' + (gon ? '开' : '关');
+    gb.classList.toggle('sel', gon);
+    gb.title = gon
+      ? '在线接口与系统语音都算这条音源：离线包没命中的句子由它们合成。点一下关掉 —— 只念离线包里烘好的句子'
+      : '已关：只念离线语音包里有的句子，其余不念（不会偷偷换成系统机械音）。点一下恢复生成播报';
+  }
+  renderTtsRoute();
   const ab = document.getElementById('ttsAi');
   if (ab) {
     const on = t.ai === true;
@@ -9673,22 +11533,34 @@ function gifGridLoad() {
   });
 }
 
-/* ---------- 记忆读取（Phase 1 只落盘，真读文件在 Phase 5 接） ---------- */
+/* ---------- 记忆：注入开关 + 项目锚定（本地记忆库，memory.js 落盘） ---------- */
 function renderMemUI() {
   const b = document.getElementById('memToggle');
-  const on = charCfg.memory.enabled && !!charCfg.memory.source;
+  const on = !!charCfg.memory.enabled;
   if (b) {
     b.textContent = '记忆 ' + (on ? '开' : '关');
     b.classList.toggle('sel', on);
-    b.title = on ? '关闭记忆读取' : '开启记忆读取';
+    b.title = on ? '关闭记忆注入' : '开启记忆注入';
   }
-  const sel = document.getElementById('memSource');
-  if (sel && sel.value !== charCfg.memory.source) sel.value = charCfg.memory.source;
+  const proj = document.getElementById('memProject');
+  if (proj && proj.value !== (charCfg.memory.project || '')) proj.value = charCfg.memory.project || '';
   const m = document.getElementById('memMsg');
   if (m) {
-    m.textContent = on
-      ? '只读所选来源，不修改、不外传；内容只用于让语气更贴你，不进任务上下文。'
-      : '默认关闭。开启后只读所选来源，不修改、不外传。';
+    const queued = (typeof memQueue !== 'undefined' && memQueue) ? memQueue.length : 0;
+    const tail = (queued ? ' 待整理 ' + queued + ' 条（安静后批量写入）。' : '')
+      + (typeof memCompacting !== 'undefined' && memCompacting ? ' 正在压缩记忆库…' : '');
+    m.textContent = (on
+      ? '注入已开启。每次派发后台任务会召回命中的长期记忆拼进任务上下文（只读本地库，不外传）。'
+      : '注入默认关闭。开启后每次派发任务会召回相关长期记忆。') + tail;
+  }
+  const ab = document.getElementById('memAuto');
+  const aon = !!(charCfg.memory.auto);
+  if (ab) {
+    ab.textContent = '自动 ' + (aon ? '开' : '关');
+    ab.classList.toggle('sel', aon);
+    ab.title = aon
+      ? '当前：任务完成只入队，等你安静约 90 秒再批量提炼（一次最多 3 条），并已开启热启动。点击关闭自动记忆'
+      : '当前关闭：任务完成后不自动写记忆库。点击开启——会同时开启热启动，且不再每个任务都多跑一次模型，而是攒到你停手时批量整理';
   }
 }
 
@@ -9724,6 +11596,98 @@ function bindPersona() {
     charCfg.tts.lean = !(charCfg.tts.lean !== false);
     renderTtsUI();
     charSave();
+  });
+
+  const offBtn = document.getElementById('ttsOffline');
+  if (offBtn) offBtn.addEventListener('click', () => {
+    if (!window.ORB_VOICEPACK) { ttsMsg('这个安装包里没有离线语音包。'); return; }
+    charCfg.tts.offline = !(charCfg.tts.offline !== false);
+    renderTtsUI();
+    charSave();
+    if (charCfg.tts.offline !== false) ttsMsg('之后的台词优先播离线语音包。');
+  });
+
+  /* 生成播报：与离线语音包并列的第二条音源，可单独关掉（关了就只念烘好的句子） */
+  const genBtn = document.getElementById('ttsGen');
+  if (genBtn) genBtn.addEventListener('click', () => {
+    charCfg.tts.gen = !ttsGenOn();
+    renderTtsUI();
+    charSave();
+    ttsMsg(ttsGenOn()
+      ? '生成播报已开：离线包没命中的句子会由在线接口 / 系统语音合成。'
+      : '生成播报已关：只念离线语音包里烘好的句子，其余不念。');
+  });
+
+  /* ---- AI 在线语音合成：设置项 ---- */
+  const ttsEng = document.getElementById('tts-engine');
+  if (ttsEng) ttsEng.addEventListener('change', () => {
+    ttsOnlineCfg.engine = ttsEng.value === 'online' ? 'online' : 'browser';
+    renderTtsOnlineUI();
+    ttsOnlineSave('');
+  });
+  for (const [id, key] of [['tts-endpoint', 'endpoint'], ['tts-model', 'model'],
+                           ['tts-format', 'format'], ['tts-voice', 'voice']]) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', () => { ttsOnlineCfg[key] = el.value.trim(); ttsOnlineSave(''); });
+  }
+  const ttsKey = document.getElementById('tts-key');
+  if (ttsKey) ttsKey.addEventListener('change', () => {
+    const v = ttsKey.value.trim();
+    ttsKey.value = '';
+    ttsOnlineSave(v);          // 留空 = 不改动已存的 Key
+  });
+  const ttsPaste = document.getElementById('tts-paste');
+  if (ttsPaste) ttsPaste.addEventListener('click', async () => {
+    let t = '';
+    try { t = await navigator.clipboard.readText(); } catch { t = ''; }
+    if (!t) return;
+    ttsOnlineSave(t.trim());
+  });
+  /* 人格级音色 / 提示词：写在 cfg.persona 里，留空回落默认值 */
+  for (const p of ['gentle', 'genki', 'comrade', 'guide', 'tsundere']) {
+    for (const [pre, f] of [['tts-v-', 'voice'], ['tts-i-', 'instruct']]) {
+      const el = document.getElementById(pre + p);
+      if (!el) continue;
+      el.addEventListener('change', () => {
+        ttsOnlineCfg.persona = ttsOnlineCfg.persona || {};
+        ttsOnlineCfg.persona[p] = ttsOnlineCfg.persona[p] || {};
+        ttsOnlineCfg.persona[p][f] = el.value.trim();
+        ttsOnlineSave('');
+      });
+    }
+  }
+  const ttsTest = document.getElementById('tts-test');
+  if (ttsTest) ttsTest.addEventListener('click', async () => {
+    const msg = document.getElementById('tts-msg');
+    if (msg) msg.textContent = '';
+    if (!ttsOnlineOn()) {
+      if (msg) msg.textContent = ttsOnlineCfg.engine !== 'online'
+        ? '合成引擎现在是「浏览器内置」：切到「在线接口」并填好地址后才能测。'
+        : '还没填接口地址。';
+      return;
+    }
+    ttsTest.disabled = true;
+    if (msg) msg.textContent = '请求中…';
+    const pv = ttsPersonaCfg();
+    let r = null;
+    const t0 = Date.now();
+    try {
+      r = await window.orb.ttsOnline({
+        endpoint: ttsOnlineCfg.endpoint, model: ttsOnlineCfg.model, voice: pv.voice,
+        text: TTS_SAMPLE[charCfg.persona] || '这是一条试听。',
+        format: ttsOnlineCfg.format, speed: charNum(charCfg.tts.rate, 0.25, 4, 1),
+        instruct: pv.instruct,
+      });
+    } catch (e) { r = { ok: false, error: String(e && e.message ? e.message : e) }; }
+    ttsTest.disabled = false;
+    if (!r || !r.ok) {
+      if (msg) msg.textContent = '请求失败：' + ((r && r.error) || '未知错误');
+      return;
+    }
+    const gen = ++ttsGen;
+    playTtsAudio(r, gen, {}, null);
+    if (msg) msg.textContent = '已播放（' + Math.round((Date.now() - t0) / 100) / 10 + 's 返回，音色 ' + pv.voice + '）。'
+      + (pv.instruct ? ' 语气提示词：' + pv.instruct : '');
   });
 
   const aiBtn = document.getElementById('ttsAi');
@@ -9763,7 +11727,15 @@ function bindPersona() {
   if (tryBtn) tryBtn.addEventListener('click', () => {
     if (!charCfg.tts.enabled) { ttsMsg('声音总开关是关的，先打开「声音」再试听。'); return; }
     const line = TTS_SAMPLE[charCfg.persona] || '你好，这是一条试听。';
-    ttsSpeak(line, { force: true });
+    /* 两条音源都关 / 只开离线但试听句不在包里 —— 直接说清楚，别让按键"没反应" */
+    const packHas = !!(window.ORB_VOICEPACK && orbClipFor(charCfg.persona, line));
+    const packOn = charCfg.tts.offline !== false && !!window.ORB_VOICEPACK;
+    if (!(packOn && packHas) && !ttsGenOn()) {
+      ttsMsg('当前两条音源都不出声：离线包里没有这句，且生成播报是关的。');
+      return;
+    }
+    const spoke = ttsSpeak(line, { force: true });
+    if (spoke === false) ttsMsg('这句没能出声（音源未就绪），检查一下设置。');
   });
 
   const gt = document.getElementById('gifToggle');
@@ -9775,25 +11747,496 @@ function bindPersona() {
 
   const mt = document.getElementById('memToggle');
   if (mt) mt.addEventListener('click', () => {
-    if (!charCfg.memory.enabled) {
-      /* 开记忆必须有一个来源，否则开了也是空转 —— 没选就替用户选默认那份 */
-      if (!charCfg.memory.source) charCfg.memory.source = 'project';
-      charCfg.memory.enabled = true;
-    } else {
-      charCfg.memory.enabled = false;
-    }
+    charCfg.memory.enabled = !charCfg.memory.enabled;
     renderMemUI();
     charSave();
   });
 
-  const ms = document.getElementById('memSource');
-  if (ms) ms.addEventListener('change', () => {
-    charCfg.memory.source = ms.value || '';
-    if (!charCfg.memory.source) charCfg.memory.enabled = false;
-    else charCfg.memory.enabled = true;
-    renderMemUI();
+  const mp = document.getElementById('memProject');
+  if (mp) mp.addEventListener('input', () => {
+    charCfg.memory.project = mp.value.trim();
     charSave();
   });
+
+  const mauto = document.getElementById('memAuto');
+  if (mauto) mauto.addEventListener('click', () => {
+    charCfg.memory.auto = !charCfg.memory.auto;
+    renderMemUI();
+    charSave();
+    if (charCfg.memory.auto) {
+      memNotify('已开启自动记忆：任务完成后先入队，等你安静约 90 秒再批量提炼（一次最多 3 条）——'
+        + '不会每个任务都多跑一次模型、多一次冷启动。');
+      enableWarmStart();
+    } else {
+      memNotify('已关闭自动记忆：不再自动写入记忆库。已排队的条目会保留，下次开启后安静时照常整理。');
+    }
+  });
+
+  /* 队列恢复：面板重载/重启后，把上次没来得及整理的条目接着排上。
+     没有队列就什么都不做（scheduleMemFlush 自己会 return）。 */
+  try { memQueueLoad(); scheduleMemFlush(); } catch {}
+
+  /* 记忆管理：添加 / 列表 / 删除 / 刷新 / 筛选，全部走 window.orb.memory* IPC */
+  const ma = document.getElementById('memAdd');
+  if (ma) ma.addEventListener('click', memAddHandler);
+  const mr = document.getElementById('memRefresh');
+  if (mr) mr.addEventListener('click', renderMemoryManage);
+  const mc = document.getElementById('memCompact');
+  if (mc) mc.addEventListener('click', async () => {
+    if (memCompacting) { memNotify('上一次压缩还没结束，稍等。'); return; }
+    let stats = null;
+    try { stats = await window.orb.memoryStats(); } catch { return; }
+    // 手动点：不按阈值判断，直接压当前字数最多的那一层
+    const level = memCompactPick(stats)
+      || MEM_COMPACT.levels.slice().sort((a, b) =>
+        ((stats && stats.levels[b] && stats.levels[b].chars) || 0)
+        - ((stats && stats.levels[a] && stats.levels[a].chars) || 0))[0];
+    if (!level) return;
+    mc.disabled = true;
+    try { await runMemoryCompact(level, 'manual'); } catch { /* 失败已在内部提示 */ }
+    mc.disabled = false;
+    try { renderMemoryManage(); } catch {}
+  });
+  const mf = document.getElementById('memFilter');
+  if (mf) mf.addEventListener('change', renderMemoryManage);
+  const ml = document.getElementById('memList');
+  if (ml) ml.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-del]');
+    if (btn) memDeleteHandler(btn.getAttribute('data-del'));
+  });
+}
+
+/* ---------- 记忆管理：渲染 / 增删（IPC → memory.js） ---------- */
+const MEM_LV_LABEL = {
+  soul: 'AI 自身', user: '关于你', project: '项目', fact: '原子事实',
+  lesson: '错误与教训', topic: '话题', rules: '设计原则与行为准则',
+};
+const MEM_LV_ORDER = ['user', 'soul', 'project', 'fact', 'lesson', 'topic', 'rules'];
+
+async function renderMemoryManage() {
+  const list = document.getElementById('memList');
+  if (!list) return;
+  try {
+    const all = await window.orb.memoryList(null);   // null → 全量（按层分组）
+    const stats = await window.orb.memoryStats();
+    let rows = [];
+    for (const lv of MEM_LV_ORDER) (all && all[lv] ? all[lv] : []).forEach((r) => rows.push(Object.assign({ _level: lv }, r)));
+    const f = document.getElementById('memFilter');
+    const fv = f ? f.value : '';
+    if (fv) rows = rows.filter((r) => r._level === fv);
+    rows.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+    const statEl = document.getElementById('memStats');
+    if (statEl) {
+      if (!stats) statEl.textContent = '';
+      else {
+        statEl.textContent = '共 ' + (stats.total || 0) + ' 条 · 约 ' + (stats.chars || 0) + ' 字'
+          + (stats.archived ? ' · 已归档 ' + stats.archived : '')
+          + (stats.chars >= MEM_COMPACT.totalChars ? '（超阈值，可点「压缩」）' : '');
+      }
+    }
+    if (!rows.length) {
+      list.innerHTML = '<div class="mem-empty">还没有记忆。在上方「手动添加记忆」写一条吧。</div>';
+      return;
+    }
+    list.innerHTML = rows.map((r) => {
+      const title = r.title ? '<div class="mem-tt">' + esc(r.title) + '</div>' : '';
+      const proj = r.project ? '<span class="mem-proj">项目 ' + esc(String(r.project)) + '</span>' : '';
+      return '<div class="mem-item" data-id="' + esc(r.id) + '">'
+        + '<div class="mi-bd">'
+        + '<div class="mi-top"><span class="mem-lv">' + (MEM_LV_LABEL[r._level] || r._level) + '</span>'
+        + '<span class="mem-imp">重要度 ' + (r.importance || 1) + '</span>' + proj + '</div>'
+        + title
+        + '<div class="mem-ct">' + esc(r.content) + '</div>'
+        + '</div>'
+        + '<button class="chip mem-del" data-del="' + esc(r.id) + '" title="删除这条记忆">删除</button>'
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    list.innerHTML = '<div class="mem-empty">读取记忆库失败：' + esc((e && e.message) || String(e)) + '</div>';
+  }
+}
+
+async function memAddHandler() {
+  const lv = document.getElementById('memLevel');
+  const title = document.getElementById('memTitle');
+  const content = document.getElementById('memContent');
+  const imp = document.getElementById('memImp');
+  const proj = document.getElementById('memAddProject');
+  const msg = document.getElementById('memAddMsg');
+  const c = content ? content.value.trim() : '';
+  if (!c) { if (msg) msg.textContent = '内容不能为空'; return; }
+  try {
+    const res = await window.orb.memoryAdd({
+      level: lv ? lv.value : 'fact',
+      title: title && title.value.trim() ? title.value.trim() : null,
+      content: c,
+      importance: imp ? (parseInt(imp.value, 10) || 1) : 1,
+      project: proj && proj.value.trim() ? proj.value.trim() : null,
+    });
+    if (res && res.ok) {
+      if (content) content.value = '';
+      if (title) title.value = '';
+      if (proj) proj.value = '';
+      if (msg) msg.textContent = '已添加。';
+      renderMemoryManage();
+    } else {
+      if (msg) msg.textContent = '添加失败：' + esc((res && res.error) || '未知错误');
+    }
+  } catch (e) {
+    if (msg) msg.textContent = '添加异常：' + esc((e && e.message) || String(e));
+  }
+}
+
+async function memDeleteHandler(id) {
+  if (!id) return;
+  try {
+    const res = await window.orb.memoryRemove(id);
+    if (res && res.ok) renderMemoryManage();
+  } catch (e) { /* 删除失败静默：列表下次刷新会还原 */ }
+}
+
+/* ---------- 自动记忆：任务完成后由模型提炼并写回 ---------- */
+// 字符 bigram 相似度（渲染端做轻量去重，避免重复写同一条）
+function _memBigrams(s) {
+  s = String(s || '').toLowerCase().replace(/\s+/g, ' ');
+  const out = new Set();
+  if (s.length === 1) { out.add(s); return out; }
+  for (let i = 0; i < s.length - 1; i++) out.add(s.slice(i, i + 2));
+  return out;
+}
+function _memJaccard(a, b) {
+  const A = _memBigrams(a), B = _memBigrams(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0; A.forEach((x) => { if (B.has(x)) inter++; });
+  return inter / (A.size + B.size - inter);
+}
+
+/* ---------- 自动记忆：入队 + 空闲批量提炼 ----------
+   旧实现：任务一完成就立刻派一个「同模型」提炼子任务 —— 等于把每个任务的成本和耗时
+   翻倍（多一次 CLI 冷启动 + 一次完整推理 + result 全文又吃一遍 prefill）。
+   新实现：只入队，等你**停手**（无交互 ≥ MEM_IDLE_MS）才批量提炼，一次最多 3 条。
+   忙的时候不抢资源，安静下来再收拾。队列落 localStorage，面板重载不丢。 */
+const MEM_QUEUE_KEY = 'orb.memQueue';
+const MEM_IDLE_MS = 90000;    // 停手 90 秒算「安静」
+const MEM_BATCH_MAX = 3;      // 一次最多提炼几条
+const MEM_QUEUE_CAP = 12;     // 队列上限，超了丢最旧
+const MEM_TASK_CLIP = 3000;   // 单条任务文本截断（提炼不需要全文）
+const MEM_RESULT_CLIP = 2000;
+let memQueue = [];
+let memFlushTimer = null;
+let memFlushing = false;
+
+function memNotify(text) {
+  const el = document.getElementById('memMsg');
+  if (el) el.textContent = String(text || '');
+}
+
+/* 开自动记忆时顺带开热启动：提炼本身要跑模型，冷启动占比很高。
+   失败不打扰用户（不影响主流程）。waitMs 压到 15s —— daemon 有「派发成功但回调
+   拿不回结果」的已知情况，默认等 90s 会让人以为卡死。 */
+async function enableWarmStart() {
+  try {
+    const r = await post('/api/wb-daemon', { enabled: true, waitMs: 15000 });
+    if (r && r.ok) memNotify('已开启自动记忆 + 热启动（后续任务少一次冷启动）。任务完成先入队，安静约 90 秒再批量整理。');
+    else memNotify('已开启自动记忆；热启动没能打开（不影响使用，任务仍走常规路径）。');
+  } catch {
+    memNotify('已开启自动记忆；热启动没能打开（不影响使用）。');
+  }
+}
+
+function memQueueLoad() {
+  try {
+    const v = JSON.parse(store.getItem(MEM_QUEUE_KEY) || '[]');
+    memQueue = Array.isArray(v) ? v.filter((x) => x && x.task && x.result) : [];
+  } catch { memQueue = []; }
+}
+function memQueueSave() {
+  try { store.setItem(MEM_QUEUE_KEY, JSON.stringify(memQueue.slice(-MEM_QUEUE_CAP))); } catch {}
+}
+
+/** 任务完成：只入队，不立刻派模型。 */
+function queueMemoryExtract(task, result) {
+  if (!(charCfg.memory && charCfg.memory.enabled && charCfg.memory.auto)) return;
+  if (!task || !result) return;
+  memQueue.push({
+    task: String(task).slice(0, MEM_TASK_CLIP),
+    result: String(result).slice(0, MEM_RESULT_CLIP),
+    at: Date.now(),
+    tries: 0,
+  });
+  if (memQueue.length > MEM_QUEUE_CAP) memQueue = memQueue.slice(-MEM_QUEUE_CAP);
+  memQueueSave();
+  scheduleMemFlush();
+  try { renderMemUI(); } catch {}      // 让「待整理 N 条」立刻反映出来
+}
+
+/** 排在「用户停手 MEM_IDLE_MS」之后执行；用户中途又操作就顺延。 */
+function scheduleMemFlush() {
+  if (memFlushTimer || !memQueue.length) return;
+  const wait = Math.max(2000, (lastUserOpAt || Date.now()) + MEM_IDLE_MS - Date.now());
+  memFlushTimer = setTimeout(() => {
+    memFlushTimer = null;
+    if (!memQueue.length) return;
+    if (!(charCfg.memory && charCfg.memory.enabled && charCfg.memory.auto)) return;
+    // 用户刚又操作过：不打扰，重新计时
+    if (Date.now() - (lastUserOpAt || 0) < MEM_IDLE_MS) { scheduleMemFlush(); return; }
+    flushMemoryExtract();
+  }, wait);
+}
+
+async function flushMemoryExtract() {
+  if (memFlushing || !memQueue.length) return;
+  memFlushing = true;
+  const batch = memQueue.slice(0, MEM_BATCH_MAX);
+  const dropFailed = () => {
+    batch.forEach((b) => { b.tries = (b.tries || 0) + 1; });
+    memQueue = memQueue.filter((b) => (b.tries || 0) < 2);   // 连续两次失败就丢，别每次安静都重试
+    memQueueSave();
+  };
+  try {
+    const body = batch.map((b, i) =>
+      '【任务 ' + (i + 1) + '】\n' + b.task + '\n【结果 ' + (i + 1) + '】\n' + b.result).join('\n\n');
+    const prompt = '你是长期记忆提炼器。下面是刚完成的 ' + batch.length + ' 项任务及其结果。\n'
+      + '请提炼值得长期记住的要点，让 AI 助手今后做类似任务时表现更好。多项任务里重复的要点只留一条。\n\n'
+      + body + '\n\n'
+      + '只输出 JSON 数组，每个元素格式：\n'
+      + '{"level":"user|soul|project|fact|lesson|topic|rules","content":"要点正文","title":"一句话标题(可选)","importance":1~4,"project":"归属项目名(可选,无则空字符串)"}\n'
+      + 'level 含义：user=用户偏好/习惯；soul=AI 自身该如何表现；project=项目事实；fact=可复用事实性知识；lesson=踩过的坑与教训；topic=话题背景；rules=行为准则。\n'
+      + 'importance：1 普通 2 常用 3 重要(不轻易遗忘) 4 核心。\n'
+      + '若没有任何值得长期记住的内容，输出空数组 []。不要输出任何解释文字，只输出 JSON。';
+    // 与主任务同模型：积分倍率/自定义模型行为保持一致（runBack 传的就是这个值）。
+    const m = (document.getElementById('wbmodel') || {}).value || '';
+    const r = await post('/api/dispatch', {
+      server: 'workbuddy', tool: 'workbuddy_execute',
+      args: Object.assign({ task: prompt }, m ? { model: m } : {}),
+    });
+    if (r && r.ok && r.jobId) {
+      memQueue = memQueue.slice(batch.length);   // 派发成功即出队（结果走 silent poll → autoWriteExtracted）
+      memQueueSave();
+      poll(r.jobId, null, null, true);           // silent：结果只写记忆库，不再触发提炼
+    } else {
+      dropFailed();
+    }
+  } catch {
+    dropFailed();
+  } finally {
+    memFlushing = false;
+    if (memQueue.length) scheduleMemFlush();
+    try { renderMemUI(); } catch {}
+  }
+}
+
+// 解析模型回传的 JSON 数组（容忍代码围栏/前后废话），过滤无效项
+function _memParseArray(txt) {
+  if (!txt) return [];
+  let s = String(txt).trim();
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) s = fence[1].trim();
+  const arr0 = s.indexOf('['), arr1 = s.lastIndexOf(']');
+  if (arr0 >= 0 && arr1 > arr0) s = s.slice(arr0, arr1 + 1);
+  try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; }
+  catch { return []; }
+}
+
+// 把提炼结果写进记忆库（去重 + 规整字段）
+async function autoWriteExtracted(txt) {
+  let items;
+  try { items = _memParseArray(txt); } catch { return; }
+  if (!items || !items.length) return;
+  let existing = [];
+  try {
+    const all = await window.orb.memoryList(null);
+    for (const lv of MEM_LV_ORDER) (all && all[lv] ? all[lv] : []).forEach((r) => existing.push(r));
+  } catch { /* 取不到已有记忆就跳过去重，直接写 */ }
+
+  for (const it of items) {
+    const content = String(it && it.content || '').trim();
+    if (!content) continue;
+    let level = String(it.level || 'fact').toLowerCase();
+    if (!MEM_LV_ORDER.includes(level)) level = 'fact';
+    const clean = {
+      level,
+      content,
+      title: it.title ? String(it.title).slice(0, 80) : '',
+      importance: Math.min(4, Math.max(1, parseInt(it.importance, 10) || 2)),
+      project: it.project ? String(it.project).slice(0, 60) : (charCfg.memory.project || ''),
+    };
+    // 去重：与已有内容 bigram 相似度过高视为重复，跳过
+    let dup = false;
+    for (const ex of existing) {
+      if (ex && ex.content && _memJaccard(ex.content, content) >= 0.8) { dup = true; break; }
+    }
+    if (dup) continue;
+    try { await window.orb.memoryAdd(clean); } catch { /* 单条失败不影响其余 */ }
+  }
+  /* 写完顺手看一眼要不要压缩。阈值没到时只是一次本地 stats 调用，不花钱；
+     到阈值才会派一次合并任务（有冷却与失败熔断兜底）。 */
+  try { await maybeCompactMemory('after-extract'); } catch { /* 压缩失败不影响记忆写入 */ }
+}
+
+/* ---------- 记忆压缩（compaction）：超阈值自动合并 + 归档 ----------
+   问题：fact / lesson / topic 只增不减。攒到几百条后，每次召回都要过一遍全量打分，
+   注入块也越来越挤。上游 meow-memory 用「夜间 dream 整合」解决；ORB 没有那种常驻
+   调度，改成两道闸：① 字数超阈值自动触发；② 记忆管理里的「压缩」键手动触发。
+
+   做法：把某层最旧 / 最不重要的若干条交给模型合并成更少的几条 →
+   新条目入库（source=compact）→ 原文 status=archived（**不删除**，退出召回与预算，
+   需要时可以回溯）。
+
+   为什么不是「直接删最旧的」：删掉就真没了；合并能保住"删哪几条都不该丢"的细节
+   （路径、阈值、结论）。为什么不压 rules / user / soul：那是约束，合并有丢失风险。
+   为什么压不动也要放弃（minRatio）：没缩多少就换掉原文，等于白丢细节还多花一次调用。 */
+
+const MEM_COMPACT = {
+  enabled: true,
+  levels: ['fact', 'lesson', 'topic', 'project'],   // 与 memory.js 的 COMPACTABLE 对齐
+  levelChars: 6000,      // 单层活跃字数阈值
+  totalChars: 14000,     // 全库活跃字数阈值
+  batch: 16,             // 一次最多喂几条
+  batchChars: 8000,      // 一次最多喂多少字
+  minRatio: 0.55,        // 压完至少要缩到 55%，否则视为没压动
+  cooldownMs: 10 * 60 * 1000,
+  maxFail: 3,            // 连续失败 3 次就不再自动尝试（别每次写记忆都白跑一次模型）
+};
+let memCompacting = false;
+let memCompactAt = 0;
+let memCompactFail = 0;
+
+/** 选要压哪一层：单层超阈值优先，其次总量超阈值时挑最大的那层。 */
+function memCompactPick(stats) {
+  if (!stats || !stats.levels) return null;
+  const rank = MEM_COMPACT.levels
+    .map((k) => ({ k, chars: (stats.levels[k] && stats.levels[k].chars) || 0 }))
+    .sort((a, b) => b.chars - a.chars);
+  const top = rank[0];
+  if (top && top.chars >= MEM_COMPACT.levelChars) return top.k;
+  if ((stats.chars || 0) >= MEM_COMPACT.totalChars && top && top.chars > 0) return top.k;
+  return null;
+}
+
+/** 自动压缩入口：只在「自动记忆」开启时动作，且带冷却与失败熔断。 */
+async function maybeCompactMemory(reason) {
+  if (!MEM_COMPACT.enabled || memCompacting) return;
+  if (!(charCfg.memory && charCfg.memory.enabled && charCfg.memory.auto)) return;
+  if (memCompactFail >= MEM_COMPACT.maxFail) return;
+  if (Date.now() - memCompactAt < MEM_COMPACT.cooldownMs) return;
+  let stats = null;
+  try { stats = await window.orb.memoryStats(); } catch { return; }
+  const level = memCompactPick(stats);
+  if (!level) return;
+  try { await runMemoryCompact(level, reason || 'auto'); } catch { /* 压缩失败不影响主流程 */ }
+}
+
+async function runMemoryCompact(level, reason) {
+  if (memCompacting) return { ok: false, error: '正在压缩中' };
+  memCompacting = true;
+  let dispatched = false;
+  try {
+    const plan = await window.orb.memoryCompactPlan(level, {
+      max: MEM_COMPACT.batch, maxChars: MEM_COMPACT.batchChars,
+    });
+    const rows = (plan && plan.rows) || [];
+    if (rows.length < 3) {
+      memCompacting = false;
+      memNotify('「' + (MEM_LV_LABEL[level] || level) + '」能压的条目不够（' + rows.length + ' 条），先不压。');
+      return { ok: false, error: '候选不足' };
+    }
+    const body = rows.map((r, i) =>
+      '[' + (i + 1) + ']（重要度 ' + (r.importance || 1) + '）'
+      + (r.title ? r.title + '：' : '') + r.content).join('\n');
+    const want = Math.max(2, Math.ceil(rows.length / 4));
+    const prompt = '你是长期记忆压缩器。下面是同一层（' + level + '）的 ' + rows.length
+      + ' 条记忆，内容有重叠。\n'
+      + '请合并成不超过 ' + want + ' 条更概括但不丢信息的记忆。要求：\n'
+      + '1) 保留所有具体信息 —— 文件名、路径、数值、阈值、命令、结论，一个都不要丢；\n'
+      + '2) 去掉重复表述和过程描述，只留可复用的结论；\n'
+      + '3) 不要编造原文没有的内容；主题不相干的不要硬合（宁可多出一条）；\n'
+      + '4) importance 取被合并条目里最高的那个。\n\n'
+      + body + '\n\n'
+      + '只输出 JSON 数组，元素格式：{"content":"...","title":"一句话标题(可选)","importance":1~4}\n'
+      + '不要输出任何解释文字。';
+    const m = (document.getElementById('wbmodel') || {}).value || '';
+    const r = await post('/api/dispatch', {
+      server: 'workbuddy', tool: 'workbuddy_execute',
+      args: Object.assign({ task: prompt }, m ? { model: m } : {}),
+    });
+    if (!r || !r.ok || !r.jobId) {
+      memCompactFail++;
+      memCompacting = false;
+      memNotify('压缩派发失败' + (r && r.error ? '：' + r.error : '') + '，原文保持不动。');
+      return { ok: false, error: (r && r.error) || '派发失败' };
+    }
+    dispatched = true;
+    const ctx = {
+      level,
+      ids: rows.map((x) => x.id),
+      before: rows.reduce((s, x) => s + String(x.content || '').length, 0),
+      reason: reason || 'auto',
+    };
+    pollSilent(r.jobId, (txt) => applyCompactResult(txt, ctx));
+    memNotify('正在压缩「' + (MEM_LV_LABEL[level] || level) + '」的 ' + rows.length + ' 条记忆…');
+    return { ok: true, pending: true, count: rows.length };
+  } catch (e) {
+    memCompactFail++;
+    memCompacting = false;
+    return { ok: false, error: String((e && e.message) || e) };
+  } finally {
+    if (!dispatched) memCompacting = false;   // 已派发则等结果回来再解锁
+  }
+}
+
+/** 压缩结果落库：新条目入库 → 原文归档。任何一步不达标都保持原样。 */
+async function applyCompactResult(txt, ctx) {
+  try {
+    if (!txt) {
+      memCompactFail++;
+      memNotify('压缩没拿到结果（模型未回内容），原文保持不动。');
+      return;
+    }
+    const items = _memParseArray(txt);
+    const kept = [];
+    for (const it of items) {
+      const content = String((it && it.content) || '').trim();
+      if (content.length < 8) continue;      // 太短的"合并结果"基本是空话，丢了
+      kept.push({
+        content: content.slice(0, 2000),
+        title: it.title ? String(it.title).slice(0, 80) : '',
+        importance: Math.min(4, Math.max(1, parseInt(it.importance, 10) || 2)),
+      });
+    }
+    if (!kept.length) {
+      memCompactFail++;
+      memNotify('压缩结果解析不出条目，原文保持不动。');
+      return;
+    }
+    const after = kept.reduce((s, x) => s + x.content.length, 0);
+    if (after >= ctx.before * MEM_COMPACT.minRatio) {
+      memCompactFail++;
+      memNotify('这次没压动（' + ctx.before + ' → ' + after + ' 字），原文保持不动。');
+      return;
+    }
+    const newIds = [];
+    for (const k of kept) {
+      try {
+        const res = await window.orb.memoryAdd({
+          level: ctx.level, content: k.content, title: k.title,
+          importance: k.importance, source: 'compact',
+          project: charCfg.memory.project || '',
+        });
+        if (res && res.row && res.row.id) newIds.push(res.row.id);
+      } catch { /* 单条失败不阻断其余 */ }
+    }
+    if (!newIds.length) { memCompactFail++; return; }
+    try { await window.orb.memoryArchive(ctx.ids, { into: newIds, reason: 'compact' }); } catch {}
+    memCompactAt = Date.now();
+    memCompactFail = 0;
+    memNotify('已压缩「' + (MEM_LV_LABEL[ctx.level] || ctx.level) + '」：'
+      + ctx.ids.length + ' 条 → ' + newIds.length + ' 条（' + ctx.before + ' → ' + after + ' 字），原文已归档。');
+    try { renderMemoryManage(); } catch {}
+    try { renderMemUI(); } catch {}
+  } finally {
+    memCompacting = false;
+  }
 }
 
 /* ---------- 设置 › 存储 ---------- */
@@ -9980,7 +12423,7 @@ function bindThemeUI() {
         document.querySelectorAll('.setpane').forEach((p) => {
           p.classList.toggle('on', p.dataset.pane === b.dataset.pane);
         });
-        if (b.dataset.pane === 'storage') { loadStorageSettings(); renderAuditInline(); }
+        if (b.dataset.pane === 'storage') { loadStorageSettings(); renderAuditInline(); renderMemUI(); renderMemoryManage(); }
         // 切到「截屏与录屏」时刷新工作流列表：刚录完那条要能在这页直接看到
         else if (b.dataset.pane === 'rec') renderWfSetList();
         // 切到「个性」时刷一遍音色：用户可能刚在系统里装了语音，不必重开面板
@@ -10342,12 +12785,52 @@ function pvSetRatio(r) {
   pvSyncUI();
   pvRender();
 }
-function pvOpenPreview() {
+async function pvOpenPreview() {
   if (!camPrefs.enabled) {
     const msg = document.getElementById("camMsg");
     if (msg) msg.textContent = "先打开上面的「摄像头小框」开关，再进入预览模式。";
     return;
   }
+  /* 优先全屏摆位层：铺在真实桌面上、按真实比例画框（所见即成片）。
+     通道缺失 / 打不开就回退到面板内的放大示意图 —— 旧路径留着，
+     别让"覆盖层起不来"变成"完全没法摆位"。 */
+  const orb = window.orb || {};
+  if (typeof orb.camStageOpen === "function") {
+    let r = null;
+    try {
+      r = await orb.camStageOpen({
+        cam: Object.assign({}, camPrefs),
+        /* 录制区域（0..1 比例）必须显式带过去：摆位层的可摆放边界就是它。
+           全屏时 recRegionRatio() 返回 null，这里补成 0,0,1,1 的显式整屏 ——
+           让"没给"和"就是整屏"在协议上分得开，摆位层才不用去翻跨窗口的 localStorage。 */
+        region: recRegionRatio() || { x: 0, y: 0, w: 1, h: 1 },
+      });
+    } catch (error) {
+      const msg = document.getElementById("camMsg");
+      if (msg) msg.textContent = "全屏摆位层打不开（" + String((error && error.message) || error) + "），已退回面板内预览。";
+      pvOpenLegacyPreview();
+      return;
+    }
+    if (r && r.ok === true && r.cam) {
+      const c = r.cam;
+      /* 报"占录制画面"而不是"占屏"：bx/by/bw/bh 的归一化基准是录制区域
+         （选了半屏录制时，画面只有那块），说"占屏"会让人以为换区域就错位。 */
+      await patchCam(c, "camMsg", "已摆好：占录制画面 "
+        + Math.round(c.bw * 100) + "% × " + Math.round(c.bh * 100) + "%"
+        + "（位置左右 " + Math.round(c.bx * 100) + "%、上下 " + Math.round(c.by * 100) + "%）。");
+      return;
+    }
+    if (r && r.cancelled) return;      // 用户取消：什么都不改
+    const msg2 = document.getElementById("camMsg");
+    if (msg2 && r && r.error) msg2.textContent = String(r.error) + "，已退回面板内预览。";
+    pvOpenLegacyPreview();
+    return;
+  }
+  pvOpenLegacyPreview();
+}
+
+/** 面板内的放大示意图（回退路径）：覆盖层不可用时的老办法。 */
+function pvOpenLegacyPreview() {
   const mask = document.getElementById("pvMask");
   if (!mask || pvOpen) return;
   pvOpen = true;
@@ -10720,6 +13203,10 @@ function tcFamily(theme, hex) {
     vars['--accent-soft'] = tcAlpha(hex, .10);
     vars['--accent-ring'] = tcAlpha(hex, .12);
   }
+  /* 实底强调面的"渐变形态"：非极光主题没有渐变品牌色，就用同色两档占位。
+     这样覆盖层/小窗统一写 background-image: var(--accent-grad) 就能同时覆盖
+     单色主题与极光，不必在 CSS 里判断主题（少一处静默失效的分支）。 */
+  vars['--accent-grad'] = `linear-gradient(105deg, ${vars['--accent']} 0%, ${vars['--accent']} 100%)`;
   return vars;
 }
 /** 极光渐变预设 → iris 全套令牌（填充 / 描边一族，铺到所有 accent 背景） */
@@ -10757,6 +13244,16 @@ function tcIrisFamily(p) {
     '--accent-fg': tcFloorLum(edge, .15),
     '--accent-soft': tcAlpha(edge, .10),
     '--accent-ring': tcAlpha(edge, .12),
+    /* 极光的品牌色本来就是**渐变**，不是某一支单色。实底按钮（覆盖层的选中预设、
+       主行动键）要用这一支不透明四色带，否则在 t3 下一律被压成 --accent 那一支
+       "青碧单色"，看着像外来色。每一档都过 L≤.18 钳制 —— 白字压上去仍 ≥4.5，
+       与 --accent 用的是同一把尺子；不钳制的话浅端（黄金时刻的米黄）白字会瞎。 */
+    '--accent-grad': `linear-gradient(105deg, ${tcFloorLum(c1, .18)} 0%, ${tcFloorLum(c2, .18)} 34%, ${tcFloorLum(c3, .18)} 68%, ${tcFloorLum(c4, .18)} 100%)`,
+    /* 半透明版：给「淡底深字」的表面用（.chip.sel 这类）。不能拿上面那支实底渐变 ——
+       实底是给白字压的，套到 chip 上就变成反白胶囊，浅色面板里太重。
+       透明度比 --iris-fill（.20）再压一档到 .30：.20 的实测在浅底上几乎看不出色相变化，
+       选中的 chip 仍像平涂；.30 才看得出青→绿的扫过，而 --accent-fg 深字压上去照样清楚。 */
+    '--accent-grad-soft': `linear-gradient(105deg, ${tcAlpha(c1, .30)} 0%, ${tcAlpha(c2, .30)} 34%, ${tcAlpha(c3, .28)} 68%, ${tcAlpha(c4, .30)} 100%)`,
   };
 }
 /** 把当前主题的自选色/渐变预设套到 <html>（内联优先级最高，盖过主题块默认值） */
@@ -10789,7 +13286,7 @@ function applyThemeAccent() {
  * （那些窗口没有主题系统，只认 executeJavaScript 推进来的 CSS 变量）。
  * 读取用 getComputedStyle：内联/主题块/继承三层合并后的最终值，缺了哪层都能看出来。 */
 const THEME_REPORT_VARS = [
-  '--accent', '--accent-soft', '--accent-fg', '--accent-ring',
+  '--accent', '--accent-soft', '--accent-fg', '--accent-ring', '--accent-grad',
   '--bg', '--bg-soft', '--bg-sunken', '--fg', '--fg-soft', '--fg-muted',
   '--border', '--border-strong', '--ok', '--warn', '--danger', '--danger-soft', '--run',
 ];
@@ -13540,8 +16037,20 @@ async function renderAuditInline() {
   let r = {};
   try { r = await api('/api/audit?limit=60'); } catch {}
   const list = (r && r.entries) || [];
-  if (!list.length) { el.innerHTML = '<div class="cmd-empty">暂无审计记录。执行工具后这里会出现。</div>'; return; }
   el.innerHTML = '';
+  /* 首字延迟单独一行：用户抱怨"慢"时，这一行先分清是排队/模型首字慢还是渲染慢。 */
+  const sum = document.createElement('div');
+  sum.className = 'cmd-item';
+  sum.textContent = ttftSummary();
+  sum.title = '从点下发送到第一条流式内容到屏（含记忆召回、派发、排队、模型首字）。样本存本机最近 30 次。';
+  el.appendChild(sum);
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'cmd-empty';
+    empty.textContent = '暂无审计记录。执行工具后这里会出现。';
+    el.appendChild(empty);
+    return;
+  }
   for (const e of list) {
     const d = document.createElement('div');
     d.className = 'cmd-item';
@@ -13573,6 +16082,7 @@ async function renderAuditInline() {
 const POLL_FAST_MS = 1200;     // 有活动：跟手
 const POLL_IDLE_MS = 10000;    // 空闲：兜底刷新，10s（原 5s）
 let pollTimer = null;
+let statusES = null;   // SSE 状态流（/api/events）连接，非空表示已由推送接管轮询
 let pollBusy = false;
 
 function schedulePoll(ms) {
@@ -13581,6 +16091,41 @@ function schedulePoll(ms) {
 }
 
 async function pollStatus() {
+  /* 面板藏起来时不用 SSE：bridge 只要有订阅者就每 1.5s 全量算一次快照
+     （里面要 await getSession 一圈），而原轮询在隐藏时本来就降频到 10s。
+     藏起来还高频算，纯属白烧 CPU —— 直接走 legacy 的 10s 兜底。 */
+  if (document.hidden) { pollStatusLegacy(); return; }
+  // 优先 SSE 实时推送 /api/events；不支持或出错退回原轮询，零退化。
+  if (statusES) return;   // 已有 SSE 连接在跑
+  if (typeof window.EventSource === 'function') {
+    /* 同 poll()：ensureToken 是异步的，同步读 bridgeToken 会拿到空串 → 401 → 立刻退回
+       轮询，SSE 永远连不上（功能看着正常，只是新架构一直没生效）。 */
+    await ensureToken().catch(() => {});
+    if (statusES) return;                       // 取令牌期间别处已连上
+    const token = (typeof bridgeToken === 'string') ? bridgeToken : '';
+    const url = API + '/api/events' + (token ? ('?token=' + encodeURIComponent(token)) : '');
+    try {
+      statusES = new EventSource(url);
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }   // 接管后停掉旧轮询，避免双路并存
+      statusES.onmessage = (ev) => {
+        let r; try { r = JSON.parse(ev.data); } catch { return; }
+        if (!(r && r.ok)) return;
+        applyChannels(r); applyLive(r.live); renderStop(r.stop); applyPending(r.pending);
+        if (r.live && r.live.pendingAgent) maybeTakeover(r.live);
+      };
+      statusES.onerror = () => {           // 连接断 / 老桥无 SSE → 退回轮询
+        if (statusES) { try { statusES.close(); } catch {} statusES = null; }
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        pollStatusLegacy();
+      };
+      return;   // SSE 接管，不再走 setTimeout 轮询
+    } catch { /* 落到 legacy */ }
+  }
+  pollStatusLegacy();
+}
+
+// 原 1.2s/10s 轮询实现，作为 SSE 不可用时的兜底（与上方 SSE 路径共用消费方）。
+async function pollStatusLegacy() {
   // 上一次请求还没回来：短间隔重试，等它腾出手
   if (pollBusy) { schedulePoll(POLL_FAST_MS); return; }
   if (document.hidden) { schedulePoll(POLL_IDLE_MS); return; }
@@ -13608,18 +16153,44 @@ async function pollStatus() {
 
 // 面板重新可见时立刻刷一次，不用干等下一个周期
 let panelEverShown = false;   // 首次显示由 speakStart 负责问候，避免重复
+
+/* 离开 ≥4 分钟后再展开面板：弹一句与「每两分钟空闲」相同的问候（复用 onIdleOrAway）。
+   幂等：首次显示只打标记不问候；命中后刷新 lastUserOpAt 防连弹 ⇒ 重复调用安全。
+   为什么要单独抽出来：hide()/show() 在部分环境**不触发 visibilitychange**
+   （本文件里向导/截图引导都为此加了 700ms 轮询兜底），而这段原来只挂
+   visibilitychange，于是「点收起 → 4 分钟 → 再打开」永远不响。现改为两处都调它：
+     · visibilitychange（常规环境）
+     · 主进程 window 'show' 经 IPC 送来的 "panel-shown"（不触发 visibilitychange 的环境兜底）
+   注意：**不判 document.hidden** —— 正因该环境 document.hidden 可能卡在 true，
+   主进程已确认窗口可见，按时间判定即可。 */
+function maybeGreetOnReopen() {
+  if (!panelEverShown) { panelEverShown = true; lastUserOpAt = Date.now(); return; }
+  if (charCfg.persona !== 'off' && Date.now() - lastUserOpAt >= 4 * 60000) {
+    onIdleOrAway();
+    lastUserOpAt = Date.now();   // 防短时间内反复折叠/展开又弹
+  }
+}
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     if (pollTimer) clearTimeout(pollTimer);
     pollStatus();
-    // 离开 ≥4 分钟后再展开面板：弹一句与「每两分钟空闲」相同的问候（复用 onIdleOrAway）
-    if (!panelEverShown) { panelEverShown = true; lastUserOpAt = Date.now(); }
-    else if (charCfg.persona !== 'off' && Date.now() - lastUserOpAt >= 4 * 60000) {
-      onIdleOrAway();
-      lastUserOpAt = Date.now();   // 防短时间内反复折叠/展开又弹
-    }
+    maybeGreetOnReopen();
+  } else {
+    /* 藏起来就掐断 SSE：否则 bridge 侧会一直按 1.5s 全量算快照。
+       断开后由 legacy 轮询接管（它自己按 document.hidden 降到 10s）。
+       再可见时上面那条会重新连 SSE。 */
+    if (statusES) { try { statusES.close(); } catch {} statusES = null; }
+    if (pollTimer) clearTimeout(pollTimer);
+    schedulePoll(POLL_IDLE_MS);
   }
 });
+/* 主进程窗口 'show' 可靠触发：兜住 visibilitychange 不触发的环境
+   （旧版 preload 没有该订阅时静默跳过，不抛错）。 */
+try { if (window.orb && window.orb.onPanelShown) window.orb.onPanelShown(maybeGreetOnReopen); } catch {}
+/* 收起那一刻把 lastUserOpAt 刷成当前时间：4 分钟从真正收起起算，
+   自动收起（鼠标移开）前用户可能已悬停阅读较久、期间没有点击/键盘，
+   若按「最后操作」算会在重开时提前触发问候。 */
+try { if (window.orb && window.orb.onPanelHidden) window.orb.onPanelHidden(() => { lastUserOpAt = Date.now(); }); } catch {}
 
 schedulePoll(1000);
 
@@ -13706,6 +16277,8 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
       };
     }
     if (s.visionPresets) visionPresets = s.visionPresets;
+    /* AI 在线语音合成的配置（Key 不在其中，只有 hasTtsKey） */
+    if (s.voice) applyTtsOnlineCfg(s.voice);
     document.getElementById('pin').classList.toggle('on', !!s.pinned);
     /* 悬浮条偏好（皮肤 / 能量条 / 描边颜色）：主进程落盘的那份是唯一真源，
        桥没起来时 s 为空 → renderRecSettings 用默认值（灰白纱 + 开 + 跟随皮肤）。 */
@@ -13758,6 +16331,7 @@ window.orb.onAvatar((url) => { if (url) document.getElementById('avatar').src = 
   syncAllSliders();
   bindVisionSheet();
   bindRecBarCommands();
+  bindRecRegion();
   bindWizard();
   bindExtras();
   /* 截屏（Snipaste）：引导卡绑定 + 设置页状态行首查 + 首启自动引导 + 聚焦重查。

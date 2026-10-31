@@ -1,0 +1,310 @@
+<!doctype html>
+<!--
+  框选取词（OCR）的覆盖层。两阶段：
+    ① 框选：整屏压暗，按住左键拖出矩形，松手 → 交出矩形
+    ② 确认：把抓下来的那块图铺回原处，识别到的**每一行文字**用荧光框标出来，
+          默认全选；点一下某块就去掉它（再点回来）；Enter / 「就这些」取整，
+          「重框」回到①，Esc / 「取消」放弃。
+  ⚠️ 为什么要有②：取词最常见的事故不是"没识别出来"，是**框歪了** ——
+     多框了一行菜单、少框了半句。以前只能整段重框；现在点掉不要的那几块就行。
+
+  ⚠️ 这一页只负责"框出矩形"和"挑出哪几块"，不截屏、不识别、不碰文件系统：
+     抓图与 OCR 都在主进程，它只接收结果。
+  ⚠️ 坐标是**窗口内的 CSS 像素**；主进程已经把行框换算好了，这里直接用。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>框选取词</title>
+<style>
+  /* 荧光笔色：琥珀黄。深浅底上都够跳，且不与任何主题的强调色撞车 ——
+     这层是临时浮层，不跟主题走反而更醒目。 */
+  :root { --hi: 255, 213, 74; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: transparent;
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    cursor: crosshair;
+    user-select: none; -webkit-user-select: none;
+  }
+  /* 整屏压暗：只在选区之外可见（选区靠 box-shadow 挖洞 / 确认态靠底图盖住） */
+  #dim { position: fixed; inset: 0; background: rgba(0, 0, 0, .38); }
+  /* 选区：四边描线 + 向外投一圈巨大的阴影把"洞"挖出来 */
+  #rect {
+    position: fixed; display: none;
+    border: 1px solid #7cc4ff;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, .38);
+    pointer-events: none;
+  }
+  #hud, #tip {
+    position: fixed; padding: 3px 7px; border-radius: 6px;
+    background: rgba(12, 16, 22, .88); color: #eaf2ff;
+    font-size: 12px; line-height: 1.5; white-space: nowrap;
+    pointer-events: none;
+  }
+  #hud { display: none; }
+  #tip { display: block; left: 50%; top: 22px; transform: translateX(-50%); padding: 6px 14px; font-size: 13px; }
+  #tip b { color: #7cc4ff; font-weight: 600; }
+
+  /* ---------- 阶段②：确认台 ---------- */
+  /* 底图：抓下来的那块图，按选区位置铺回去 —— 该区域因此是"原样"的，
+     其余地方仍被 #dim 压着，视觉焦点自然落在你框的那块上。 */
+  #shot {
+    position: fixed; display: none;
+    background-repeat: no-repeat; background-size: 100% 100%;
+  }
+  .box {
+    position: fixed; box-sizing: border-box; border-radius: 2px;
+    background: rgba(var(--hi), .20);
+    border: 1px solid rgba(var(--hi), .95);
+    cursor: pointer; pointer-events: auto;
+    transition: background .12s, border-color .12s;
+  }
+  .box:hover { background: rgba(var(--hi), .42); }
+  /* 未选中的块：淡下去 + 虚线边，一眼看出"这块不要" */
+  .box.off { background: rgba(var(--hi), .06); border-style: dashed; border-color: rgba(var(--hi), .45); }
+  .box.off:hover { background: rgba(var(--hi), .18); }
+  /* 悬停时浮出这块的行文字：长句在窄框里看不全，得有地方读 */
+  #peek {
+    position: fixed; display: none; max-width: 420px; z-index: 9;
+    padding: 5px 9px; border-radius: 6px;
+    background: rgba(12, 16, 22, .92); color: #fff;
+    font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+    pointer-events: none;
+  }
+  /* 操作条贴屏幕底部居中：放选区下方会经常掉出屏幕外，底部最稳。 */
+  #acts {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+    display: none; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 12px;
+    background: rgba(12, 16, 22, .90); box-shadow: 0 4px 18px rgba(0,0,0,.45);
+    cursor: default;
+  }
+  #acts button {
+    border: none; border-radius: 8px; padding: 6px 12px; cursor: pointer;
+    font-family: inherit; font-size: 12.5px; color: #e8eaf6;
+    background: rgba(255,255,255,.10);
+  }
+  #acts button:hover { background: rgba(255,255,255,.20); }
+  #acts button.pri { background: #7cc4ff; color: #10203a; font-weight: 600; }
+  #acts button.pri:hover { background: #9ad4ff; }
+  #acts button:disabled { opacity: .5; cursor: default; }
+  #cnt { font-size: 12px; color: #b9bfe0; padding: 0 4px; }
+</style>
+</head>
+<body>
+  <div id="dim"></div>
+  <div id="rect"></div>
+  <div id="shot"></div>
+  <div id="peek"></div>
+  <div id="hud"></div>
+  <div id="tip"></div>
+  <div id="acts">
+    <span id="cnt"></span>
+    <button id="ok" class="pri">就这些（Enter）</button>
+    <button id="again">重框</button>
+    <button id="cancel">取消（Esc）</button>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+  var dim = document.getElementById('dim');
+  var rect = document.getElementById('rect');
+  var hud = document.getElementById('hud');
+  var tip = document.getElementById('tip');
+  var shot = document.getElementById('shot');
+  var peek = document.getElementById('peek');
+  var acts = document.getElementById('acts');
+  var cnt = document.getElementById('cnt');
+
+  var phase = 'rect';          // 'rect' | 'busy' | 'confirm'
+  var dragging = false, x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  var boxes = [];
+  var boxEls = [];
+  var lastRect = null;
+
+  function say(t) { tip.style.display = 'block'; tip.innerHTML = t; }
+
+  /* ---------------- 阶段①：框选 ---------------- */
+  function toRect() {
+    phase = 'rect';
+    boxes = [];
+    boxEls.forEach(function (el) { el.remove(); });
+    boxEls = [];
+    shot.style.display = 'none';
+    shot.style.backgroundImage = '';
+    peek.style.display = 'none';
+    acts.style.display = 'none';
+    rect.style.display = 'none';
+    hud.style.display = 'none';
+    dim.style.display = '';
+    document.body.style.cursor = 'crosshair';
+    say('拖出要识别的区域 · <b>Esc</b> 取消');
+  }
+
+  function place() {
+    var x = Math.min(x0, x1), y = Math.min(y0, y1);
+    var w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+    rect.style.display = 'block';
+    rect.style.left = x + 'px'; rect.style.top = y + 'px';
+    rect.style.width = w + 'px'; rect.style.height = h + 'px';
+    hud.style.display = 'block';
+    hud.textContent = w + ' × ' + h;
+    hud.style.left = x + 'px';
+    hud.style.top = (y > 26 ? (y - 24) : (y + h + 6)) + 'px';
+    tip.style.display = 'none';
+  }
+
+  function commitRect() {
+    var x = Math.min(x0, x1), y = Math.min(y0, y1);
+    var w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+    /* 太小的框多半是误点（点一下就松手），当成取消处理 */
+    if (w < 8 || h < 8) { finish({ kind: 'cancel' }); return; }
+    lastRect = { x: x, y: y, width: w, height: h };
+    phase = 'busy';
+    rect.style.display = 'none';
+    hud.style.display = 'none';
+    say('识别中…');
+    if (window.orb && window.orb.pickDone) window.orb.pickDone({ kind: 'rect', rect: lastRect });
+  }
+
+  /* ---------------- 阶段②：确认 ---------------- */
+  function toConfirm(p) {
+    phase = 'confirm';
+    document.body.style.cursor = 'default';
+    if (lastRect) {
+      shot.style.display = 'block';
+      shot.style.left = lastRect.x + 'px';
+      shot.style.top = lastRect.y + 'px';
+      shot.style.width = lastRect.width + 'px';
+      shot.style.height = lastRect.height + 'px';
+      if (p && p.img) shot.style.backgroundImage = 'url(' + p.img + ')';
+    }
+    boxes = (p && p.boxes) ? p.boxes : [];
+    boxes.forEach(function (b) { b.on = true; });
+    drawBoxes();
+    acts.style.display = 'flex';
+    updateCnt();
+    say('点掉不要的块 · <b>Enter</b> 采用 · <b>Esc</b> 取消');
+  }
+
+  function drawBoxes() {
+    boxEls.forEach(function (el) { el.remove(); });
+    boxEls = [];
+    boxes.forEach(function (b, i) {
+      var el = document.createElement('div');
+      el.className = 'box';
+      el.style.left = b.x + 'px';
+      el.style.top = b.y + 'px';
+      el.style.width = b.w + 'px';
+      el.style.height = b.h + 'px';
+      (function (idx, node) {
+        node.addEventListener('click', function (e) {
+          e.stopPropagation();
+          boxes[idx].on = !boxes[idx].on;
+          node.classList.toggle('off', !boxes[idx].on);
+          updateCnt();
+        });
+        node.addEventListener('mouseenter', function () {
+          peek.textContent = boxes[idx].text || '';
+          peek.style.display = 'block';
+          peek.style.left = Math.max(4, Math.min(window.innerWidth - 430, b.x)) + 'px';
+          /* 框在屏幕上半 → 文字浮在框下；下半 → 浮在框上，免得出屏 */
+          peek.style.top = (b.y > window.innerHeight / 2 ? (b.y - 40) : (b.y + b.h + 6)) + 'px';
+        });
+        node.addEventListener('mouseleave', function () { peek.style.display = 'none'; });
+      })(i, el);
+      document.body.appendChild(el);
+      boxEls.push(el);
+    });
+  }
+
+  function updateCnt() {
+    var n = boxes.filter(function (b) { return b.on; }).length;
+    cnt.textContent = '已选 ' + n + ' / ' + boxes.length + ' 块';
+    var okBtn = document.getElementById('ok');
+    if (okBtn) okBtn.disabled = (n === 0);
+  }
+
+  function submit() {
+    var picked = boxes.filter(function (b) { return b.on; }).map(function (b) { return b.text; });
+    finish({ kind: 'text', text: picked.join('\n') });
+  }
+
+  /* ---------------- 收尾 ---------------- */
+  function finish(msg) {
+    if (!window.orb || !window.orb.pickDone) return;
+    phase = 'done';
+    shot.style.display = 'none';
+    acts.style.display = 'none';
+    peek.style.display = 'none';
+    boxEls.forEach(function (el) { el.remove(); });
+    window.orb.pickDone(msg || { kind: 'cancel' });
+  }
+
+  window.addEventListener('mousedown', function (e) {
+    if (phase !== 'rect') return;
+    if (e.button !== 0) { finish({ kind: 'cancel' }); return; }
+    dragging = true;
+    x0 = x1 = e.clientX; y0 = y1 = e.clientY;
+    place();
+  });
+  window.addEventListener('mousemove', function (e) {
+    if (!dragging || phase !== 'rect') return;
+    x1 = e.clientX; y1 = e.clientY;
+    place();
+  });
+  window.addEventListener('mouseup', function () {
+    if (!dragging || phase !== 'rect') return;
+    dragging = false;
+    commitRect();
+  });
+
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      /* 确认台上 Esc = 放弃（重框有专门按钮，别让 Esc 身兼两义） */
+      finish({ kind: 'cancel' });
+    } else if (e.key === 'Enter' && phase === 'confirm') {
+      e.preventDefault();
+      submit();
+    }
+  });
+
+  /* 右键 = 放弃。
+     ⚠️ 不监听 blur：覆盖层刚创建时焦点未必立刻落进来，
+        一个 blur 会让它刚出现就自己取消掉（表现：点「取词」什么都没发生）。 */
+  window.addEventListener('contextmenu', function (e) { e.preventDefault(); finish({ kind: 'cancel' }); });
+
+  document.getElementById('ok').addEventListener('click', function (e) { e.stopPropagation(); submit(); });
+  document.getElementById('cancel').addEventListener('click', function (e) { e.stopPropagation(); finish({ kind: 'cancel' }); });
+  document.getElementById('again').addEventListener('click', function (e) {
+    e.stopPropagation();
+    /* 回阶段①：覆盖层不关，只把确认台拆掉重来（关了再开会闪一下） */
+    if (window.orb && window.orb.pickRedo) window.orb.pickRedo();
+    toRect();
+  });
+
+  if (window.orb && window.orb.onOcrResult) {
+    window.orb.onOcrResult(function (p) { toConfirm(p); });
+  }
+  /* 主进程收尾时的复位信号（覆盖层是复用窗口）。
+     没有它，上一轮停在 'busy' / 'confirm' 的页面会被下一次 show 原样端上来。 */
+  if (window.orb && window.orb.onReset) {
+    window.orb.onReset(function () {
+      dragging = false;
+      lastRect = null;
+      rect.style.display = 'none';
+      hud.style.display = 'none';
+      toRect();
+    });
+  }
+
+  toRect();
+})();
+</script>
+</body>
+</html>

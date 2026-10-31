@@ -254,9 +254,23 @@ const clampInt = (v, lo, hi, dflt) => {
   return Math.min(hi, Math.max(lo, i));
 };
 
+/** 把外部传来的区域规整成 {x,y,w,h}（整数、宽高为正）；不合法返回 null（= 整屏）。
+ *  下限 16px 与 helper 的编码下限一致：更小的框录出来没意义，按整屏走至少能出片。 */
+function normalizeRect(r) {
+  if (!r || typeof r !== "object") return null;
+  const vals = ["x", "y", "w", "h"].map((k) => Number(r[k]));
+  if (!vals.every((v) => Number.isFinite(v))) return null;
+  const [x, y, w, h] = vals.map((v) => Math.round(v));
+  if (w < 16 || h < 16) return null;
+  return { x: Math.max(0, x), y: Math.max(0, y), w, h };
+}
+
 /**
  * 启动一段原生录制。
- * @param {{outPath:string, fps?:number, bitrate?:number, display?:number}} opts
+ * @param {{outPath:string, fps?:number, bitrate?:number, display?:number,
+ *          rect?:{x:number,y:number,w:number,h:number}}} opts
+ *   rect 只录屏幕的一块（区域录制）。坐标是**物理像素**、原点在显示器左上角，
+ *   helper 内部会夹到屏幕内并做偶数对齐。不传 = 整屏（原行为）。
  * @returns {Promise<{w:number,h:number,fps:number}>} ready 行的尺寸与帧率
  */
 async function start(opts) {
@@ -269,6 +283,10 @@ async function start(opts) {
   const fps = clampInt(o.fps, 1, 120, 30);
   const bitrate = clampInt(o.bitrate, 100000, 200000000, 6000000);
   const display = clampInt(o.display, 0, 15, 0);   // v1 只支持 0，helper 会拒
+  /* 区域裁剪：四个值都必须是有限数、宽高为正，否则当"没有区域"处理（整屏）。
+     宁可整屏也不要把垃圾数字丢给 helper —— 它会把越界矩形夹成 16px 的小条，
+     用户拿到一段莫名其妙的窄条视频，比"没缩到"更难理解。 */
+  const rect = normalizeRect(o.rect);
 
   const args = [
     "--out", outPath,
@@ -276,10 +294,11 @@ async function start(opts) {
     "--bitrate", String(bitrate),
     "--display", String(display),
   ];
+  if (rect) args.push("--rect", String(rect.x), String(rect.y), String(rect.w), String(rect.h));
 
   /* 每次开录重置会话状态与监听残留（监听不重置：主进程是常驻绑定的） */
   state = {
-    path: outPath, fps, w: 0, h: 0, outW: 0, outH: 0,
+    path: outPath, fps, w: 0, h: 0, outW: 0, outH: 0, rect: rect || null,
     bytes: 0, ms: 0, frames: 0,
     done: false, aborted: false, exited: false, code: null, errCode: "", errMsg: "",
   };
@@ -298,7 +317,8 @@ async function start(opts) {
   try {
     c.stdin.on("error", (e) => settleAny(new Error("与编码器的管道断开：" + errText(e))));
   } catch { /* 极端情况下 stdin 已不可用，忽略 */ }
-  note("启动：", EXE, "→", outPath, "(" + fps + "fps / " + bitrate + ")");
+  note("启动：", EXE, "→", outPath, "(" + fps + "fps / " + bitrate + ")"
+    + (rect ? " 区域 " + rect.x + "," + rect.y + " " + rect.w + "x" + rect.h : " 整屏"));
 
   const ready = waitFor("ready", READY_MS, "ready");
   attach(c);

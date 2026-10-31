@@ -8,6 +8,11 @@
  *
  * 用法：
  *   orb-cap.exe --out <绝对路径.mp4> [--fps 30] [--bitrate 6000000] [--display 0]
+ *               [--rect <x> <y> <w> <h>]
+ *
+ *   --rect 只录屏幕的某一块（区域录制）。坐标是**物理像素**，原点在显示器左上角，
+ *   与 DXGI 复制缓冲区的坐标系一致（DPI 感知已开到 PER_MONITOR_AWARE_V2）。
+ *   越界自动裁到屏幕内，宽高各向下取偶（H.264 要求偶数边长）。不给就是整屏。
  *
  * stdin（每行一条，读一行做一件事；EOF 视为 stop，避免父进程异常退出后留半成品）：
  *   ping    → ok
@@ -41,6 +46,7 @@
  *  7) 失败一律 err + 非 0 退出，绝不静默（主进程要靠它回退）。
  *
  * v1 边界：只录主显示器（--display 0）、无音频、不分段续录、不分片。
+ *   --rect 是"附加面"，不影响原来的整屏路径：不带这个参数时行为与 v1 完全一致。
  * 编译：powershell -File orb/native/build-cap.ps1
  * --------------------------------------------------------------- */
 #define WIN32_LEAN_AND_MEAN
@@ -276,9 +282,39 @@ static HRESULT dupCreate(Dup* d, int displayIndex) {
   return hr;
 }
 
+/* 按当前复制尺寸算出「源起点 + 输出尺寸」（区域录制用）。
+   整屏（hasRect=0）时 srcX/srcY = 0、输出 = 屏幕尺寸取偶，与 v1 行为一致。
+   ACCESS_LOST 重建后屏幕尺寸可能变，所以 main 与两条 rebuild 分支都走这一处，
+   不各写一份 —— 三份拷贝迟早会有一份忘了改。 */
+static void calcEncRect(UINT dispW, UINT dispH, int hasRect,
+                        int rectX, int rectY, int rectW, int rectH,
+                        UINT* outSrcX, UINT* outSrcY, UINT* outW, UINT* outH) {
+  UINT sx = 0, sy = 0;
+  UINT w = dispW & ~1u, h = dispH & ~1u;
+  if (hasRect) {
+    int x = rectX, y = rectY, cw = rectW, ch = rectH;
+    /* 夹到屏幕内；贴边过近时留 16px，否则裁完会小于编码器下限 */
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x > (int)dispW - 16) x = (int)dispW - 16;
+    if (y > (int)dispH - 16) y = (int)dispH - 16;
+    if (cw > (int)dispW - x) cw = (int)dispW - x;
+    if (ch > (int)dispH - y) ch = (int)dispH - y;
+    sx = (UINT)x & ~1u;          /* 原点也取偶：宽高各少一像素时不会读到缓冲区外 */
+    sy = (UINT)y & ~1u;
+    w = (UINT)cw & ~1u;
+    h = (UINT)ch & ~1u;
+    if (sx + w > dispW) w = (dispW - sx) & ~1u;
+    if (sy + h > dispH) h = (dispH - sy) & ~1u;
+  }
+  *outSrcX = sx;
+  *outSrcY = sy;
+  *outW = w;
+  *outH = h;
+}
+
 /* ACCESS_LOST：整包重建，最多 CAP_REBUILD_TRIES 次。
-   成功返回 S_OK；changed 回填"分辨率变了"（调用方据此收尾当前文件）。 */
-static HRESULT dupRebuild(Dup* d, int* changed) {
+   成功返回 S_OK；changed 回填"分辨率变了"（调用方据此收尾当前文件）。 */static HRESULT dupRebuild(Dup* d, int* changed) {
   UINT oldW = d->w, oldH = d->h;
   HRESULT hr = E_FAIL;
   if (changed) *changed = 0;
@@ -350,9 +386,13 @@ static HRESULT writerCreate(const WCHAR* path, UINT w, UINT h, int fps, int bitr
 }
 
 /* 把暂存纹理的一帧写成一个 sample（t / dur 都是 100ns 单位）。
-   每帧新建 MF 缓冲，不复用：MF 会异步持有 sample，复用同一块内存会写出花屏。 */
+   每帧新建 MF 缓冲，不复用：MF 会异步持有 sample，复用同一块内存会写出花屏。
+
+   srcX / srcY 是**源纹理内的起点**（区域录制用）。整屏录制时两者都是 0，
+   路径与原实现完全一致 —— 只多了一次加法。 */
 static HRESULT writeFrame(IMFSinkWriter* writer, DWORD stream, Dup* d,
-                          UINT encW, UINT encH, LONGLONG t, LONGLONG dur) {
+                          UINT encW, UINT encH, UINT srcX, UINT srcY,
+                          LONGLONG t, LONGLONG dur) {
   D3D11_MAPPED_SUBRESOURCE map;
   HRESULT hr = d->ctx->lpVtbl->Map(d->ctx, (ID3D11Resource*)d->staging, 0,
                                    D3D11_MAP_READ, 0, &map);
@@ -369,11 +409,13 @@ static HRESULT writeFrame(IMFSinkWriter* writer, DWORD stream, Dup* d,
       /* 逐行拷贝：GPU 的 RowPitch 通常大于 stride（对齐填充），不能整块 memcpy。
          DXGI Desktop Duplication 的暂存纹理是 top-down（第 0 行在顶部），
          而 Media Foundation 的 RGB32 输入约定是 bottom-up（内存首行=图像底行），
-         直接 top→top 拷贝会录出上下颠倒的画面。这里把源第 y 行写到目的第
-         (encH-1-y) 行，做垂直翻转，画面正立。 */
+         直接 top→top 拷贝会录出上下颠倒的画面。这里把源第 (srcY+y) 行写到目的第
+         (encH-1-y) 行，做垂直翻转，画面正立。
+         列方向按 srcX*4 字节偏移进每一行 —— 区域录制的横向裁剪就落在这一行里。 */
+      const size_t xoff = (size_t)srcX * 4;
       for (UINT y = 0; y < encH; y++) {
         memcpy(dst + (size_t)(encH - 1 - y) * stride,
-               (const BYTE*)map.pData + (size_t)y * map.RowPitch,
+               (const BYTE*)map.pData + (size_t)(srcY + y) * map.RowPitch + xoff,
                stride);
       }
       buf->lpVtbl->Unlock(buf);
@@ -439,7 +481,8 @@ static LONGLONG clockRecNs(const CapClock* c) {
 }
 
 static void usage(void) {
-  printf("orb-cap.exe --out <file.mp4> [--fps 30] [--bitrate 6000000] [--display 0]\n");
+  printf("orb-cap.exe --out <file.mp4> [--fps 30] [--bitrate 6000000] [--display 0] [--rect x y w h]\n");
+  printf("  --rect x y w h : record only this region (physical pixels, origin = display top-left)\n");
   printf("  stdin commands: ping | pause | resume | stop | abort\n");
   fflush(stdout);
 }
@@ -456,6 +499,9 @@ int main(void) {
   int fps = 30;
   int bitrate = 6000000;
   int display = 0;
+  /* 区域录制：hasRect = 0 时整屏（与 v1 行为完全一致） */
+  int rectX = 0, rectY = 0, rectW = 0, rectH = 0;
+  int hasRect = 0;
 
   int argc = 0;
   LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -472,6 +518,14 @@ int main(void) {
       bitrate = _wtoi(argv[++i]);
     } else if (!wcscmp(argv[i], L"--display") && i + 1 < argc) {
       display = _wtoi(argv[++i]);
+    } else if (!wcscmp(argv[i], L"--rect") && i + 4 < argc) {
+      /* 四个数一组（x y w h）。缺参数不能默默降级成整屏 ——
+         用户明确要的是"只录那块"，录出整屏比失败更糟。 */
+      rectX = _wtoi(argv[++i]);
+      rectY = _wtoi(argv[++i]);
+      rectW = _wtoi(argv[++i]);
+      rectH = _wtoi(argv[++i]);
+      hasRect = 1;
     } else if (!wcscmp(argv[i], L"--help") || !wcscmp(argv[i], L"-h")) {
       LocalFree(argv);
       usage();
@@ -503,6 +557,10 @@ int main(void) {
   }
   if (display != 0) {
     emitErr(E_INVALIDARG, "v1 只支持 --display 0（收到 %d）", display);
+    return 2;
+  }
+  if (hasRect && (rectW <= 0 || rectH <= 0)) {
+    emitErr(E_INVALIDARG, "不合理的 --rect %d %d %d %d（宽高必须为正）", rectX, rectY, rectW, rectH);
     return 2;
   }
 
@@ -540,11 +598,13 @@ int main(void) {
   }
 
   /* 奇数边长会让 H.264 编码器拒绝：裁到偶数（丢的是最后一列/行，肉眼不可见）。
-     正常显示器不会走到这里，属于"别为了一个像素整段失败"的兜底。 */
-  UINT encW = dup.w & ~1u;
-  UINT encH = dup.h & ~1u;
+     区域录制时再按 --rect 把矩形夹到屏幕内（见 calcEncRect）。 */
+  UINT encW = 0, encH = 0, srcX = 0, srcY = 0;
+  calcEncRect(dup.w, dup.h, hasRect, rectX, rectY, rectW, rectH, &srcX, &srcY, &encW, &encH);
+
   if (encW < 16 || encH < 16) {
-    emitErr(E_FAIL, "桌面尺寸过小，无法编码：%ux%u", dup.w, dup.h);
+    emitErr(E_FAIL, "桌面尺寸过小，无法编码：%ux%u%s", dup.w, dup.h,
+            hasRect ? "（区域小于 16px）" : "");
     goto cleanup;
   }
 
@@ -563,6 +623,14 @@ int main(void) {
   clock.pauseStartNs = 0;
 
   emit("ready %u %u %d", encW, encH, fps);
+
+  /* 区域裁剪的实际落点只进 stderr（主进程收进日志）：stdout 是协议通道，
+     多一行就要多一处解析分支，不值得。 */
+  if (hasRect) {
+    fprintf(stderr, "orb-cap: rect %u,%u %ux%u (display %ux%u)\n",
+            srcX, srcY, encW, encH, dup.w, dup.h);
+    fflush(stderr);
+  }
 
   InitializeCriticalSection(&g_qLock);
   HANDLE reader = CreateThread(NULL, 0, stdinReader, NULL, 0, NULL);
@@ -629,8 +697,8 @@ int main(void) {
         if (changed) {
           /* 尺寸变了：当前文件的帧尺寸已经对不上，收尾这一段让主进程新起一段 */
           sizeChanged = 1;
-          encW = dup.w & ~1u;
-          encH = dup.h & ~1u;
+          calcEncRect(dup.w, dup.h, hasRect, rectX, rectY, rectW, rectH,
+                      &srcX, &srcY, &encW, &encH);
           stopMode = 1;
           break;
         }
@@ -697,7 +765,7 @@ int main(void) {
     /* ---- 4) 到点就写：没有新帧就重复上一帧（CFR 的关键） ---- */
     while (haveFrame && !clock.paused && clockRecNs(&clock) >= encoded * dur) {
       LONGLONG t = encoded * dur;
-      hr = writeFrame(writer, stream, &dup, encW, encH, t, dur);
+      hr = writeFrame(writer, stream, &dup, encW, encH, srcX, srcY, t, dur);
       if (FAILED(hr)) {
         emitErr((long)hr, "写入帧失败（第 %lld 帧）", encoded);
         exitCode = 5;
