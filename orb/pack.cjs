@@ -23,7 +23,7 @@ const { execSync, spawnSync } = require('child_process');
 const ROOT = process.env.ORB_ROOT ? path.resolve(process.env.ORB_ROOT) : path.resolve(__dirname, '..');
 const APP = path.join(ROOT, 'orb', 'desktop');
 const ELECTRON = path.join(APP, 'node_modules', 'electron', 'dist');
-const VERSION = '1.4.5';
+const VERSION = '1.4.9';
 /* 输出目录带时间戳：不删旧构建。早先这里是 fs.rmSync(OUT) 一把清空，
    但批量删除会触发安全保护（3789 个文件远超阈值）而被拦截。
    版本化目录反而更好——每次构建都是可回溯的产物，旧的由用户自行清理。 */
@@ -66,6 +66,15 @@ const APP_FILES = [
      漏打包 = 发布版一 require 就抛 MODULE_NOT_FOUND，main.js 整个起不来。
      这和 cap-native.js 是同一类：不是"少个功能"，是"程序打不开"。 */
   'memory.js',
+  /* 凭据金库（2026-11-02 新增）：vault.js 被 main.js 顶层 require（第 22 行），
+     存站点凭据 + 视觉 API Key 的密文。漏打包 = 和 memory.js 同一类事故：
+     一 require 就抛 MODULE_NOT_FOUND，main.js 整个起不来。 */
+  'vault.js',
+  /* 看视频（2026-11-02 新增）：vidx.js 被 main.js 顶层 require（漏了 = 起不来）；
+     vidx_probe.py 是探底/抽帧的**随包脚本**，vidx.js 按 __dirname 定位它
+     （漏了 = 面板显示"运行时已装"但每次解析都报"脚本没有输出结果"，
+      开发态因为文件就在原地永远正常 —— 又一个"只炸发布版"的坑）。 */
+  'vidx.js', 'vidx_probe.py',
   'icon.png', 'icon.ico', 'icon-64.png', 'selection-watch.ps1', 'package.json',
 ];
 /* 随包附带的配置文件（都放在包根，桥的 DATA_DIR 在开发态就是项目根，行为一致）：
@@ -299,7 +308,13 @@ console.log('复制本地语音识别源码…');
 const ASR_SRC = path.join(ROOT, 'asr');
 const ASR_DST = path.join(OUT, 'resources', 'asr');
 const ASR_KEEP = new Set(['asr_server.py', 'subtitle_rt.py', 'download_model.py', 'make_srt.py',
-  'prepare.ps1', 'requirements.txt', 'asr.conf']);
+  'prepare.ps1', 'requirements.txt', 'asr.conf',
+  /* SenseVoice 引擎（2026-11-02 新增）：sensevoice_engine.py 由 asr_server 顶层
+     import，漏了 = 发布版直接回退 faster-whisper（没下 whisper 权重就完全没法识别），
+     而且**不报错**，只在日志里留一句 engineError —— 又一个"只炸发布版"的坑。
+     download_sensevoice.py 是 prepare.ps1 第 4 步调用的下载器，漏了 = 一键安装
+     在"下载权重"这一步硬失败。 */
+  'sensevoice_engine.py', 'download_sensevoice.py']);
 const ASR_SKIP_DIR = new Set(['venv', 'models', '__pycache__', '_dl', 'site-packages']);
 if (fs.existsSync(ASR_SRC)) {
   fs.mkdirSync(ASR_DST, { recursive: true });
@@ -355,6 +370,13 @@ const must = [
   path.join('resources', 'runtime', 'python', 'python.exe'),
   path.join('resources', 'runtime', 'python', 'LICENSE.txt'),
   path.join('resources', 'asr', 'asr_server.py'),
+  /* 下面两个漏了不会立刻报错，但发布版会静默残废：
+     - sensevoice_engine.py：asr_server 顶层 import（try/except 吞掉），缺了直接回退
+       faster-whisper；用户又只下了 SenseVoice 权重 → 一条都识别不出。
+     - download_sensevoice.py：prepare.ps1 第 4 步调它下权重，缺了一键安装硬失败。
+     都是"本机开发跑得好好的、打出来的包不行"那类，必须在打包时卡住。 */
+  path.join('resources', 'asr', 'sensevoice_engine.py'),
+  path.join('resources', 'asr', 'download_sensevoice.py'),
   path.join('resources', 'extras', '使用说明.md'),
   '使用说明.md',
 ];

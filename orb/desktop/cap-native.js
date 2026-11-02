@@ -6,7 +6,9 @@
  *
  * 协议（与 orb-cap.c 一一对应，改一边必须改另一边）：
  *   启动 → "ready <w> <h> <fps>"        ← 在这之后主进程才开始计时
- *   每秒 → "frame <n>"                   ← 不是每帧，最多一行/秒
+ *   音频 → "audio on <rate> <ch> <src>" / "audio off <reason>"
+ *                                        紧跟在 ready 后一行，报告音频到底开没开
+ *   每秒 → "frame <n> [<sysLv> <micLv>]"← 不是每帧，最多一行/秒；后两个是电平 0..100
  *   回执 → "ok" / "paused" / "resumed"   ← 每条命令必回一条
  *   收尾 → "done <bytes> <elapsedMs>"    正常收尾；尺寸变化时再多 "<w> <h>" 两个字段
  *   取消 → "aborted"                     半成品已删
@@ -152,7 +154,19 @@ function onLine(raw) {
   if (head === "frame") {
     const n = Number(parts[1]) || 0;
     if (state) state.frames = n;
-    fire("frame", { n });
+    /* 后两个字段是音频电平（0..100），老版本 helper 不带 —— 缺席就是 0 */
+    fire("frame", { n, sys: Number(parts[2]) || 0, mic: Number(parts[3]) || 0 });
+    return;
+  }
+  if (head === "audio") {
+    /* audio on <rate> <ch> <src> | audio off <reason> */
+    const on = parts[1] === "on";
+    const info = on
+      ? { on: true, rate: Number(parts[2]) || 0, ch: Number(parts[3]) || 0, sources: parts[4] || "" }
+      : { on: false, reason: parts[2] || "unknown" };
+    if (state) state.audio = info;
+    note("音频：", on ? (info.sources + " " + info.rate + "Hz/" + info.ch + "ch") : ("未开启（" + info.reason + "）"));
+    fire("audio", info);
     return;
   }
   if (head === "ok" || head === "paused" || head === "resumed") {
@@ -268,10 +282,13 @@ function normalizeRect(r) {
 /**
  * 启动一段原生录制。
  * @param {{outPath:string, fps?:number, bitrate?:number, display?:number,
- *          rect?:{x:number,y:number,w:number,h:number}}} opts
+ *          rect?:{x:number,y:number,w:number,h:number},
+ *          audio?:'none'|'system'|'mic'|'mix'}} opts
  *   rect 只录屏幕的一块（区域录制）。坐标是**物理像素**、原点在显示器左上角，
  *   helper 内部会夹到屏幕内并做偶数对齐。不传 = 整屏（原行为）。
- * @returns {Promise<{w:number,h:number,fps:number}>} ready 行的尺寸与帧率
+ *   audio 音频来源，默认 none（与旧版一致）。helper 打不开设备时只降级不失败。
+ * @returns {Promise<{w:number,h:number,fps:number,audio:object|null}>}
+ *   ready 行的尺寸与帧率；audio 是 helper 回报的实际音频状态（可能为 null）。
  */
 async function start(opts) {
   const o = opts && typeof opts === "object" ? opts : {};
@@ -287,12 +304,17 @@ async function start(opts) {
      宁可整屏也不要把垃圾数字丢给 helper —— 它会把越界矩形夹成 16px 的小条，
      用户拿到一段莫名其妙的窄条视频，比"没缩到"更难理解。 */
   const rect = normalizeRect(o.rect);
+  /* 音频：只认白名单里的四个值，其他一律 none —— 参数拼进命令行，
+     绝不能让外部字符串透传（helper 那边也会再校验一次）。 */
+  const audio = ["system", "mic", "mix"].includes(String(o.audio || ""))
+    ? String(o.audio) : "none";
 
   const args = [
     "--out", outPath,
     "--fps", String(fps),
     "--bitrate", String(bitrate),
     "--display", String(display),
+    "--audio", audio,
   ];
   if (rect) args.push("--rect", String(rect.x), String(rect.y), String(rect.w), String(rect.h));
 
@@ -300,6 +322,7 @@ async function start(opts) {
   state = {
     path: outPath, fps, w: 0, h: 0, outW: 0, outH: 0, rect: rect || null,
     bytes: 0, ms: 0, frames: 0,
+    audio: null,
     done: false, aborted: false, exited: false, code: null, errCode: "", errMsg: "",
   };
 
@@ -324,7 +347,21 @@ async function start(opts) {
   attach(c);
 
   try {
-    return await ready;
+    const r = await ready;
+    /* audio 行紧跟在 ready 后一行。多等最多 300ms 把**实际**状态带回去 ——
+       调用方据此才能告诉用户"这段录制有没有声音"，拿不到就按未开启算。 */
+    if (audio !== "none") {
+      const t0 = Date.now();
+      while (Date.now() - t0 < 300 && child && state && !state.audio) {
+        await new Promise((res) => {
+          const t = setTimeout(res, 20);
+          if (typeof t.unref === "function") t.unref();
+        });
+      }
+    }
+    return Object.assign({}, r, {
+      audio: (state && state.audio) || { on: false, reason: "unknown" },
+    });
   } catch (e) {
     /* 起不来（组件坏 / 屏幕被独占 / 超时）：杀干净，别留一个占着输出文件的僵尸进程 */
     note("启动失败，清理进程：", errText(e));

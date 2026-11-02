@@ -215,3 +215,6 @@ tts/
 # 非任何真人录音），不进仓库纯粹是体积与可再生的考虑，不是版权原因。
 # 从仓库 clone 后要自己打包含语音的 exe，需先跑一次 _make_voicepack.cjs。
 /orb/desktop/voicepack/
+
+# 临时工作目录（探针与截图的中间产物，不入库）
+tmp/

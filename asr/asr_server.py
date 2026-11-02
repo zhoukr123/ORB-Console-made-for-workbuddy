@@ -5,13 +5,23 @@ ORB 本地离线语音识别服务（OpenAI 兼容）
 - POST /v1/audio/transcriptions   multipart/form-data: file[, model, language]
 - GET  /health
 
-用 faster-whisper(ctranslate2) 做推理，默认 **small + 自动设备**。
+两条引擎，用 `ORB_ASR_ENGINE`（asr.conf 的 `engine` 字段）选：
+  · `sensevoice`（默认优先）—— SenseVoice-Small int8 ONNX，走 sherpa-onnx。
+      **一次前向同时出文字 / 语种 / 情绪（7 类）/ 声学事件**，CPU 上 RTF 0.02~0.03，
+      比 whisper 快一个数量级以上。情绪是白拿的，不额外挂模型。
+  · `whisper` —— faster-whisper(ctranslate2)。没有 SenseVoice 模型时的兜底，
+      也是"只想要纯文字、不要情绪"的选择。
+  · `auto`（默认）—— 有 SenseVoice 模型就用 SenseVoice，否则 whisper。
+
+whisper 侧：
 - 换模型：环境变量 `ORB_ASR_MODEL_NAME`（small / medium …）或 `ORB_ASR_MODEL`（绝对路径）
 - 换设备/精度：`ORB_ASR_DEVICE`（auto / cpu / cuda）、`ORB_ASR_COMPUTE`（auto / int8 / float16 …）
   · device=auto：探测 ctranslate2 是否带 CUDA，有则 cuda、无则 cpu（探测很轻，不写回配置）
   · 显式指定了 GPU 但起不来 → **自动回落 cpu/int8 并把生效值写回 asr.conf**，
     否则无显卡的机器每次重启都要先炸一次（见 resolve_device_compute）
 供 ORB 语音模块（引擎=whisper / auto）调用；端点填 http://127.0.0.1:19876/v1/audio/transcriptions
+
+授权：SenseVoice 权重走 FunASR Model License（可再分发，需注明来源并保留模型名）。
 """
 import os
 import re
@@ -23,9 +33,19 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
+# 同目录的引擎模块（打包时随 asr/ 一起走）
+try:
+    import sensevoice_engine as _sv
+except Exception as _e:  # noqa: BLE001
+    _sv = None
+    _sv_import_error = repr(_e)
+else:
+    _sv_import_error = ""
+
 
 # ---- 配置：asr.conf（供 ORB 面板切换 CPU/GPU）+ 环境变量覆盖 ----
 _CONF_FILE = HERE / "asr.conf"
+
 
 
 def _read_conf() -> dict:
@@ -176,30 +196,85 @@ PROMPT = os.environ.get("ORB_ASR_PROMPT", "以下是普通话的句子。")
 # 把课件/会议里的高频术语塞进来能明显减少同音错字（如"超星""智慧树""基因工程"）。
 # 用法：ORB_ASR_HOTWORDS="超星,智慧树,基因工程,PCR"（逗号/顿号/空格分隔均可）
 HOTWORDS = os.environ.get("ORB_ASR_HOTWORDS", "").strip()
+# 是否把热词注入 whisper 的 initial_prompt。
+# 实测（2026-11-02）：只要 initial_prompt 非空，faster-whisper 解码就慢 4~4.5 倍
+# （60s 音频 3.6s→16s），与长度弱相关——根因是 ctranslate2 的 prefix 解码慢路径。
+# 所以默认关闭：热词改由 vidx.js 的「回顾」阶段（LLM 校对）承载，对转写速度零影响。
+# 用户若愿用速度换更高准确率，设 ORB_ASR_HOTWORDS_PROMPT=1 才把热词塞回 initial_prompt。
+HOTWORDS_PROMPT = os.environ.get("ORB_ASR_HOTWORDS_PROMPT", "").lower() in ("1", "true", "yes")
 # 设备/精度：asr.conf 或环境变量控制；GPU(cuda) 需先装 cuBLAS/cuDNN（nvidia-*-cu12）
 DEVICE = (os.environ.get("ORB_ASR_DEVICE") or _CFG.get("device") or "auto").strip().lower()
 COMPUTE = (os.environ.get("ORB_ASR_COMPUTE") or _CFG.get("compute") or "auto").strip().lower()
 
 
-def build_prompt(lang, context=None):
-    """拼 initial_prompt：简繁提示 + 热词 + 上一段上下文。
+def build_prompt(lang, context=None, hotwords=None):
+    """拼 initial_prompt：简繁提示 + 热词（请求级 + 环境级）+ 上一段上下文。
 
     Whisper 的 initial_prompt 会被当作"前文"来影响解码，所以塞术语最有效。
     只在中文（或自动检测）时启用；显式指定其它语言时不加，避免干扰。
+
+    hotwords 是**本次请求**的热词（视频标题/标签提炼出来的），和环境变量
+    ORB_ASR_HOTWORDS（用户全局配置）合流：请求级在前——离片越近越相关。
+
+    **长度红线（实测 2026-11-02）**：initial_prompt 是 VAD 切出的**每一段**都要
+    带着重新解码的前缀。60s 音频、140 字 prompt 时解码 3.4s→13.3s（约 4 倍）。
+    所以这里只保留热词本体（拼音、句式模板全砍），总长压到 ~60 字符：
+    热词的「读音消歧」改由 pinyin 字段单独提供，回顾阶段用。
+
+    context 同理只留尾部 60 字。
     """
     if (lang or "").lower() not in ("", "zh"):
         return None
+    words = []
+    for w in re.split(r"[,，、\s]+", str(hotwords or "")):
+        w = w.strip()
+        if w and w not in words:
+            words.append(w)
+    for w in re.split(r"[,，、\s]+", HOTWORDS):
+        w = w.strip()
+        if w and w not in words:
+            words.append(w)
     parts = []
     if PROMPT:
         parts.append(PROMPT)
-    if HOTWORDS:
-        words = [w.strip() for w in re.split(r"[,，、\s]+", HOTWORDS) if w.strip()]
-        if words:
-            parts.append("可能出现的词：" + "、".join(words) + "。")
+    if words:
+        # 逐词累加直到预算用尽：优先放请求级热词（已在 words 前排）
+        budget, picked = 48, []
+        for w in words:
+            if budget - len(w) < 0:
+                break
+            picked.append(w)
+            budget -= len(w)
+        if picked:
+            parts.append("可能出现的词：" + "、".join(picked) + "。")
     if context:
         # 只取尾部：prompt 太长会挤占解码上下文，反而有害
-        parts.append("上一段内容：" + str(context).strip()[-120:])
+        parts.append(str(context).strip()[-60:])
     return "".join(parts) if parts else None
+
+
+def pinyin_lines(words):
+    """热词的拼音串："数组:shuzu, 图商:tushang"。多音字按词组消歧由 pypinyin 处理。
+    只给「多字词」标拼音——单字读音没有区分度，反而添乱。
+
+    为什么单独拎出来而不拼进 initial_prompt：prompt 每段都要重新解码（见
+    build_prompt 的长度红线），拼音串又长；放进**响应**里，让 vidx.js 的回顾
+    阶段（LLM 校对）去用——那边是一次调用，不在乎长。"""
+    try:
+        from pypinyin import lazy_pinyin
+    except Exception:
+        return ""
+    out = []
+    for w in words:
+        if len(w) < 2:
+            continue
+        try:
+            p = "".join(lazy_pinyin(w)).lower()
+            if p and p != w.lower():
+                out.append(w + ":" + p)
+        except Exception:
+            continue
+    return ",".join(out[:12])
 
 
 def _prepare_cuda_dlls():
@@ -241,7 +316,54 @@ _prepare_cuda_dlls()
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import JSONResponse
-from faster_whisper import WhisperModel
+
+
+# ─────────────────── 引擎选择（sensevoice / whisper / auto） ───────────────────
+def _pick_engine() -> str:
+    """决定这一进程用哪条引擎。
+
+    auto 的判定顺序：有 SenseVoice 权重 → sensevoice；否则 whisper。
+    **权重在不在是关键**：只装了 sherpa-onnx 但没有模型文件时走 whisper，
+    而不是起一个"能加载但识别不了"的空引擎。
+    """
+    want = (os.environ.get("ORB_ASR_ENGINE") or _CFG.get("engine") or "auto").strip().lower()
+    if want in ("sensevoice", "sv"):
+        return "sensevoice"
+    if want in ("whisper", "fw", "faster-whisper"):
+        return "whisper"
+    if _sv is not None:
+        try:
+            if _sv.find_model_dir(_LOCAL_BASE) is not None:
+                return "sensevoice"
+        except Exception:
+            pass
+    return "whisper"
+
+
+ENGINE = _pick_engine()
+SV_DIR = None
+SV_ENGINE = None
+SV_ERROR = ""
+if ENGINE == "sensevoice":
+    if _sv is None:
+        SV_ERROR = "sensevoice_engine 导入失败：" + _sv_import_error
+        ENGINE = "whisper"
+    else:
+        try:
+            SV_DIR = _sv.find_model_dir(_LOCAL_BASE)
+            if SV_DIR is None:
+                raise RuntimeError("没找到 SenseVoice 模型（models/sensevoice/model.int8.onnx + tokens.txt）")
+            _threads = int(os.environ.get("ORB_ASR_THREADS") or _CFG.get("threads") or 4)
+            log_early = logging.getLogger("orb-asr")
+            log_early.info("loading sensevoice: %s (threads=%d) ...", SV_DIR, _threads)
+            SV_ENGINE = _sv.SenseVoiceEngine(SV_DIR, num_threads=_threads, language="auto")
+            log_early.info("sensevoice ready (load %.2fs)", SV_ENGINE.load_sec)
+        except Exception as e:  # noqa: BLE001
+            SV_ERROR = str(e)
+            log_early = logging.getLogger("orb-asr")
+            log_early.warning("SenseVoice 起不来，回退 faster-whisper：%s", e)
+            ENGINE = "whisper"
+            SV_ENGINE = None
 
 
 # ─────────────────── 设备/精度解析（auto + 回落写回） ───────────────────
@@ -313,27 +435,33 @@ def resolve_device_compute():
 DEVICE_EFF, COMPUTE_EFF, REQUESTED, FELL_BACK, FALL_REASON = resolve_device_compute()
 MODEL_DOWNLOADED = (MODEL_DIR / "model.bin").is_file()
 
-log.info("loading model: %s (%s/%s) ...", MODEL_DIR, DEVICE_EFF, COMPUTE_EFF)
+# 只有走 whisper 时才 import / 加载。走 SenseVoice 时连 faster_whisper 都不碰 ——
+# 少一个 1.5GB 权重常驻内存，启动也快（whisper small 要几秒，SenseVoice 1.3s）。
+model = None
 _MODEL_ARG = MODEL_DIR          # 先落默认值：except 分支里也要引用（非 ASCII 路径转换后的）
-try:
-    _MODEL_ARG = _ascii_model_path(MODEL_DIR)
-    if str(_MODEL_ARG) != str(MODEL_DIR):
-        log.info("模型路径含非 ASCII，已通过目录联接转换为: %s", _MODEL_ARG)
-    model = WhisperModel(str(_MODEL_ARG), device=DEVICE_EFF, compute_type=COMPUTE_EFF, num_workers=1)
-except Exception as e:
-    if DEVICE_EFF != "cpu":
-        # GPU 路线（显式 cuda 或 auto 探到 cuda）构造失败：回落 CPU/int8 并写回配置
-        log.warning("GPU 不可用，已回落 CPU/int8：%s", e)
-        DEVICE_EFF, COMPUTE_EFF = "cpu", "int8"
-        FELL_BACK, FALL_REASON = True, "GPU 不可用，已回落 CPU/int8"
+if ENGINE == "whisper":
+    from faster_whisper import WhisperModel
+
+    log.info("loading whisper: %s (%s/%s) ...", MODEL_DIR, DEVICE_EFF, COMPUTE_EFF)
+    try:
+        _MODEL_ARG = _ascii_model_path(MODEL_DIR)
+        if str(_MODEL_ARG) != str(MODEL_DIR):
+            log.info("模型路径含非 ASCII，已通过目录联接转换为: %s", _MODEL_ARG)
         model = WhisperModel(str(_MODEL_ARG), device=DEVICE_EFF, compute_type=COMPUTE_EFF, num_workers=1)
-    else:
-        raise
-log.info("model ready (%s/%s)", DEVICE_EFF, COMPUTE_EFF)
-if FELL_BACK:
-    # 只有"显式指定却被改写"才写回：auto 保持 auto，下次启动重新探测
-    _write_conf({"device": DEVICE_EFF, "compute": COMPUTE_EFF})
-    log.info("生效值已写回 asr.conf（device=%s, compute=%s）", DEVICE_EFF, COMPUTE_EFF)
+    except Exception as e:
+        if DEVICE_EFF != "cpu":
+            # GPU 路线（显式 cuda 或 auto 探到 cuda）构造失败：回落 CPU/int8 并写回配置
+            log.warning("GPU 不可用，已回落 CPU/int8：%s", e)
+            DEVICE_EFF, COMPUTE_EFF = "cpu", "int8"
+            FELL_BACK, FALL_REASON = True, "GPU 不可用，已回落 CPU/int8"
+            model = WhisperModel(str(_MODEL_ARG), device=DEVICE_EFF, compute_type=COMPUTE_EFF, num_workers=1)
+        else:
+            raise
+    log.info("whisper ready (%s/%s)", DEVICE_EFF, COMPUTE_EFF)
+    if FELL_BACK:
+        # 只有"显式指定却被改写"才写回：auto 保持 auto，下次启动重新探测
+        _write_conf({"device": DEVICE_EFF, "compute": COMPUTE_EFF})
+        log.info("生效值已写回 asr.conf（device=%s, compute=%s）", DEVICE_EFF, COMPUTE_EFF)
 
 app = FastAPI(title="ORB local ASR")
 
@@ -346,17 +474,35 @@ def health():
       ready      模型已加载、可以识别
       modelDownloaded 模型权重文件是否在位（没下权重时面板应引导一键安装）
       modelsAvailable 本地已下全权重的模型名列表（面板显示"已下载：small / medium"）
+      engine     实际在用哪条引擎（sensevoice / whisper）
+      emotion    这条引擎会不会给情绪（面板据此说明"本地识别能读情绪"，False 就别承诺）
     """
     return {
         "ok": True,
-        "ready": True,
-        "model": str(MODEL_DIR),
-        "modelDownloaded": MODEL_DOWNLOADED,
+        "ready": bool(SV_ENGINE is not None or model is not None),
+        "engine": ENGINE,
+        "engineRequested": (os.environ.get("ORB_ASR_ENGINE") or _CFG.get("engine") or "auto"),
+        "engineError": SV_ERROR or None,
+        "emotion": ENGINE == "sensevoice",
+        "credits": _sv.SenseVoiceEngine.credits if (ENGINE == "sensevoice" and _sv) else None,
+        "sensevoice": {
+            "dir": str(SV_DIR) if SV_DIR else None,
+            "installed": bool(SV_DIR),
+            "loadSec": getattr(SV_ENGINE, "load_sec", None),
+            "model": getattr(SV_ENGINE, "model_name", None),
+        },
+        "model": str(MODEL_DIR) if ENGINE == "whisper" else (str(SV_DIR) if SV_DIR else str(MODEL_DIR)),
+        "modelDownloaded": MODEL_DOWNLOADED if ENGINE == "whisper" else bool(SV_DIR),
         "modelsAvailable": models_available(),
-        "device": DEVICE_EFF,
-        "compute": COMPUTE_EFF,
+        "device": DEVICE_EFF if ENGINE == "whisper" else "cpu",
+        "compute": COMPUTE_EFF if ENGINE == "whisper" else "int8",
         "requested": REQUESTED,
-        "effective": {"device": DEVICE_EFF, "compute": COMPUTE_EFF, "fellBack": FELL_BACK, "reason": FALL_REASON},
+        "effective": {
+            "device": DEVICE_EFF if ENGINE == "whisper" else "cpu",
+            "compute": COMPUTE_EFF if ENGINE == "whisper" else "int8",
+            "fellBack": FELL_BACK,
+            "reason": FALL_REASON,
+        },
         "lang": LANG or "auto",
         "prompt": PROMPT or None,
     }
@@ -370,6 +516,8 @@ async def transcribe(
     beam_size: int = Form(5),
     # 上一段终稿文本：回灌进 initial_prompt，让术语/人名跨句保持一致（上下文回灌）
     context: str = Form(None),
+    # 本次请求的热词（视频标题/标签提炼），逗号/顿号/空格分隔；whisper 引擎拼进 initial_prompt
+    hotwords: str = Form(None),
 ):
     data = await file.read()
     if not data:
@@ -388,14 +536,54 @@ async def transcribe(
         lang = (language or LANG or "").strip()
         if lang.lower() in ("auto", "detect"):
             lang = ""
-        # 中文（或自动）时带上「优先简体 + 热词 + 上一段」提示词；显式指定其它语言时不加，避免干扰
-        prompt = build_prompt(lang, context)
+
+        if ENGINE == "sensevoice" and SV_ENGINE is not None:
+            # SenseVoice（sherpa-onnx）解码端没有热词注入机制——context 也不吃词表。
+            # 热词在这里只能丢弃；纠错由 vidx.js 的「回顾」阶段拿同一份词表找 LLM 做。
+            r = SV_ENGINE.transcribe_wav(Path(tmp), language=lang or "auto", context=context)
+            log.info(
+                "transcribed(sv) %dB (lang=%s %.2fs rtf=%.3f) segs=%d emoc=%s -> %r",
+                len(data), r.get("lang") or "?", r.get("audioSec") or 0, r.get("rtf") or 0,
+                len(r.get("segments") or []), r.get("emotions"), r.get("text"),
+            )
+            return r
+
+        # ---- faster-whisper 兜底 ----
+        # 默认不让请求级热词进 initial_prompt（见 HOTWORDS_PROMPT 注释：避免 4 倍减速）。
+        # 全局 ORB_ASR_HOTWORDS 仍按用户配置生效；pinyin 字段照常回给回顾阶段用。
+        prompt = build_prompt(lang, context, hotwords if HOTWORDS_PROMPT else None)
+        # 拼音串走响应回给调用方（vidx.js 回顾阶段用），不进 prompt（见 build_prompt 长度红线）
+        py_words = []
+        for w in re.split(r"[,，、\s]+", str(hotwords or "")):
+            w = w.strip()
+            if w and w not in py_words:
+                py_words.append(w)
         segments, info = model.transcribe(
             tmp, language=(lang or None), initial_prompt=prompt, beam_size=beam_size, vad_filter=True
         )
-        text = "".join(seg.text for seg in segments).strip()
+        # segments 是生成器，先摊平：下面既要用它拼全文，又要把它原样回给调用方。
+        # 返回分段不只为"字幕"——看视频要按时间把台词贴到对应的截图上，
+        # 只有全文没有时间戳就只能瞎猜顺序。多回一个数组对老调用方是纯增量，不破坏兼容。
+        segs = list(segments)
+        text = "".join(seg.text for seg in segs).strip()
+        out_segs = [
+            {"start": round(float(s.start), 2), "end": round(float(s.end), 2), "text": s.text.strip()}
+            for s in segs if (s.text or "").strip()
+        ]
         log.info("transcribed %dB (%s/%.2fs) -> %r", len(data), info.language, info.duration, text)
-        return {"text": text}
+        # 与 sensevoice 分支同构：多出来的字段给空值，调用方不用写两套判断
+        return {
+            "text": text,
+            "segments": out_segs,
+            "engine": "whisper",
+            "model": "faster-whisper",
+            "lang": info.language or "",
+            "audioSec": round(float(info.duration or 0), 2),
+            "emotions": {},
+            "events": {},
+            "dominant": "",
+            "pinyin": pinyin_lines(py_words),
+        }
     except Exception as e:  # noqa
         log.exception("transcribe failed")
         return JSONResponse({"error": str(e)}, status_code=500)

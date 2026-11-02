@@ -14,12 +14,17 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { shell } = require("electron");
 
-/* 三个长期子目录。名字固定，是为了搬迁时只要搬这三个目录，
-   不用逐个辨认散落的文件；也方便用户在资源管理器里一眼看懂。 */
+/* 长期子目录。名字固定，是为了搬迁时只要搬这几个目录，
+   不用逐个辨认散落的文件；也方便用户在资源管理器里一眼看懂。
+
+   vidx（看视频）：视频/音频解析产物的落盘位置，一个来源一个子目录，
+   内含 meta/transcript/timeline/frames/media 等。它和 recordings 的区别是
+   —— recordings 存"原始录制文件"，vidx 存"解析后的产物"。 */
 const SUBDIRS = Object.freeze({
   recordings: "recordings",
   history: "history",
   screenshots: "screenshots",
+  vidx: "vidx",
 });
 
 /* 临时目录：录屏分片先写到 recordings/.tmp，合并成功才 rename 进 recordings。
@@ -184,6 +189,18 @@ function scanDir(dir, depth, budget) {
   return res;
 }
 
+/** 只数「一层子目录」（跳过 .tmp 这类点开头的工作目录）。
+ *  vidx 目录里一个子目录就是一次解析任务（一个视频/音频来源），
+ *  用户关心的是"我分析过几个视频"，不是里面躺着几百个 meta/frame 文件。 */
+function countSubdirs(dir) {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith(".")).length;
+  } catch {
+    return 0;
+  }
+}
+
 /** 磁盘可用/总容量。statfs 在部分挂载类型上会失败，失败就返回 0（UI 显示「未知」）。 */
 function diskSpace(root) {
   try {
@@ -219,6 +236,10 @@ function stat() {
         path: dir,
         exists,
         files: exists ? scanRes.files : 0,
+        /* 面板对「看视频」显示的是 folders（= 解析过的视频个数），不是 files。
+           一次解析会产生 meta/transcript/timeline/frames/media 几十上百个文件，
+           拿 files 当"视频数"会显示成"274 个文件"，和目录里看到的完全对不上。 */
+        folders: exists ? countSubdirs(dir) : 0,
         bytes: exists ? scanRes.bytes : 0,
         truncated: !!scanRes.truncated,
       };
@@ -392,7 +413,7 @@ function migrate(opts) {
  * 在资源管理器里打开某个子目录。
  * 先建目录再打开：shell.openPath 对不存在的路径会静默失败，
  * 用户点了没反应，很难联想到「目录还没创建」。
- * @param {"recordings"|"history"|"screenshots"} kind
+ * @param {"recordings"|"history"|"screenshots"|"vidx"} kind
  * @returns {Promise<{ok: boolean, path: string|null, error: string|null}>}
  */
 async function openSubdir(kind) {
@@ -412,9 +433,77 @@ async function openSubdir(kind) {
   }
 }
 
+/* ---------------- 看视频产物：原始媒体到期清理 ----------------
+ * 结构约定（与文档第十三章一致）：vidx/<key>/ 下一个来源一个子目录，
+ *   L1 事实  meta.json / probe.json / transcript.json / frames/
+ *   L2 可读  index.md / timeline.md      ← Agent 主读，要长期留着
+ *   L3 结论  report.md / skill.md / evidence.md
+ *   L4 原始  media/                      ← 视频/音频原件，体积全在这里
+ * 用户已拍板：**L4 只留 7 天**，到点删文件。L1~L3 都是纯文本，几十 KB，
+ * 永久保留 —— 删了等于把"看过什么"也一起删掉，而那正是复盘要用的东西。
+ *
+ * 为什么按 mtime 而不是目录名里的日期：录制/下载/转存都可能改写 mtime，
+ * 但"最后一次被写"本来就晚于"第一次进来"，用它当到期判据只会更保守（晚删一点），
+ * 不会误删。反过来按名字里的日期，一旦命名规则变了就整批不清。
+ */
+const VIDX_MEDIA_KEEP_DAYS = 7;
+
+/** 收集 vidx 下所有名为 media/source 的目录（限制深度，防止用户把别的东西塞进来）。 */
+function collectMediaDirs(dir, out, depth) {
+  if (depth > 4) return;
+  let ents = [];
+  try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of ents) {
+    if (!e.isDirectory()) continue;
+    const p = path.join(dir, e.name);
+    if (e.name === "media" || e.name === "source") out.push(p);
+    else collectMediaDirs(p, out, depth + 1);
+  }
+}
+
+/**
+ * 删掉 vidx 下超过 keepDays 天的原始媒体文件（不动文本产物）。
+ * 幂等、可反复调用；任何一步失败都只跳过那一个文件，不中断整轮。
+ * @param {number} [keepDays]
+ * @returns {{ok: boolean, days: number, dirs: number, removed: number, freed: number, failed: number}}
+ */
+function purgeVidxMedia(keepDays) {
+  const days = Number(keepDays) > 0 ? Number(keepDays) : VIDX_MEDIA_KEEP_DAYS;
+  const res = { ok: true, days, dirs: 0, removed: 0, freed: 0, failed: 0 };
+  const root = pathOf("vidx");
+  if (!root) return res;
+  try { if (!fs.existsSync(root)) return res; } catch { return res; }
+  const cut = Date.now() - days * 86400000;
+  const dirs = [];
+  collectMediaDirs(root, dirs, 0);
+  res.dirs = dirs.length;
+  for (const d of dirs) {
+    let ents = [];
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      try {
+        const st = fs.statSync(p);
+        if (!st.isFile()) continue;            // 子目录不碰：宁可少清，不可误删
+        if (st.mtimeMs >= cut) continue;       // 还没到期
+        fs.unlinkSync(p);
+        res.removed += 1;
+        res.freed += st.size;
+      } catch {
+        /* 删不掉（被播放器占着 / 权限）就留着，下一轮再试。
+           绝不能把它算成"已清"，否则用户以为空间回来了。 */
+        res.failed += 1;
+        res.ok = false;
+      }
+    }
+  }
+  return res;
+}
+
 module.exports = {
   SUBDIRS,
   TMP_DIRNAME,
+  VIDX_MEDIA_KEEP_DAYS,
   init,
   resolveRoot,
   pathOf,
@@ -423,4 +512,5 @@ module.exports = {
   setRoot,
   migrate,
   openSubdir,
+  purgeVidxMedia,
 };

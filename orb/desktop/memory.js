@@ -103,6 +103,11 @@ function recencyWeight(ageMs) {
   return 0.08;
 }
 
+/** 复习参考时间：取「最近更新」与「最近被召回」的较新者——被用过就回血（间隔复习强化）。 */
+function reviewedAt(d) {
+  return Math.max(Number(d.updated_at) || 0, Number(d.last_accessed_at) || 0);
+}
+
 function docText(d) {
   return [d.title ?? "", d.content, ...(d.keywords || [])].join(" ");
 }
@@ -154,7 +159,7 @@ function search(query, docsIn, opts = {}) {
     if (raw[di] <= 0) continue;
     let w = 1;
     if (now !== null && docs[di].importance < 3 && !(raw[di] >= 0.85 * maxRaw)) {
-      w = recencyWeight(now - docs[di].updated_at);
+      w = recencyWeight(now - reviewedAt(docs[di]));
     }
     hits.push({
       id: docs[di].id, level: docs[di].level, title: docs[di].title,
@@ -206,7 +211,7 @@ function keywordHitScore(query, docs, opts = {}) {
     const coverage = len > 0 ? overlap / len : 0;
     let w = 1;
     if (now !== null && docs[di].importance < 3 && !(raw[di] >= 0.85 * maxRaw)) {
-      w = recencyWeight(now - docs[di].updated_at);
+      w = recencyWeight(now - reviewedAt(docs[di]));
     }
     const impW = 1 + (docs[di].importance - 1) * 0.25;
     const titleHit = tokenize(docs[di].title ?? "").some((t) => qTf.has(t));

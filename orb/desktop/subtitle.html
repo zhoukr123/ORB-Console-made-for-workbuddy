@@ -42,6 +42,19 @@
     --line-old: rgba(38,42,51,.5);
     --line-draft: #5f5e5a;
   }
+  /* 透明皮肤（v3）：没有底板就没有框 —— 窗口只剩文字本身。
+     文字用深色投影兜可读性（浅色桌面上白字也读得清），这就是"透明字幕"。 */
+  html[data-skin="none"] {
+    --pill-bg: transparent;
+    --pill-border: transparent;
+    --sheen: transparent;
+    --fg: #fff;
+    --line-cur: var(--accent, #9ecbff);
+    --line-old: rgba(255,255,255,.55);
+    --line-draft: #cfcfcf;
+  }
+  html[data-skin="none"] #wrap { border-color: transparent; box-shadow: none; }
+  html[data-skin="none"] .line { text-shadow: 0 1px 3px rgba(0,0,0,.85), 0 0 6px rgba(0,0,0,.5); }
   /* 整个窗体都是拖拽区（右下角留原生缩放边）；按钮 no-drag */
   #wrap {
     -webkit-app-region: drag;
@@ -94,8 +107,19 @@
   }
   function applyCfg(p) {
     if (!p) return;
-    if (p.skin === 'dark' || p.skin === 'light') document.documentElement.setAttribute('data-skin', p.skin);
-    if (typeof p.borderColor === 'string') applyBorder(p.borderColor);
+    const sk = p.skin;
+    if (sk === 'dark' || sk === 'light' || sk === 'none') document.documentElement.setAttribute('data-skin', sk);
+    /* 透明皮肤没有框，用户自选描边色不再套用（残留会画出一条莫名其妙的线） */
+    if (sk === 'none') applyBorder('');
+    else if (typeof p.borderColor === 'string') applyBorder(p.borderColor);
+    /* 字体色：空=跟皮肤默认墨色；非空=用户自定义（与「文字」模块共用 orb.font.color，
+       面板挑了自由色后，这里实时字幕浮窗也跟着变，避免"烧进去的字是白的、浮窗却是绿的"）。 */
+    const fm = /^#([0-9a-fA-F]{6})$/.exec(String(p.color || '').trim());
+    if (fm) {
+      const hex = '#' + fm[1];
+      document.documentElement.style.setProperty('--fg', hex);
+      document.documentElement.style.setProperty('--line-cur', hex);
+    }
   }
   function render(items, draft) {
     // 终稿行（保留最近 2 条历史）

@@ -1,10 +1,20 @@
 # ORB 本地离线语音识别 —— 用户端一键安装时获取（**不随任何发布物分发**）
 #
 # 安装方式：asr\prepare.ps1（由面板「安装本地离线识别」按钮触发），
-# 它会先建 asr/venv，再 pip install -r 本文件，最后下载 small 权重。
+# 它会先建 asr/venv，再 pip install -r 本文件，最后下权重。
 # 这些依赖（含 av → FFmpeg 解码库）属用户自行获取，许可证由各自项目提供，
 # 详见 THIRD-PARTY-NOTICES.md「仅在用户端运行时安装的」一节。
+#
+# ---- 主引擎：SenseVoice-Small（int8 ONNX，走 sherpa-onnx）----
+# 钉在 1.13.x：2.0 起要求 onnxruntime 的 OrtApi 28，而本机常见组合里
+# （venv 的 ort + system32 残留的 1.17.1）会直接抛
+# "The requested API version [28] is not available"。1.13.8 实测可用。
+sherpa-onnx>=1.13.8,<2
+onnxruntime>=1.17
+
+# ---- 兜底引擎：faster-whisper（没有 SenseVoice 权重时用；纯文字，无情绪）----
 faster-whisper>=1.0.0
+
 fastapi>=0.110.0
 uvicorn>=0.29.0
 huggingface-hub>=0.23.0

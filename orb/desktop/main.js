@@ -17,6 +17,12 @@ const snipaste = require("./snipaste");
 /* 桌面模糊背景：抓桌面实拍垫给玻璃态面板与录制条（原因见文件头）。
    2026-10-23 起窗口自身用 setContentProtection 排除出截图，所以抓图不再需要藏窗。 */
 const glassbg = require("./glassbg");
+/* 站点凭据库（系统加密）：设置 › 安全 的「我的站点」，并接管视觉模型 API Key。
+   密文落 userData/vault.bin；不碰 state、不在顶层调用 safeStorage（ready-gated）。 */
+const vault = require("./vault");
+/* 看视频（探底/抽帧/台词）。顶层 require 是安全的：模块内不碰 ready-gated API，
+   net / app.getPath 全部在调用点取 —— 和 vault 同一条纪律。 */
+const vidx = require("./vidx");
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
@@ -56,10 +62,41 @@ storage.init({
   log: (...a) => log(...a),
 });
 
+/* 站点凭据库：密文落 userData/vault.bin。
+ * file 写成函数是有意的 —— app.getPath("userData") 必须在 setPath 之后才有正确值，
+ * 注入时若求值成字符串就会定死在旧目录上（与 stateFile() 同一套延迟求值约定）。 */
+vault.init({
+  file: () => path.join(app.getPath("userData"), "vault.bin"),
+  log: (...a) => log(...a),
+});
+
+/* 看视频解析管道：探底/抽帧/台词 → <vidx>/<key>/{index.md,timeline.md,...}。
+ * 全部四个参数都是**延迟求值**的函数：userData 要等 setPath、vidxDir 要等
+ * storage 按 state.storageRoot 算完，注入时求值就会定死在旧目录上。 */
+vidx.init({
+  userData: () => app.getPath("userData"),
+  vidxDir: () => storage.pathOf("vidx"),
+  getState: () => state,
+  /* 台词回顾要用的对话模型：复用「设置 › 视觉」的主力/备选槽位（主力优先）。
+     密钥在 vault 里（密文），明文只在这条受控通道里出现一瞬 —— 所以由主进程注入，
+     不让 vidx 自己读 state（那里已经没有明文了，读了只会是空串）。 */
+  model: () => {
+    const v = state.vision || {};
+    for (const k of ["primary", "backup"]) {
+      const s = v[k];
+      if (!s || !s.baseUrl || !s.model) continue;
+      const apiKey = vault.getVisionKey(k) || (s.apiKey ?? "");
+      if (!apiKey && s.model !== "__selftest__") continue;
+      return { slot: k, baseUrl: s.baseUrl, model: s.model, apiKey, extra: s.extra || {} };
+    }
+    return null;
+  },
+  log: (...a) => log(...a),
+});
+
 /* 长期记忆引擎：与 storage 同根，记忆库落在 <DATA_ROOT>/memory/memory.json。
  * 同样走注入而非 require 环（见 storage 头注）。所有读写经主进程 safeHandle，
- * 渲染进程只通过 preload 白名单的 invoke 调用，绝不直接碰文件。 */
-memory.init({
+ * 渲染进程只通过 preload 白名单的 invoke 调用，绝不直接碰文件。 */memory.init({
   dataRoot: DATA_ROOT,
   getState: () => state,
   setState: (patch) => saveState(patch),
@@ -88,6 +125,9 @@ glassbg.init({
    MP4。这是唯一碰它的地方，行协议的解析全在 cap-native.js 里。
    注意：它只是"更优路径"，MediaRecorder(VP9/WebM) 链路原样保留做兜底。 */
 const capNative = require("./cap-native");
+/* 本轮原生录制用的物理矩形（null = 整屏）。只给「录屏字幕推算成片尺寸」兜底用：
+   orb-cap 的 done 行会回真实 w/h，只有在老包/异常收尾拿不到时才用到它。 */
+let capNativeRect = null;
 capNative.init({ log: (...a) => log(...a) });
 
 /* helper 在录制中意外退出（崩溃 / 被任务管理器杀掉）：提示用户，并让面板把状态机
@@ -99,6 +139,26 @@ capNative.on("exit", (info) => {
   log("[cap-native] 意外退出:", JSON.stringify(info));
   const where = info.path ? "（已写入的部分保留在 " + info.path + "）" : "";
   sendToPanel("notice", CAP_NATIVE_EXIT_PREFIX + "，已保留已写入的部分" + where);
+});
+
+/* 音频到底开没开：选了来源却没开成（设备被独占 / 没有麦克风 / 缺 AAC 编码器）
+   必须**当场**告诉用户 —— 不然又是一次"录完才发现没声音"。 */
+capNative.on("audio", (info) => {
+  if (!info) return;
+  if (info.on) { log("[cap-native] 音频已开:", info.sources, info.rate + "Hz/" + info.ch + "ch"); return; }
+  const why = info.reason === "no-device" ? "系统里没有可用的音频设备"
+    : info.reason === "no-encoder" ? "系统缺少 AAC 编码器"
+      : info.reason === "disabled" ? "当前设置为不录音频" : "音频设备打开失败";
+  log("[cap-native] 音频未开启:", why);
+  if (info.reason !== "disabled") {
+    sendToPanel("notice", "本次录制没有声音：" + why + "。请检查「设置 › 录屏 › 音频来源」与系统声音/麦克风。");
+  }
+});
+
+/* helper 每秒一帧里带的两路电平 —— 设置页那两条电平条接的是真数据 */
+capNative.on("frame", (f) => {
+  if (!f) return;
+  sendToPanel("cap-level", { sys: f.sys || 0, mic: f.mic || 0 });
 });
 
 /* 打包态：把随包附带的使用说明释放到数据目录（DATA_ROOT 可写，用户也能自己改） */
@@ -383,10 +443,25 @@ const state = {
      bx/by 小框中心点（0~1，相对录制画面）；bw/bh 宽高（0~1，相对画面宽/高）
      归一化口径让面板内的「预览模式」与日后的真实悬浮窗共用同一份配置。 */
   recCam: { enabled: false, shape: "round", ratio: "4:3", customRatio: "", bx: 0.76, by: 0.72, bw: 0.115, bh: 0.15 },
+  /* 录屏字幕（设置 › 录屏 / 全屏预览）：
+     bx/by 字幕框中心点（0~1，相对录制画面）；bw/bh 宽高（0~1，相对画面宽/高）；
+     frame 外框款式 square 方框 / round 圆角。
+     与 recCam 同口径（相对录制区域），全屏预览里被 clamp 在录制范围内：
+     字幕只能出现在成片画面里，和摄像头小框一样。
+     字体色复用「文字」模块（orb.font.color，空=跟 --fg），背景色复用实时字幕窗
+     （subSkin/subBorderColor）——这里不另立颜色字段，避免两处配色打架。 */
+  subBox: { bx: 0.5, by: 0.9, bw: 0.6, bh: 0.09 },
+  subFrame: "round",
   /* 实时字幕窗（subtitle.html）：与悬浮条同一套皮肤逻辑，默认深纱 ——
      字幕要压在视频上，深底不抢画面。 */
   subSkin: "dark",
   subBorderColor: "",
+  /* 字幕字体色：空=跟皮肤默认墨色（深纱白字 / 灰白纱深字）；非空=用户自定义，
+     同时驱动"烧进画面的字幕(ASS)"与"实时字幕浮窗"。与「文字」模块共用 orb.font.color。 */
+  subFontColor: "",
+  /* 录屏字幕总开关：false 时面板「生成字幕并校对 / 生成SRT+LLM 校对」两个键禁用，
+     录制完也不会去碰字幕生成（若以后加录制后自动生成，这里就是唯一的闸门）。 */
+  subEnabled: true,
   /* 主题自选：交互键 + 运行态高亮的换色（不含红绿黄状态色，也不含品牌紫）。
    *   themeAccent 每套主题一个 '#rrggbb' 或 ''（默认）
    *   themeGrad   极光（t3）的渐变搭配 id，'' = 默认极光
@@ -436,6 +511,7 @@ function loadState() {
     normalizeRecPrefs();
     normalizeRecAudio();
     normalizeRecCam();
+    normalizeSubBox();
     normalizeThemePrefs();
     normalizeScalars();
   } catch (e) {
@@ -504,9 +580,24 @@ function validRatioStr(s) {
   if (/^\d+(?:\.\d+)?$/.test(t) && Number(t) > 0) return t;
   return "";
 }
+/* 录屏字幕框：与 recCam 同口径（相对录制区域），款式白名单 + 数值夹取。 */
+function normalizeSubBox() {
+  const b = state.subBox && typeof state.subBox === "object" ? state.subBox : {};
+  const f01 = (v, d) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(1, Number(v))) : d);
+  const fSize = (v, d) => (Number.isFinite(Number(v)) ? Math.max(0.05, Math.min(1, Number(v))) : d);
+  state.subBox = {
+    bx: f01(b.bx, 0.5),
+    by: f01(b.by, 0.9),
+    bw: fSize(b.bw, 0.6),
+    bh: fSize(b.bh, 0.09),
+  };
+  state.subFrame = state.subFrame === "square" ? "square" : "round";
+}
 /* 主题自选与字幕窗偏好的归一化：同样只做"加载后一次"，形状不对就回默认值。 */
 function normalizeThemePrefs() {
-  state.subSkin = state.subSkin === "light" ? "light" : "dark";
+  state.subSkin = ["light", "none"].includes(state.subSkin) ? state.subSkin : "dark";
+  state.subEnabled = !!state.subEnabled;
+  state.subFontColor = /^#[0-9a-fA-F]{6}$/.test(String(state.subFontColor || "")) ? String(state.subFontColor).toLowerCase() : "";
   state.subBorderColor = /^#[0-9a-fA-F]{6}$/.test(String(state.subBorderColor || ""))
     ? String(state.subBorderColor).toLowerCase()
     : "";
@@ -1727,9 +1818,12 @@ function createSubtitleWin() {
   subWin.webContents.once("did-finish-load", () => { sendSubCfg(); pushThemeVars(); });
 }
 
-/* 字幕窗偏好（皮肤 + 描边色）。默认深纱：字幕压在视频上，深底不抢画面。 */
+/* 字幕窗偏好（皮肤 + 描边色 + 字体色 + 录屏字幕总开关）。默认深纱：字幕压在视频上，深底不抢画面。 */
 function subCfg() {
-  return { skin: state.subSkin, borderColor: state.subBorderColor || "" };
+  /* 字体色 key 用 color（与 set-sub-theme 的入参 p.color、subtitle.html applyCfg
+     的读取 p.color 对齐），避免主进程回推的字段名和浮窗读取的字段名不一致导致
+     "自由色挑了却不生效"。state.subFontColor 是落盘字段，subCfg 输出时改名。 */
+  return { skin: state.subSkin, borderColor: state.subBorderColor || "", color: state.subFontColor || "", enabled: !!state.subEnabled };
 }
 function sendSubCfg() {
   if (!subWin || subWin.isDestroyed()) return;
@@ -2478,7 +2572,14 @@ function clearThemeImage() {
  * 文件本身原地不动，面板把路径拼进任务文本，后台 Agent 凭路径读取。
  * ⚠️ 本文件模块顶层不许直接调用 dialog 等 ready-gated API（见文件头事故注释），
  *    所以所有逻辑都收在这些函数体内，由 safeHandle 回调触发。 */
-const ATTACH_MAX_SIZE = 100 * 1024 * 1024;   // 单文件 100MB 上限，超过跳过并计数
+/* 单文件上限 1GB。
+ * 从 100MB 放宽到这里是为了视频/音频：一段 30 分钟 1080p 的 mp4 就能到 300MB+，
+ * 100MB 会把用户最想喂的东西挡在门外。代价是"引用语义"下面板只是拿个路径，
+ * 不读字节、不拷贝，所以 1GB 不会拖慢任何东西 —— 真正读文件的是后台 Agent 或
+ * 视频解析管道（那边按需分段读）。
+ * ⚠️ 放宽的是"允许选中"，不是"允许把整个文件塞进 IPC"：
+ *    attach-preview 仍然只给 ≤4MB 的图片做缩略图，视频一律不出缩略图。 */
+const ATTACH_MAX_SIZE = 1024 * 1024 * 1024;
 const ATTACH_PREVIEW_MAX = 4 * 1024 * 1024;  // 缩略图 4MB 上限（与主题背景图一致）
 const ATTACH_IMG_EXT = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
 
@@ -2490,7 +2591,10 @@ async function pickAttachments() {
         name: "常见格式",
         extensions: [
           "png", "jpg", "jpeg", "gif", "webp", "bmp",
-          "mp4", "mov", "webm", "mp3", "wav", "m4a", "flac",
+          /* 视频/音频：把容器格式尽量列全。少列一个的后果是用户在"常见格式"
+             过滤下根本看不到自己的文件，只能切"所有文件"才找得到。 */
+          "mp4", "mov", "webm", "mkv", "avi", "m4v", "flv", "ts", "wmv",
+          "mp3", "wav", "m4a", "flac", "aac", "ogg", "opus", "wma", "amr",
           "pdf", "txt", "md", "doc", "docx", "xls", "xlsx",
           "ppt", "pptx", "csv", "json", "zip",
         ],
@@ -2500,10 +2604,10 @@ async function pickAttachments() {
     properties: ["openFile", "multiSelections"],
   });
   /* 取消不是错误：回空列表，面板什么都不做 */
-  if (r.canceled || !r.filePaths.length) return { ok: true, files: [], skipped: 0, failed: 0 };
+  if (r.canceled || !r.filePaths.length) return { ok: true, files: [], skipped: 0, failed: 0, maxSize: ATTACH_MAX_SIZE };
   const files = [];
   /* skipped 与 failed 分开数：一个是「超限」一个是「读不到」，面板要分开提示，
-     混在一起会让「文件被删/无权限」也报成「超过 100MB」，文案不精确。 */
+     混在一起会让「文件被删/无权限」也报成「超过上限」，文案不精确。 */
   let skipped = 0;
   let failed = 0;
   for (const p of r.filePaths) {
@@ -2513,7 +2617,9 @@ async function pickAttachments() {
     if (size > ATTACH_MAX_SIZE) { skipped++; continue; }
     files.push({ name: path.basename(p), path: p, size });
   }
-  return { ok: true, files, skipped, failed };
+  /* maxSize 一并回给面板：上限文案必须由这里出，面板写死数字就会和这里走散
+     （100MB 改 1GB 那次就是面板还印着"超过 100MB"）。 */
+  return { ok: true, files, skipped, failed, maxSize: ATTACH_MAX_SIZE };
 }
 
 /* 缩略图：只读图片扩展名且 ≤4MB，转 data URL 回面板；
@@ -2692,6 +2798,19 @@ app.whenReady().then(async () => {
   state.firstRun = !state.envWizardDone;
   logPath = path.join(app.getPath("userData"), "orb.log");
   log("[app] 启动，日志:", logPath);
+  /* 明文 API Key → 密文库。位置三条件缺一不可：
+     1) 在 whenReady 里 —— safeStorage 是 ready-gated，模块顶层调用会抛，而顶层
+        一抛就静默掐掉后面所有 safeHandle 注册（面板「No handler registered」）；
+     2) 在 loadState() 之后 —— 迁移读 state.vision，早一步调用时 state 还是空的，
+        会走"没有明文字段"的分支静默 return，迁移永远不发生（实测踩过：日志里
+        一条 [vault] 都没有）；
+     3) 在 logPath 赋值之后 —— 否则 log() 只往控制台打、不落盘，出问题查不到。 */
+  migrateVisionKeysToVault();
+  /* 看视频原始媒体的到期清理：必须在 logPath 赋值之后（否则清理日志落不了盘），
+     也要在 ensureSubdirs 之后（目录都还没建出来时扫了个空）。
+     这里挂常驻定时器，配合启动这次，覆盖"开着不重启"的用法。 */
+  purgeVidxMedia();
+  setInterval(purgeVidxMedia, VIDX_PURGE_EVERY);
   /* 截屏态轮询：常驻，不等面板打开。必须放在 logPath 赋值之后（见上面的说明）。 */
   startSnipPoll();
 
@@ -2709,6 +2828,35 @@ app.whenReady().then(async () => {
     });
   } catch (e) {
     log("[app] 设置麦克风权限处理器失败:", e.message);
+  }
+
+  /* ---------------- 录屏兜底链路的系统声 ----------------
+   * 原生组件的采集是 helper 里用 WASAPI 做的（orb-cap.exe --audio）。万一 helper
+   * 不可用、回退到 MediaRecorder，系统声就只能靠这条：新版 Electron 只允许通过
+   * setDisplayMediaRequestHandler 给 getDisplayMedia 配 loopback 音频 ——
+   * 老的 chromeMediaSource:'desktop' 约束在 Windows 上拿不到系统声了。
+   * 没有 audio:'loopback' 时（老 Electron）这里返回的流只有画面，面板会再退回
+   * getUserMedia，行为与改动前一致，不会因为"想要声音"而录不了。 */
+  try {
+    if (session.defaultSession && typeof session.defaultSession.setDisplayMediaRequestHandler === "function") {
+      session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+        try {
+          const list = await desktopCapturer.getSources({
+            types: ["screen"],
+            thumbnailSize: { width: 0, height: 0 },
+          });
+          const src = (list || []).find((s) => s.id === "screen:0:0") || (list || [])[0];
+          if (!src) return callback({});
+          callback({ video: src, audio: "loopback" });
+        } catch (e) {
+          log("[cap] displayMedia 取源失败:", (e && e.message) || String(e));
+          callback({});
+        }
+      }, { useSystemPicker: false });
+      log("[cap] 已安装 getDisplayMedia 处理器（系统声走 loopback）");
+    }
+  } catch (e) {
+    log("[cap] 安装 getDisplayMedia 处理器失败（系统声将不可用）:", (e && e.message) || String(e));
   }
 
   const alive = await waitForBridge(1);
@@ -4123,10 +4271,26 @@ function finishCamStage(msg) {
     bw: size(c.bw),
     bh: size(c.bh),
   };
+  /* 字幕框（可选）：全屏预览模式下覆盖层会一起回传；几何同样只做夹取，
+     款式/颜色的合法性交给 set-subbox 与渲染层。 */
+  let sub = null;
+  const s = msg && msg.sub;
+  if (s && [s.bx, s.by, s.bw, s.bh].every((v) => Number.isFinite(num(v))) && num(s.bw) > 0 && num(s.bh) > 0) {
+    sub = {
+      bx: clamp01(s.bx),
+      by: clamp01(s.by),
+      bw: Math.min(1, Math.max(0.05, num(s.bw))),
+      bh: Math.min(1, Math.max(0.05, num(s.bh))),
+      frame: s.frame === "square" ? "square" : "round",
+    };
+    log("[camstage] 字幕框 " + (Math.round(sub.bw * 1000) / 10) + "% × "
+      + (Math.round(sub.bh * 1000) / 10) + "% @ "
+      + (Math.round(sub.bx * 1000) / 10) + "," + (Math.round(sub.by * 1000) / 10));
+  }
   log("[camstage] 摆位 " + (Math.round(cam.bw * 1000) / 10) + "% × "
     + (Math.round(cam.bh * 1000) / 10) + "% @ "
     + (Math.round(cam.bx * 1000) / 10) + "," + (Math.round(cam.by * 1000) / 10));
-  pending.resolve({ ok: true, cam });
+  pending.resolve({ ok: true, cam, sub });
 }
 
 safeHandle("cam-stage-init", () => {
@@ -4153,7 +4317,11 @@ safeHandle("cam-stage-open", async (_e, opts) => {
 
   /* 初始几何由面板给（它才是 camPrefs 的主人）；缺项就按主进程的当前配置兜底 */
   normalizeRecCam();
+  normalizeSubBox();
   const src = (o.cam && typeof o.cam === "object") ? o.cam : state.recCam;
+  /* 字幕框：面板传 sub（含字体色/皮肤，因为只有渲染层知道 orb.font 与 subSkin 的现值）；
+     缺项就用主进程落盘的 state.subBox。 */
+  const subIn = (o.sub && typeof o.sub === "object") ? o.sub : {};
   /* 录制区域（0..1 比例）：面板显式传，摆位层据此决定"框最远能摆到哪"。
      不靠跨窗口读 localStorage —— 那依赖 file:// 同源共享，换个分区或写盘晚一拍就错。
      面板全屏时传的是 {0,0,1,1} 而不是省略，所以这里"有 region 且合法"就一律照传。 */
@@ -4170,6 +4338,17 @@ safeHandle("cam-stage-open", async (_e, opts) => {
       by: Number.isFinite(Number(src.by)) ? Number(src.by) : state.recCam.by,
       bw: Number.isFinite(Number(src.bw)) ? Number(src.bw) : state.recCam.bw,
       bh: Number.isFinite(Number(src.bh)) ? Number(src.bh) : state.recCam.bh,
+    },
+    sub: {
+      bx: Number.isFinite(Number(subIn.bx)) ? Number(subIn.bx) : state.subBox.bx,
+      by: Number.isFinite(Number(subIn.by)) ? Number(subIn.by) : state.subBox.by,
+      bw: Number.isFinite(Number(subIn.bw)) ? Number(subIn.bw) : state.subBox.bw,
+      bh: Number.isFinite(Number(subIn.bh)) ? Number(subIn.bh) : state.subBox.bh,
+      frame: (subIn.frame === "square" || subIn.frame === "round") ? subIn.frame : state.subFrame,
+      color: typeof subIn.color === "string" ? subIn.color : "",
+      skin: ["light", "none"].includes(subIn.skin) ? subIn.skin : state.subSkin,
+      fontScale: Number.isFinite(Number(subIn.fontScale)) ? Math.max(0.5, Math.min(2.5, Number(subIn.fontScale))) : 1,
+      fontFamily: typeof subIn.fontFamily === "string" ? subIn.fontFamily.slice(0, 80) : "",
     },
     dip: { w: disp.size.width, h: disp.size.height },
     sf: disp.scaleFactor || 1,
@@ -4914,6 +5093,20 @@ function purgeStaleParts() {
   } catch { /* 临时目录读不了不影响启动 */ }
 }
 
+/* 看视频产物：原始媒体（L4）留 7 天，到点删文件；L1~L3 纯文本永久保留。
+ * 启动跑一次 + 每 6 小时再跑一次 —— 只在启动跑的话，长开的窗口一个礼拜不重启
+ * 就永远不会清理，而用户最可能的用法恰恰就是"开着不管"。
+ * 删除量很小（一次最多几个大文件），同步 unlink 不会卡界面。 */
+function purgeVidxMedia() {
+  let r;
+  try { r = storage.purgeVidxMedia(); }
+  catch (e) { log("[vidx] 原始媒体清理异常:", (e && e.message) || String(e)); return; }
+  if (!r) return;
+  if (r.removed) log("[vidx] 清理超过", r.days, "天的原始媒体:", r.removed, "个文件，释放", Math.round(r.freed / 1048576) + "MB");
+  if (r.failed) log("[vidx] 有", r.failed, "个媒体文件删不掉（可能被占用），下轮再试");
+}
+const VIDX_PURGE_EVERY = 6 * 60 * 60 * 1000;
+
 safeHandle("cap-sources", async () => {
   /* types 必须显式给：不带 types 时 Electron 会连音频源一起枚举，
      屏幕/窗口列表里混进一堆看不见的东西，面板展示会很乱。 */
@@ -5079,7 +5272,10 @@ safeHandle("cap-close", (_e, sessionId, opts) => {
     out.valid = true;   // 非 MP4 不做容器校验，交给将来的 webm 处理
   }
 
-  saveState({ lastRecording: { path: target, bytes: size, ms, mime: s.mime || "" } });
+  /* w/h 一并落盘：录屏字幕写 ASS 时要按**成片像素**换算坐标与字号，
+     少了这两个值就只能拿区域比例 × 屏幕尺寸去猜（换过显示器/切过缩放就错）。
+     MediaRecorder 链路没有可信尺寸，这里留 0，字幕侧回落到屏幕尺寸推算。 */
+  saveState({ lastRecording: { path: target, bytes: size, ms, mime: s.mime || "", w: Number(s.w) || 0, h: Number(s.h) || 0 } });
   log("[cap] 录制完成:", target, size, "bytes /", ms, "ms");
   return out;
 }, () => ({ ok: false, path: "", bytes: 0, ms: 0, error: "结束录制失败（详见 .orbdata/orb.log）" }));
@@ -5119,6 +5315,7 @@ safeHandle("cap-native-start", async (_e, opts) => {
   const rect = (o.rect && typeof o.rect === "object" && Number(o.rect.w) > 0)
     ? o.rect
     : ratioToPhysical(o.ratio);
+  capNativeRect = rect ? { w: Number(rect.w) || 0, h: Number(rect.h) || 0 } : null;
   const dir = storage.pathOf("recordings");
   try {
     fs.mkdirSync(dir, { recursive: true });
@@ -5134,6 +5331,9 @@ safeHandle("cap-native-start", async (_e, opts) => {
        必须在 start **之前**打开：DXGI 复制是连续的，晚一帧成片里就有一帧带自己。
        start 失败要在 catch 里撤回来，否则用户永远截不到自己的界面。 */
     setCaptureShield(true);
+    /* 音频来源只在**这一处**从设置里取：面板不知道也不该知道采集细节。
+       空/none 就是纯视频（旧行为），system/mic/mix 由 helper 用 WASAPI 采。 */
+    const audioSrc = (state.recAudio && state.recAudio.source) || "none";
     let r;
     try {
       r = await capNative.start({
@@ -5142,6 +5342,7 @@ safeHandle("cap-native-start", async (_e, opts) => {
         bitrate: o.bitrate,
         display: o.display,
         rect,
+        audio: audioSrc,
       });
     } catch (e) {
       /* 这里**不要**撤排除：setCaptureShield 现在是引用计数，内层减一次、
@@ -5149,9 +5350,14 @@ safeHandle("cap-native-start", async (_e, opts) => {
          ORB 自己）。撤排除统一交给外层那一次。 */
       throw e;
     }
+    const aud = (r && r.audio) || { on: false, reason: "unknown" };
     log("[cap-native] 开始录制:", target, r.w + "x" + r.h + "@" + r.fps,
-      rect ? ("区域 " + rect.x + "," + rect.y + " " + rect.w + "x" + rect.h) : "整屏");
-    return { ok: true, mode: "native", w: r.w, h: r.h, fps: r.fps, path: target, rect: rect || null };
+      rect ? ("区域 " + rect.x + "," + rect.y + " " + rect.w + "x" + rect.h) : "整屏",
+      aud.on ? ("音频 " + aud.sources + " " + aud.rate + "Hz/" + aud.ch + "ch") : ("音频未开（" + aud.reason + "）"));
+    return {
+      ok: true, mode: "native", w: r.w, h: r.h, fps: r.fps, path: target,
+      rect: rect || null, audio: aud,
+    };
   } catch (e) {
     setCaptureShield(false);   // 启动失败要把排除撤回来，否则用户永远截不到自己的界面
     log("[cap-native] 启动失败:", (e && e.message) || String(e));
@@ -5204,8 +5410,9 @@ safeHandle("cap-native-stop", async () => {
     valid: true,
     durationMs: Number(saved.ms) || 0,
   };
-  /* 与 cap-close 一样落一份 lastRecording：面板/托盘下次启动要靠它显示"最近的录屏" */
-  saveState({ lastRecording: { path: out.path, bytes: out.bytes, ms: out.ms, mime: out.mime } });
+  /* 与 cap-close 一样落一份 lastRecording：面板/托盘下次启动要靠它显示"最近的录屏"。
+     w/h 是成片真实像素（orb-cap 的 done 行带回），录屏字幕按它换算 ASS 坐标。 */
+  saveState({ lastRecording: { path: out.path, bytes: out.bytes, ms: out.ms, mime: out.mime, w: out.w, h: out.h, rect: capNativeRect || null } });
   log("[cap-native] 录制完成:", out.path, out.bytes, "bytes /", out.ms, "ms");
   return out;
 }, { ok: false, error: "停止原生录制失败（详见 .orbdata/orb.log）", path: "" });
@@ -5420,11 +5627,14 @@ safeHandle("set-rectheme", (_e, patch) => {
 /* ---------- 实时字幕窗偏好（皮肤 + 描边色） ---------- */
 safeHandle("set-sub-theme", (_e, patch) => {
   const p = patch || {};
-  const skin = p.skin === "light" ? "light" : (p.skin === "dark" ? "dark" : state.subSkin);
+  const skin = ["light", "none"].includes(p.skin) ? p.skin : state.subSkin;
   const borderRaw = typeof p.borderColor === "string" ? p.borderColor.trim().toLowerCase() : "";
   const borderColor = borderRaw === "" || /^#[0-9a-f]{6}$/.test(borderRaw) ? borderRaw : (state.subBorderColor || "");
+  const colorRaw = typeof p.color === "string" ? p.color.trim().toLowerCase() : "";
+  const fontColor = colorRaw === "" || /^#[0-9a-f]{6}$/.test(colorRaw) ? colorRaw : (state.subFontColor || "");
+  const enabled = typeof p.enabled === "boolean" ? p.enabled : state.subEnabled;
   normalizeThemePrefs();
-  saveState({ subSkin: skin, subBorderColor: borderColor });
+  saveState({ subSkin: skin, subBorderColor: borderColor, subFontColor: fontColor, subEnabled: enabled });
   sendSubCfg();                       // 字幕窗开着就当场生效
   return { ok: true, sub: subCfg() };
 }, { ok: false, error: "保存字幕窗偏好失败" });
@@ -5466,6 +5676,320 @@ safeHandle("set-reccam", (_e, patch) => {
   saveState({ recCam: next });
   return { ok: true, rec: { ...next } };
 }, { ok: false, error: "保存摄像头小框设置失败" });
+
+/* ---------- 录屏字幕框（设置 › 录屏 / 全屏预览） ----------
+ * 与 set-reccam 同模式：几何一处校验、一处落盘。subFrame 方框/圆角。
+ * 位置口径与 recCam 一致（相对录制画面的中心点 + 宽高比例）。 */
+safeHandle("set-subbox", (_e, patch) => {
+  const p = patch || {};
+  normalizeSubBox();
+  const f01 = (v, d) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(1, Number(v))) : d);
+  const fSize = (v, d) => (Number.isFinite(Number(v)) ? Math.max(0.05, Math.min(1, Number(v))) : d);
+  const next = {
+    bx: f01(p.bx, state.subBox.bx),
+    by: f01(p.by, state.subBox.by),
+    bw: fSize(p.bw, state.subBox.bw),
+    bh: fSize(p.bh, state.subBox.bh),
+  };
+  const nextFrame = ["square", "round"].includes(p.frame) ? p.frame : state.subFrame;
+  state.subBox = next;
+  state.subFrame = nextFrame;
+  saveState({ subBox: next, subFrame: nextFrame });
+  return { ok: true, sub: { ...next, frame: nextFrame } };
+}, { ok: false, error: "保存录屏字幕框设置失败" });
+
+/* ---------- 录屏字幕：转写 + 落盘 ----------
+ * 录屏产物 → 本地识别服务（19876）转写 → 回带时间轴的 segments；
+ * 校对后的字幕文本再由 sub-save 写回 recordings（与 mp4 同名 .ass / .srt）。
+ * 只开两条具名通道：不给通用 fs / spawn —— 白名单不能变万能钥匙。 */
+/* 转写最近一段带音频的录屏：本地识别服务（19876）兜底，没有就明确报错。
+ * 返回 {ok, segments, box, frame, size, path, stem} 或 {ok:false, error}。
+ * sub-transcribe 与 sub-llm-proof 共用，避免两份转写逻辑走散。 */
+async function transcribeLastRecording() {
+  const rec = state.lastRecording && typeof state.lastRecording === "object" ? state.lastRecording : null;
+  const p = rec && rec.path;
+  if (!p || !fs.existsSync(p)) return { ok: false, error: "没有可用的录屏产物，先录一段再来。" };
+  let buf;
+  try { buf = fs.readFileSync(p); } catch (e) { return { ok: false, error: "读不到录屏文件：" + ((e && e.message) || e) }; }
+  /* 本地识别服务必须在线（可选组件：不装/没启动就明确告知，不静默） */
+  try {
+    const h = await fetch("http://127.0.0.1:19876/health", { signal: AbortSignal.timeout(1500) });
+    if (!h.ok) throw new Error("health " + h.status);
+  } catch {
+    return { ok: false, error: "本地识别服务没在运行。请先在设置 › 语音里启动语音识别，再回来生成字幕。" };
+  }
+  let j;
+  try {
+    const fd = new FormData();
+    fd.append("file", new Blob([buf], { type: "video/mp4" }), path.basename(p));
+    fd.append("model", "whisper-1");
+    const res = await fetch("http://127.0.0.1:19876/v1/audio/transcriptions", {
+      method: "POST", body: fd, signal: AbortSignal.timeout(1800000),   /* 30 分钟上限：长录屏也够 */
+    });
+    if (!res.ok) return { ok: false, error: "识别服务返回 HTTP " + res.status };
+    j = await res.json();
+  } catch (e) {
+    return { ok: false, error: "转写失败：" + ((e && e.message) || e) };
+  }
+  const segs = Array.isArray(j && j.segments) ? j.segments : [];
+  const rows = segs
+    .map((s) => ({ start: Number(s.start) || 0, end: Number(s.end) || 0, text: String(s.text || "").trim() }))
+    .filter((s) => s.text && s.end > s.start);
+  if (!rows.length) return { ok: false, error: "没识别出台词（录屏可能没录音频）。" };
+  normalizeSubBox();
+  /* 成片尺寸：优先用录制时记录的真实像素（orb-cap 的 done 行），
+     老记录 / MediaRecorder 链路没有就按「区域比例 × 主屏物理尺寸」推算。
+     ASS 的 PlayResX/Y 与字号全靠它，差一个 DPI 就会整体偏小或偏大。 */
+  const size = (() => {
+    const w = Number(rec.w) || 0, h = Number(rec.h) || 0;
+    if (w >= 16 && h >= 16) return { w, h, from: "record" };
+    try {
+      const d = screen.getPrimaryDisplay();
+      const sf = d.scaleFactor || 1;
+      /* 区域录制没回 w/h 时用录制时记下的物理矩形；整屏就是屏幕物理尺寸 */
+      const rg = rec.rect && Number(rec.rect.w) > 0 ? rec.rect : null;
+      const rw = rg ? Number(rg.w) : d.size.width * sf;
+      const rh = rg ? Number(rg.h) : d.size.height * sf;
+      /* orb-cap 对奇数边长向下取偶 —— 推算值跟着取偶，否则 1px 偏差会让字幕框慢慢偏 */
+      return { w: Math.max(16, rw - (rw % 2)), h: Math.max(16, rh - (rh % 2)), from: "screen" };
+    } catch { return { w: 0, h: 0, from: "none" }; }
+  })();
+  return {
+    ok: true,
+    segments: rows,
+    box: { ...state.subBox },
+    frame: state.subFrame,
+    size,
+    path: p,
+    stem: path.basename(p, path.extname(p)),
+  };
+}
+
+safeHandle("sub-transcribe", async () => {
+  return await transcribeLastRecording();
+}, () => ({ ok: false, error: "转写通道不可用" }));
+
+/* LLM 校对用的对话槽位：复用「设置 › 视觉」的主力/备选（主力优先）。
+ * 密钥在 vault（密文），这里只在发起请求时取一瞬。 */
+function activeLLMSlot() {
+  const v = state.vision || {};
+  for (const k of ["primary", "backup"]) {
+    const s = v[k];
+    if (!s || !s.baseUrl || !s.model) continue;
+    const apiKey = vault.getVisionKey(k) || (s.apiKey ?? "");
+    if (!apiKey && s.model !== "__selftest__") continue;
+    return { slot: k, baseUrl: s.baseUrl, model: s.model, apiKey, extra: s.extra || {} };
+  }
+  return null;
+}
+
+/* 从宽格式里抠出字符串数组：支持纯 JSON 数组、```json 围栏、行内数组。容错优先。 */
+function parseProofJson(text, expectLen) {
+  let t = String(text || "");
+  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(t);
+  if (fence) t = fence[1];
+  const a = t.indexOf("["), b = t.lastIndexOf("]");
+  if (a >= 0 && b > a) t = t.slice(a, b + 1);
+  let arr;
+  try { arr = JSON.parse(t); } catch { return null; }
+  if (!Array.isArray(arr)) return null;
+  const out = [];
+  for (let i = 0; i < expectLen; i++) {
+    const v = arr[i];
+    if (typeof v === "string") out.push(v);
+    else if (v && typeof v === "object" && typeof v.text === "string") out.push(v.text);
+    else if (v != null) out.push(String(v));
+    else out.push("");
+  }
+  /* 数量对不上或某行空，宁可回退到原始识别结果，避免时间轴错位 */
+  if (out.length !== expectLen || out.some((x) => x === "")) return null;
+  return out;
+}
+
+/* 转写后用 LLM 校对：修正同音字、标点、明显口误；保留原始时间轴。
+ * 没配 LLM 槽位 / LLM 调用失败 / 解析失败，全部退化为原样返回（仍可手动逐句校对），
+ * 绝不阻断流程 —— 这是分发到没配模型的机器上也不报错的设计底线。 */
+safeHandle("sub-llm-proof", async () => {
+  const tr = await transcribeLastRecording();
+  if (!tr.ok) return tr;                                  // 转写阶段失败：原样透传错误
+  const slot = activeLLMSlot();
+  if (!slot) {
+    return { ok: true, proofed: false,
+      note: "没配置可用的 LLM 槽位（设置 › 视觉）。已按原始识别结果返回，可手动校对。",
+      segments: tr.segments, box: tr.box, frame: tr.frame, size: tr.size, path: tr.path, stem: tr.stem };
+  }
+  const numbered = tr.segments.map((s, i) => (i + 1) + ". " + s.text).join("\n");
+  const sys = "你是字幕校对助手。下面是一段录音识别出的台词，每行前面有序号。请修正其中的同音错别字、明显的语音识别错误和标点，保持原意和口语风格，不要增删内容、不要合并或拆分句子。只输出一个 JSON 数组，元素为字符串，顺序与输入严格对应，不要任何额外说明。";
+  const user = "请校对以下台词（按行返回）：\n" + numbered;
+  let text;
+  try {
+    const body = {
+      model: slot.model,
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: user },
+      ],
+      temperature: 0.2,
+      ...(slot.extra && typeof slot.extra === "object" ? slot.extra : {}),
+    };
+    const resp = await fetch(slot.baseUrl.replace(/\/$/, "") + "/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + slot.apiKey },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(180000),
+    });
+    if (!resp.ok) return { ok: true, proofed: false, note: "LLM 返回 HTTP " + resp.status + "，已按原始识别结果返回。",
+      segments: tr.segments, box: tr.box, frame: tr.frame, size: tr.size, path: tr.path, stem: tr.stem };
+    const dj = await resp.json();
+    text = dj && dj.choices && dj.choices[0] && dj.choices[0].message && dj.choices[0].message.content;
+    text = typeof text === "string" ? text.trim() : "";
+  } catch (e) {
+    return { ok: true, proofed: false, note: "LLM 调用失败：" + ((e && e.message) || e) + "。已按原始识别结果返回。",
+      segments: tr.segments, box: tr.box, frame: tr.frame, size: tr.size, path: tr.path, stem: tr.stem };
+  }
+  if (!text) {
+    return { ok: true, proofed: false, note: "LLM 未返回内容，已按原始识别结果返回。",
+      segments: tr.segments, box: tr.box, frame: tr.frame, size: tr.size, path: tr.path, stem: tr.stem };
+  }
+  const corrected = parseProofJson(text, tr.segments.length);
+  if (!corrected) {
+    return { ok: true, proofed: false, note: "LLM 返回格式无法解析，已按原始识别结果返回。",
+      segments: tr.segments, box: tr.box, frame: tr.frame, size: tr.size, path: tr.path, stem: tr.stem };
+  }
+  const segs = tr.segments.map((s, i) => ({ start: s.start, end: s.end, text: corrected[i] != null ? corrected[i] : s.text }));
+  return { ok: true, proofed: true, note: "LLM 已校对 " + segs.length + " 句。",
+    segments: segs, box: tr.box, frame: tr.frame, size: tr.size, path: tr.path, stem: tr.stem };
+}, { ok: false, error: "LLM 校对通道不可用" });
+
+safeHandle("sub-save", (_e, payload) => {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const rec = state.lastRecording && typeof state.lastRecording === "object" ? state.lastRecording : null;
+  if (!rec || !rec.path) return { ok: false, error: "没有录屏产物" };
+  const dir = storage.pathOf("recordings");
+  const stem = path.basename(rec.path, path.extname(rec.path));
+  const ass = typeof p.ass === "string" ? p.ass : "";
+  const srt = typeof p.srt === "string" ? p.srt : "";
+  if (!ass && !srt) return { ok: false, error: "字幕内容为空" };
+  const outAss = path.join(dir, stem + ".ass");
+  const outSrt = path.join(dir, stem + ".srt");
+  try {
+    if (ass) fs.writeFileSync(outAss, ass, "utf8");
+    if (srt) fs.writeFileSync(outSrt, srt, "utf8");
+  } catch (e) { return { ok: false, error: "写字幕失败：" + ((e && e.message) || e) }; }
+  log("[sub] 字幕已保存:", outAss, outSrt);
+  return { ok: true, ass: ass ? outAss : "", srt: srt ? outSrt : "" };
+}, (_e) => ({ ok: false, error: "字幕保存通道不可用" }));
+
+/* 定位已生成的字幕（资源管理器里选中）。
+   渲染层传来的路径不能当"打开任意文件"用：只放行录屏目录里的字幕/视频。 */
+safeHandle("sub-reveal", (_e, p) => {
+  const dir = path.resolve(storage.pathOf("recordings")) + path.sep;
+  const abs = path.resolve(String(p || ""));
+  if (!abs.startsWith(dir) || !/\.(srt|ass|mp4)$/i.test(abs)) {
+    return { ok: false, error: "只能定位录屏目录里的文件" };
+  }
+  if (!fs.existsSync(abs)) return { ok: false, error: "文件不存在（可能已被移走）" };
+  shell.showItemInFolder(abs);
+  return { ok: true, dir: path.dirname(abs) };
+}, { ok: false, error: "定位文件失败" });
+
+/* 读回已落盘的字幕文本。
+   存在的理由只有一个：用户可能用记事本改了 .srt。烧录/再次保存前必须先从磁盘读一遍，
+   否则烧的还是内存里那份旧台词 —— 那才是最气人的"我明明改了"。 */
+safeHandle("sub-read", () => {
+  const rec = state.lastRecording && typeof state.lastRecording === "object" ? state.lastRecording : null;
+  if (!rec || !rec.path) return { ok: false, error: "没有录屏产物" };
+  const dir = storage.pathOf("recordings");
+  const stem = path.basename(rec.path, path.extname(rec.path));
+  const rd = (p) => {
+    try { return { text: fs.readFileSync(p, "utf8"), mtime: fs.statSync(p).mtimeMs }; }
+    catch { return null; }
+  };
+  const srt = rd(path.join(dir, stem + ".srt"));
+  const ass = rd(path.join(dir, stem + ".ass"));
+  if (!srt && !ass) return { ok: false, error: "还没有字幕文件（先生成一次）" };
+  return { ok: true, srt, ass, stem, video: rec.path };
+}, { ok: false, error: "读取字幕失败" });
+
+/* ---------- 可选：烧成硬字幕 ----------
+ * 不捆绑 ffmpeg：一是 GPL 传染性（打包分发要连带源码义务），二是一个 full build 几十 MB。
+ * 只调用用户本机**已经装了**的那个；没装就如实说没装，不静默退回。
+ * 关键做法：把 ASS 复制成一个 ASCII 临时名、并把 ffmpeg 的 cwd 设成录屏目录，
+ * 这样 -vf 里只写一个裸文件名 —— libass 的滤镜参数对盘符 ':' 和路径分隔符 '\'
+ * 转义极其挑剔，绕开比转义它可靠（中文路径更是必踩）。 */
+let ffmpegPathCache = "";            // 只缓存**命中**结果：没装时每次都重扫，用户装完不用重启
+function findFfmpeg() {
+  if (ffmpegPathCache && fs.existsSync(ffmpegPathCache)) return ffmpegPathCache;
+  ffmpegPathCache = "";
+  const dirs = String(process.env.PATH || "").split(path.delimiter);
+  for (const d of dirs) {
+    if (!d) continue;
+    const p = path.join(d.replace(/^"|"$/g, ""), "ffmpeg.exe");
+    /* 用 accessSync 而不是 existsSync：PATH 里可能挂着失效的 Store 别名，
+       existsSync 在某些别名上会 EACCES 把整轮探测打断。 */
+    try { fs.accessSync(p, fs.constants.X_OK); ffmpegPathCache = p; break; } catch { /* 下一个 */ }
+  }
+  return ffmpegPathCache;
+}
+
+safeHandle("sub-burn", async (_e, payload) => {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const rec = state.lastRecording && typeof state.lastRecording === "object" ? state.lastRecording : null;
+  if (!rec || !rec.path || !fs.existsSync(rec.path)) return { ok: false, error: "没有可用的录屏产物" };
+  const dir = storage.pathOf("recordings");
+  const stem = path.basename(rec.path, path.extname(rec.path));
+  const assAbs = path.resolve(String(p.ass || path.join(dir, stem + ".ass")));
+  if (!assAbs.startsWith(path.resolve(dir) + path.sep) || !/\.ass$/i.test(assAbs) || !fs.existsSync(assAbs)) {
+    return { ok: false, error: "找不到可用的 .ass 字幕（先生成并保存字幕）" };
+  }
+  const exe = findFfmpeg();
+  if (!exe) {
+    return {
+      ok: false, code: "no-ffmpeg",
+      error: "没在本机 PATH 里找到 ffmpeg。烧录要它把字幕绘进画面；装好后可以重试（ORB 不捆绑，避免 GPL 与体积）。",
+    };
+  }
+  const tmpName = "orb-burn-" + Date.now().toString(36) + ".ass";
+  const tmpAbs = path.join(dir, tmpName);
+  const outAbs = uniqueFile(dir, stem + "-硬字幕", ".mp4");
+  fs.copyFileSync(assAbs, tmpAbs);
+  /* crf 20 / preset medium：1080p 采集素材重编一次基本看不出差别；
+     -c:a copy 音频原样搬过去（不重编就没有二代损失），失败再退 aac。 */
+  const base = ["-y", "-hide_banner", "-loglevel", "error", "-i", path.basename(rec.path),
+    "-vf", "ass=" + tmpName, "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+    "-pix_fmt", "yuv420p", "-movflags", "+faststart"];
+  const run = (audioArgs) => new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(exe, [...base, ...audioArgs, path.basename(outAbs)], { cwd: dir, windowsHide: true });
+    } catch (e) { resolve({ code: -1, err: (e && e.message) || String(e) }); return; }
+    let err = "";
+    try { child.stderr.on("data", (b) => { err = (err + b.toString()).slice(-4000); }); } catch { /* ignore */ }
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } }, 3600000);
+    child.on("error", (e) => { clearTimeout(timer); resolve({ code: -1, err: (e && e.message) || String(e) }); });
+    child.on("close", (code) => { clearTimeout(timer); resolve({ code, err }); });
+  });
+  const t0 = Date.now();
+  try {
+    let r = await run(["-c:a", "copy"]);
+    /* 源音频不是 mp4 能装的格式（比如 PCM）时 copy 会失败 —— 只对这种情况退一次 aac */
+    if (r.code !== 0) {
+      try { fs.unlinkSync(outAbs); } catch { /* 可能还没建出来 */ }
+      log("[sub] 音频 copy 失败，退回 aac:", r.err);
+      r = await run(["-c:a", "aac", "-b:a", "192k"]);
+    }
+    if (r.code !== 0) {
+      try { fs.unlinkSync(outAbs); } catch { /* ignore */ }
+      return { ok: false, error: "烧录失败（ffmpeg 退出码 " + r.code + "）：" + (r.err || "").split("\n").filter(Boolean).slice(-2).join(" ") };
+    }
+    let bytes = 0;
+    try { bytes = fs.statSync(outAbs).size; } catch { /* ignore */ }
+    log("[sub] 硬字幕已生成:", outAbs, bytes, "bytes /", Date.now() - t0, "ms");
+    return { ok: true, path: outAbs, bytes, ms: Date.now() - t0 };
+  } finally {
+    try { fs.unlinkSync(tmpAbs); } catch { /* ignore */ }
+  }
+}, { ok: false, error: "烧录通道不可用" });
 
 /* ---------- 主题自选：交互色 / 渐变搭配 / 自定义背景图 ----------
  * 一处校验、一处落盘。渲染层（设置 › 外观）只发 patch，默认值口径以这里为准，
@@ -5526,6 +6050,10 @@ ipcMain.handle("get-state", () => ({
   /* 录屏音频来源与摄像头小框（设置 › 录屏）：none/system/mic/mix 与形状/比例/摆位 */
   recAudio: { source: state.recAudio.source },
   recCam: { ...state.recCam },
+  /* 录屏字幕框：位置/大小（相对录制区域的 0..1 比例）+ 框款式。
+     ASS 只在渲染层拼，所以这里必须把当前几何下发——否则面板只能靠 sub-transcribe
+     的返回值猜，用户先摆位后识别、或反过来，都会用错一份几何。 */
+  subBox: { ...state.subBox, frame: state.subFrame },
   /* 实时字幕窗偏好：皮肤 + 自选描边色（默认深纱） */
   sub: subCfg(),
   /* 主题自选：每套主题的交互色、极光渐变搭配 id、自定义渐变两端、自定义主题背景图 */
@@ -5552,8 +6080,8 @@ ipcMain.handle("get-state", () => ({
   },
   vision: {
     maxSteps: state.vision?.maxSteps ?? 12,
-    primary: slotInfo(state.vision?.primary),
-    backup: slotInfo(state.vision?.backup),
+    primary: slotInfo(state.vision?.primary, "primary"),
+    backup: slotInfo(state.vision?.backup, "backup"),
   },
   visionPresets: VISION_PRESETS,
   /* 首跑向导：firstRun 由 envWizardDone 反算；渲染层据此决定要不要自动弹一次，
@@ -5576,12 +6104,14 @@ ipcMain.handle("get-state", () => ({
   workspace: path.join(__dirname, "..", ".."),
 }));
 
-function slotInfo(s) {
+function slotInfo(s, slot) {
   return {
     provider: s?.provider ?? "custom",
     baseUrl: s?.baseUrl ?? "",
     model: s?.model ?? "",
-    hasKey: !!(s?.apiKey),
+    /* apiKey 已迁进 vault（密文），state 里不再留明文。
+       两个来源都看：vault 优先，state 里还有就说明迁移没跑或本机不支持加密。 */
+    hasKey: !!(s && s.apiKey) || !!vault.hasVisionKey(slot),
   };
 }
 
@@ -5661,7 +6191,127 @@ safeHandle("cm-clear", () => {
   return { ok: true };
 }, { ok: false });
 
-safeHandle("get-vision-key", (_e, slot) => state.vision?.[slot || "primary"]?.apiKey ?? "", "");
+/* 把 state 里躺着的明文 API Key 搬进 vault。
+ * 幂等：vault 里已有同一槽位的 key 就直接把 state 的明文删掉（老版本升级上来时
+ * 可能两边都有）。加密不可用时整个跳过 —— 不能因为加密不可用就让视觉模型用不了。
+ * 必须在 app ready 之后调用：safeStorage.isEncryptionAvailable() 是 ready-gated。 */
+function migrateVisionKeysToVault() {
+  try {
+    if (!vault.isAvailable()) {
+      log("[vault] 系统加密不可用，API Key 仍以明文保存在 state");
+      return;
+    }
+    const v = state.vision;
+    if (!v || typeof v !== "object") return;
+    let moved = 0;
+    let hadPlain = false;
+    const nextVision = { ...v };
+    for (const slot of ["primary", "backup"]) {
+      const cur = v[slot];
+      if (!cur || typeof cur !== "object") continue;
+      const plain = typeof cur.apiKey === "string" ? cur.apiKey : "";
+      if (!plain) continue;
+      hadPlain = true;
+      if (!vault.getVisionKey(slot)) {
+        const r = vault.setVisionKey(slot, plain);
+        if (!r.ok) {
+          log("[vault] 迁移失败，该槽位保留明文:", r.error || "");
+          continue;
+        }
+      }
+      const copy = { ...cur };
+      delete copy.apiKey;
+      nextVision[slot] = copy;
+      moved += 1;
+    }
+    /* 必须 moved>0 才写回：只删不改的情况（vault 已有、state 也有）也要清掉明文，
+       所以 hadPlain 且 moved 为 0 时同样要写一次 —— 用 moved 判会漏。 */
+    if (hadPlain) {
+      saveState({ vision: nextVision });
+      log("[vault] 已把", moved, "个 API Key 迁入密文库，state 中的明文已清除");
+    }
+  } catch (e) {
+    log("[vault] 迁移异常:", (e && e.message) || String(e));
+  }
+}
+
+/* 明文只在这一条通道里出现（面板拿它去调 /api/vlm 和「测试连接」）。
+   优先 vault；vault 里没有就回退 state —— 迁移没跑（本机不支持加密）时仍能工作。 */
+safeHandle("get-vision-key", (_e, slot) => {
+  const k = slot === "backup" ? "backup" : "primary";
+  return vault.getVisionKey(k) || (state.vision?.[k]?.apiKey ?? "");
+}, "");
+
+/* ---------- 站点凭据库（设置 › 安全 › 我的站点） ----------
+ * 只存「站点 + 账户」，不存密码：persist 分区的 Cookie 已能长期保留登录态，
+ * 存密码的收益（自动重登）会被验证码/OTP 抵消，风险却高出很多。
+ * 密文落 userData/vault.bin（safeStorage/DPAPI），脱库走到别的机器就解不开。 */
+safeHandle("vault-sites", () => {
+  try { return { ok: true, encrypted: vault.isAvailable(), sites: vault.listSites() }; }
+  catch (e) { return { ok: false, error: String((e && e.message) || e), sites: [] }; }
+}, { ok: false, sites: [] });
+
+safeHandle("vault-site-add", (_e, input) => {
+  try {
+    const r = vault.addSite(input);
+    return r && r.ok ? { ...r, encrypted: vault.isAvailable() } : r;
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+}, { ok: false, error: "保存站点失败" });
+
+safeHandle("vault-site-update", (_e, id, patch) => {
+  try { return vault.updateSite(id, patch); }
+  catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+}, { ok: false, error: "更新站点失败" });
+
+safeHandle("vault-site-remove", (_e, id) => {
+  try { return vault.removeSite(id); }
+  catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+}, { ok: false, error: "删除站点失败" });
+
+safeHandle("vault-site-touch", (_e, id) => {
+  try { return vault.touchSite(id) || { ok: true }; }
+  catch { return { ok: false }; }
+}, { ok: false });
+
+/* ---------- 看视频（探底 / 抽帧 / 台词）----------
+ * 四件事拆成四条通道，是为了面板能分别表达「没装运行时」「正在跑」「装失败」：
+ *   vidx-runtime  只问状态（1 分钟缓存，探测要 spawn 进程，别每次点都跑）
+ *   vidx-install  建 vidxrt 精简运行时（几分钟，IPC 一直挂着直到出结果）
+ *   vidx-run      跑一次解析（长任务，进度靠 vidx-status 轮询）
+ *   vidx-status   当前任务进度
+ * 注意 install 与 run 都不做超时：pip 装包和转写都可能跑十几分钟，
+ * 中途 kill 只会留下半装的 venv（比等更糟）。 */
+safeHandle("vidx-runtime", () => vidx.runtimeStatus(false), { ok: false, kind: "none" });
+
+safeHandle("vidx-install", async () => {
+  try {
+    /* 确认交给面板做（面板自己有确认浮层，且能顺带把体积/来源写清楚）。
+       主进程这里只管装 —— 不弹原生对话框，避免把"面板内浮层"的约定破掉。 */
+    const r = await vidx.installRuntime((p) => {
+      /* 只打关键节点，pip 的逐行输出进日志就够，不占 IPC */
+      if (p && (p.pct === 4 || p.pct === 12 || p.pct === 30 || p.pct === 90 || p.pct === 100)) {
+        log("[vidx] 安装:", p.msg);
+      }
+    });
+    if (!r.ok) log("[vidx] 安装失败:", r.error);
+    return r;
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}, () => ({ ok: false, error: "安装失败（详见 .orbdata/orb.log）" }));
+
+safeHandle("vidx-status", () => vidx.status(), { ok: false, running: false });
+
+safeHandle("vidx-run", async (_e, src) => {
+  try {
+    const r = await vidx.run(src);
+    /* block 是给任务文本用的引用块：把"该读哪几个文件"直接写进派发内容，
+       否则 Agent 拿到一个目录又要自己 ls 一遍（还常常 ls 不到子目录）。 */
+    return r && r.ok ? { ...r, block: vidx.promptBlock(r) } : r;
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}, () => ({ ok: false, error: "解析失败（详见 .orbdata/orb.log）" }));
 
 /* 首跑向导「已看过」标记落盘。
  * 走专属通道，不搭 set-vision 的顺风车：把 UI 标记混进视觉配置的写入语义里既别扭，
@@ -5692,14 +6342,27 @@ safeHandle("set-vision", (_e, patch) => {
       if (!("model" in p)) merged.model = preset.model;
       if (!("extra" in p)) merged.extra = preset.extra ? { ...preset.extra } : {};
     }
-    if (merged.apiKey === null) delete merged.apiKey;   // 传 null 表示保持原值
+    /* 密钥改走 vault（密文）：
+         · 传 null 或根本不传 = 保持原值
+         · 传空串 = 清除
+         · 传字符串 = 覆盖
+       写库失败（本机不支持系统加密）就整体拒绝，绝不悄悄降级成明文。 */
+    if ("apiKey" in p && p.apiKey !== null) {
+      const r = vault.setVisionKey(slot, typeof p.apiKey === "string" ? p.apiKey : "");
+      if (!r.ok) return { ok: false, error: "API Key 保存失败：" + (r.error || "未知原因") };
+    }
+    delete merged.apiKey;               // state 里永远不留明文
     next[slot] = merged;
   }
 
   saveState({ vision: next });
   return {
     ok: true,
-    vision: { maxSteps: next.maxSteps, primary: slotInfo(next.primary), backup: slotInfo(next.backup) },
+    vision: {
+      maxSteps: next.maxSteps,
+      primary: slotInfo(next.primary, "primary"),
+      backup: slotInfo(next.backup, "backup"),
+    },
   };
 }, () => ({ ok: false, error: "视觉设置保存失败（详见 .orbdata/orb.log）" }));
 safeHandle("bridge-token", () => {

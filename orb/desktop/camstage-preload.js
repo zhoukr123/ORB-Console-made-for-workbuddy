@@ -5,11 +5,14 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("orb", {
   /** 页面加载后主动拉初始状态（比"创建完再 send"少一个竞态 —— region 那边踩过）：
-   *  @returns {Promise<{cam:{shape,ratio,customRatio,bx,by,bw,bh}, dip:{w,h}, sf:number,
-   *                     region:({x,y,w,h}|null)}>} */
+   *  @returns {Promise<{cam:{shape,ratio,customRatio,bx,by,bw,bh},
+   *                     sub:{bx,by,bw,bh,frame,color,skin},
+   *                     dip:{w,h}, sf:number, region:({x,y,w,h}|null)}>} */
   init: () => ipcRenderer.invoke("cam-stage-init"),
-  /** @param {{kind:'ok'|'cancel', cam?:{shape,ratio,bx,by,bw,bh}}} msg
+  /** @param {{kind:'ok'|'cancel', cam?:{shape,ratio,bx,by,bw,bh},
+   *           sub?:{bx,by,bw,bh,frame}}} msg
    *  kind='ok' 时 bx/by 是**中心点占屏比例**、bw/bh 是**占屏宽高比例**（0..1），
-   *  与主进程 recCam 的既有口径完全一致，保存时不需要再折算。 */
+   *  与主进程 recCam / subBox 的既有口径完全一致，保存时不需要再折算。
+   *  sub 只在全屏预览模式回传（字幕框）；缺少它时主进程按"没改字幕"处理。 */
   done: (msg) => ipcRenderer.send("cam-stage-done", msg),
 });

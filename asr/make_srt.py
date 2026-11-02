@@ -14,7 +14,7 @@ import sys
 import time
 
 # 复用 asr_server 里已加载好的模型与配置（导入时会加载模型，约 10 秒）
-from asr_server import model, MODEL_DIR, LANG  # noqa: E402
+from asr_server import model, MODEL_DIR, LANG, build_prompt, HOTWORDS_PROMPT  # noqa: E402
 
 
 def fmt_ts(t: float) -> str:
@@ -33,6 +33,9 @@ def main():
     ap.add_argument("-o", "--out", help="输出 .srt 路径（默认与源同名）")
     ap.add_argument("--lang", default=None, help="语言，如 zh / en；留空用服务默认（%s）" % (LANG or "auto"))
     ap.add_argument("--beam", type=int, default=5, help="beam size，1 更快、5 更准（默认 5）")
+    ap.add_argument("--hotwords", default=None,
+                   help="热词（逗号/顿号/空格分隔）：优先写法，助专名识别。需同时设 "
+                        "ORB_ASR_HOTWORDS_PROMPT=1 才注入转写（会慢 4~4.5 倍，离线可接受）")
     a = ap.parse_args()
 
     src = os.path.abspath(a.input)
@@ -43,8 +46,10 @@ def main():
     lang = (a.lang if a.lang is not None else (LANG or "")) or None
     if lang and lang.lower() in ("auto", "detect"):
         lang = None
-    # 中文（或自动）时带「优先简体」提示词
-    prompt = "以下是普通话的句子。" if (lang in (None, "zh")) else None
+    # 复用 asr_server 的 build_prompt：中文时带「优先简体」提示词；
+    # 若设了 ORB_ASR_HOTWORDS_PROMPT=1 且传了 --hotwords，就把热词拼进 initial_prompt
+    # （离线生成，慢 4~4.5 倍可接受；不设置则只走简体提示，和旧版行为一致）。
+    prompt = build_prompt(lang, None, a.hotwords if HOTWORDS_PROMPT else None)
 
     print(f"模型: {MODEL_DIR}\n源文件: {src}\n输出: {out}\n开始转写…\n")
     t0 = time.time()

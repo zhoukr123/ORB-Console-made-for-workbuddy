@@ -113,6 +113,21 @@ contextBridge.exposeInMainWorld("orb", {
 
 
 
+  /* 站点凭据库（设置 › 安全 › 我的站点）。
+     只存「站点 + 账户」，密码永不落盘；密文由主进程的 safeStorage 保护。
+     注意：这里**没有任何通道能读出密文或密钥**，能做的只有增删改查这四条。 */
+  vaultSites: () => ipcRenderer.invoke("vault-sites"),
+  vaultSiteAdd: (input) => ipcRenderer.invoke("vault-site-add", input),
+  vaultSiteUpdate: (id, patch) => ipcRenderer.invoke("vault-site-update", id, patch),
+  vaultSiteRemove: (id) => ipcRenderer.invoke("vault-site-remove", id),
+  vaultSiteTouch: (id) => ipcRenderer.invoke("vault-site-touch", id),
+  /* 看视频：运行时探测 / 安装 / 跑一次解析 / 查进度。
+     渲染层拿不到 python 路径，也拿不到任何 spawn 能力 —— 只能发这四条。 */
+  vidxRuntime: () => ipcRenderer.invoke("vidx-runtime"),
+  vidxInstall: () => ipcRenderer.invoke("vidx-install"),
+  vidxStatus: () => ipcRenderer.invoke("vidx-status"),
+  vidxRun: (src) => ipcRenderer.invoke("vidx-run", src),
+
   /* 屏幕录制：抓流与编码在渲染进程（MediaRecorder 直出 MP4），
      主进程负责落盘收尾。capChunk 传 ArrayBuffer，不接受 base64。 */
   capSources: () => ipcRenderer.invoke("cap-sources"),
@@ -137,6 +152,22 @@ contextBridge.exposeInMainWorld("orb", {
      回 { ok, cam:{shape,ratio,bx,by,bw,bh} }；取消回 { ok:false, cancelled:true }。
      落盘仍走 setRecCam —— 校验只有一处，别在这里再写第二套。 */
   camStageOpen: (opts) => ipcRenderer.invoke("cam-stage-open", opts || {}),
+  /* 全屏预览：同一个覆盖层通道，opts 里带 sub（字幕框）时就是"区域 + 摄像头 + 字幕"整合预览。
+     回 { ok, cam, sub }；取消回 { ok:false, cancelled:true }。 */
+  /* 录屏字幕框设置（位置/尺寸/款式）：与 setRecCam 同模式，一处校验落盘。 */
+  setSubBox: (patch) => ipcRenderer.invoke("set-subbox", patch),
+  /* 录屏字幕：对最近一次录屏转写（回 segments + 字幕框口径），校对后写回 recordings。
+     两条具名通道，不暴露 fs / 通用 invoke。 */
+  subTranscribe: () => ipcRenderer.invoke("sub-transcribe"),
+  subSave: (payload) => ipcRenderer.invoke("sub-save", payload),
+  /* 在资源管理器里定位已生成的字幕；只放行录屏目录里的 .srt/.ass/.mp4 */
+  subReveal: (p) => ipcRenderer.invoke("sub-reveal", p),
+  /* 读回磁盘上的 .srt/.ass：用户可能用记事本改过，烧录前必须复核一遍 */
+  subRead: () => ipcRenderer.invoke("sub-read"),
+  /* 可选：烧成硬字幕。主进程自己找本机 ffmpeg（不捆绑），找不到回 code:"no-ffmpeg" */
+  subBurn: (payload) => ipcRenderer.invoke("sub-burn", payload),
+  /* 转写后调 LLM 校对（修同音字/标点），没配模型或失败都退化为原样返回 */
+  subLlmProof: () => ipcRenderer.invoke("sub-llm-proof"),
 
   /* 截屏（Snipaste）：装没装 / 唤起框选 / 首跑引导卡已读。
      唤起后截图由 Snipaste 直写 <存储根>/screenshots，字节不经过 IPC。 */
@@ -246,6 +277,8 @@ contextBridge.exposeInMainWorld("orb", {
   onPrefill: (cb) => on("prefill", cb),
   onRecordMark: (cb) => on("record-mark", cb),   // 录制时的手动打点热键
   onNotice: (cb) => on("notice", cb),
+  /* 录制时的音频电平（0..100，每秒一帧）—— 设置页那两条电平条用它 */
+  onCapLevel: (cb) => on("cap-level", cb),
   onPinState: (cb) => on("pin-state", cb),
   onCoordMode: (cb) => on("coord-mode", cb),
   onBorderMode: (cb) => on("border-mode", cb),

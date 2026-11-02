@@ -4171,8 +4171,16 @@ function asrPython() {
 }
 /** 用户是否已完成一键安装（venv 就绪）—— 自启门槛与"需要安装"提示都看它 */
 function asrInstalled() { return fsSync.existsSync(asrVenvPy()); }
-/** 模型权重是否已下载（small ≈ 480MB，download_model.py 落到 models/<name>） */
+/** SenseVoice 权重是否就位（首选引擎：228MB int8 ONNX，带情绪识别） */
+function asrSenseVoiceReady() {
+  const d = path.join(ASR_DIR, "models", "sensevoice");
+  return fsSync.existsSync(path.join(d, "model.int8.onnx")) && fsSync.existsSync(path.join(d, "tokens.txt"));
+}
+/** 模型权重是否已下载。**两条引擎任一就绪就算就绪**：
+ *  SenseVoice（models/sensevoice/，优选）或 Whisper（models/<name>/model.bin，兜底）。
+ *  反过来说，"这里说没就绪但 /health 说 ready"是不可能的 —— 两条都查了。 */
 function asrModelDownloaded() {
+  if (asrSenseVoiceReady()) return true;
   const name = String(readAsrConf().model || "small");
   return fsSync.existsSync(path.join(ASR_DIR, "models", name, "model.bin"));
 }
@@ -5336,6 +5344,11 @@ async function handle(req, res) {
       note: eff && eff.reason ? String(eff.reason) : "",
       dir: ASR_DIR,
       autostart: conf.autostart !== false,
+      /* 引擎：sensevoice（首选，一次前向出文字+情绪）/ whisper（兜底，只有文字）。
+         服务没跑时按"权重在不在"推断，面板据此决定要不要承诺"能读情绪"。 */
+      engine: (h && h.engine) || (asrSenseVoiceReady() ? "sensevoice" : "whisper"),
+      emotion: !!(h && h.emotion),
+      engineError: (h && h.engineError) || "",
     });
     return;
   }
@@ -5348,7 +5361,7 @@ async function handle(req, res) {
         ok: false, needDownload: true,
         // 面板会拿这个响应渲染状态行，字段必须和 GET 对齐，否则"已安装"被误判成"未安装"
         installed: asrInstalled(), modelDownloaded: asrModelDownloaded(),
-        error: "还没安装本地识别。请先点「安装本地离线识别」（约 700 MB），装完即可离线转写；不装也能用浏览器引擎语音。",
+        error: "还没安装本地识别。请先点「安装本地离线识别」（约 430 MB），装完即可离线转写，顺带读出情绪；不装也能用浏览器引擎语音。",
       });
       return;
     }

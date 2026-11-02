@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  ORB 本地离线语音识别 · 一键安装（建 venv → 装依赖 → 下 small 权重 → 落 ready 标记）
+  ORB 本地离线语音识别 · 一键安装（建 venv → 装依赖 → 下 SenseVoice 权重 → 落 ready 标记）
 .DESCRIPTION
   由 bridge 的 POST /api/asr/prepare 触发，幂等：中断后重跑会复用已建好的 venv、
   接着下没下完的权重（断点续传），不会推倒重来。
@@ -27,7 +27,9 @@
 param(
   [string]$AsrDir = $PSScriptRoot,
   [string]$Py = "",
-  [string]$Repo = "Systran/faster-whisper-small"
+  [string]$Repo = "Systran/faster-whisper-small",
+  # 默认只下 SenseVoice（228 MB，含情绪识别）；加这个开关才额外下 Whisper 的 480 MB
+  [switch]$WithWhisper
 )
 
 $ErrorActionPreference = 'Stop'
@@ -125,13 +127,28 @@ if ($LASTEXITCODE -ne 0) {
 }
 Step 68 'deps' '依赖安装完成。'
 
-# ── 4. 下 small 权重（约 480 MB，download_model.py 内部断点续传） ──
-Step 72 'model' "下载 Whisper 权重（约 480 MB，支持断点续传）…"
-$dl = Join-Path $AsrDir 'download_model.py'
-if (-not (Test-Path -LiteralPath $dl)) { Fail "缺少下载脚本：$dl" }
-& $venvPy $dl $Repo (Join-Path $AsrDir 'models\small')
-if ($LASTEXITCODE -ne 0) {
-  Fail "权重下载失败（退出码 $LASTEXITCODE）。下载支持断点续传，修复网络后重试即可接着下。"
+# ── 4. 下 SenseVoice 权重（228 MB；sherpa-onnx int8 ONNX，带情绪识别） ──
+# 为什么它是首选而不是 Whisper：同机 CPU 上 RTF 0.02~0.03（Whisper small 是 0.2），
+# 快一个数量级，而且一次前向同时给出文字 / 语种 / 情绪 / 声学事件。
+Step 72 'model' "下载 SenseVoice 权重（228 MB，支持断点续传）…"
+$svDl = Join-Path $AsrDir 'download_sensevoice.py'
+if (-not (Test-Path -LiteralPath $svDl)) { Fail "缺少下载脚本：$svDl" }
+& $venvPy $svDl (Join-Path $AsrDir 'models\sensevoice')
+$svOk = ($LASTEXITCODE -eq 0)
+if (-not $svOk) { Step 76 'model' 'SenseVoice 权重没下成，改为安装 Whisper 兜底…' }
+
+# ── 4b. Whisper 权重（兜底；默认不下，省 480 MB） ──
+$whOk = $false
+if ((-not $svOk) -or $WithWhisper) {
+  Step 80 'model' "下载 Whisper 权重（约 480 MB，支持断点续传）…"
+  $whDl = Join-Path $AsrDir 'download_model.py'
+  if (Test-Path -LiteralPath $whDl) {
+    & $venvPy $whDl $Repo (Join-Path $AsrDir 'models\small')
+    $whOk = ($LASTEXITCODE -eq 0)
+  }
+}
+if ((-not $svOk) -and (-not $whOk)) {
+  Fail "两条引擎的权重都没下成（网络不通或被代理拦截）。下载支持断点续传，修好网络重试即可接着下。"
 }
 
 # ── 5. 落 ready 标记（面板据此显示"已安装"，bridge 据此决定自启） ──

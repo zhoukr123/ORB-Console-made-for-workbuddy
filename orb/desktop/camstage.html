@@ -89,6 +89,40 @@
   #frame.circle .hd[data-hd="n"], #frame.circle .hd[data-hd="s"],
   #frame.circle .hd[data-hd="w"], #frame.circle .hd[data-hd="e"] { display: none; }
 
+  /* ---------- 字幕框本体（全屏预览模式才显示） ----------
+     背景/字色不写死：由 JS 按实时字幕窗皮肤（--sub-bg）+ 文字模块颜色（--sub-fg）
+     写内联 —— 和面板「字幕背景复用实时字幕窗、字色复用文字模块」是同一份口径。 */
+  #subFrame {
+    position: fixed; display: none; box-sizing: border-box; touch-action: none;
+    align-items: center; justify-content: center;
+    padding: 5px 12px; cursor: move;
+    background: var(--sub-bg, rgba(10, 12, 18, .82));
+    color: var(--sub-fg, #f2f3f8);
+    border: 1.5px solid rgba(var(--ac-rgb), .95);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .45), 0 8px 24px rgba(0, 0, 0, .5);
+    /* 字号由 JS 按框高比例写内联（框高 × 0.4，与写 ASS 用的是同一条规则），
+       所以"预览多大、成片就多大"；这里只留一个兜底值。
+       换行用 normal 而不是 nowrap：成片里长句是折行，不是省略号，预览不能撒谎。 */
+    font-size: 15px; line-height: 1.25; text-align: center; letter-spacing: .2px;
+    white-space: normal; word-break: break-word; overflow: hidden;
+  }
+  #subFrame.round { border-radius: 14px; }
+  #subFrame.square { border-radius: 3px; }
+  /* 透明皮肤：预览里只把底色去掉、描边框保留（用户要靠它确定字幕位置）；
+     文字加投影，模拟成片里"透明底 + 深色描边"的可读性。 */
+  #subFrame.nobg { box-shadow: none; }
+  #subFrame.nobg #subText { text-shadow: 0 1px 3px rgba(0,0,0,.85), 0 0 6px rgba(0,0,0,.55); }
+  #subFrame.nobg .subtag { text-shadow: 0 1px 2px rgba(0,0,0,.8); }
+  /* 文案是 flex 子项：min-width:0 才能让长句真的折行（否则被内容宽度顶出去） */
+  #subFrame #subText { min-width: 0; }
+  #subFrame .subtag {
+    position: absolute; left: 50%; top: -19px; transform: translateX(-50%);
+    font-size: 10.5px; color: rgba(255, 255, 255, .55); white-space: nowrap;
+    pointer-events: none;
+  }
+  /* 全屏预览模式：录制区域框可整体拖动（调位置），字幕/摄像头随之保持相对位置 */
+  #scope.draggable { pointer-events: auto; cursor: move; }
+
   /* ---------- 顶部工具条 ---------- */
   #bar {
     position: fixed; left: 50%; top: 20px; transform: translateX(-50%);
@@ -195,24 +229,13 @@
     <div class="hd" data-hd="sw"></div><div class="hd" data-hd="s"></div><div class="hd" data-hd="se"></div>
   </div>
 
+  <div id="subFrame" tabindex="0" role="application" aria-label="字幕框：拖动移动">
+    <span class="subtag">字幕（只能在录制范围内）</span>
+    <span id="subText">字幕预览示例文字</span>
+  </div>
+
   <div id="bar">
     <span class="ttl">摄像头小框</span>
-    <span class="sep"></span>
-    <button class="btn" type="button" data-shape="circle" title="圆形（等比缩放）">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="8.5"/></svg>圆形
-    </button>
-    <button class="btn" type="button" data-shape="round" title="圆角矩形（可拖边调宽高）">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/></svg>圆角
-    </button>
-    <button class="btn" type="button" data-shape="square" title="方框（可拖边调宽高）">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.5" y="3.5" width="17" height="17" rx="1"/></svg>方框
-    </button>
-    <span class="sep" id="ratioSep"></span>
-    <button class="btn rbtn" type="button" data-r="16:9">16:9</button>
-    <button class="btn rbtn" type="button" data-r="4:3">4:3</button>
-    <button class="btn rbtn" type="button" data-r="1:1">1:1</button>
-    <button class="btn rbtn" type="button" data-r="free">自由</button>
-    <button class="btn rbtn" type="button" data-r="custom" id="rbCustom" hidden>自定义</button>
     <span class="sep"></span>
     <span class="sz" id="sizeTx"></span>
   </div>
@@ -234,8 +257,7 @@
   var actsEl = document.getElementById('acts');
   var sizeTx = document.getElementById('sizeTx');
   var infoEl = document.getElementById('info');
-  var rbCustom = document.getElementById('rbCustom');
-  var ratioSep = document.getElementById('ratioSep');
+  var subFrameEl = document.getElementById('subFrame');
 
   var MIN = 28;              /* 再小就没法抓手柄了 */
   var SNAP = 12;             /* 贴边吸附距离（CSS px） */
@@ -246,6 +268,15 @@
   var area = { x: 0, y: 0, w: 0, h: 0 };
   var box = { l: 0, t: 0, w: 160, h: 120 };
   var shape = 'round', ratio = '4:3', customRatio = '';
+  /* 字幕框（全屏预览）：几何与摄像头同口径（相对录制区域），款式方框/圆角。
+     颜色不存这里 —— 字色来自文字模块、背景来自实时字幕窗，由 init 传进来后写到 CSS 变量。 */
+  var subBox = { l: 0, t: 0, w: 200, h: 40 };
+  var subFrame = 'round';
+  var subFs = 1;              /* 字号倍率（orb.subfont.scale），与烧录同一条规则 */
+  var subFam = '';            /* 字幕字体，空=跟随面板 */
+  var subOn = false;          /* 主进程有没有要求显示字幕框（传了 sub 就是全屏预览） */
+  var dragSub = null;
+  var dragScope = null;
   var drag = null;
   var done = false;
 
@@ -305,25 +336,46 @@
     infoEl.textContent = '屏上 ' + phys(box.w) + '×' + phys(box.h) + ' px'
       + (isScoped() ? ' · 只能摆在录制范围内' : '') + ' · 方向键微调';
 
-    syncBtns();
+    renderSub();
   }
 
-  function syncBtns() {
-    var shs = barEl.querySelectorAll('[data-shape]');
-    for (var i = 0; i < shs.length; i++) shs[i].classList.toggle('on', shs[i].getAttribute('data-shape') === shape);
-    var isC = shape === 'circle';
-    ratioSep.style.display = isC ? 'none' : '';
-    var rs = barEl.querySelectorAll('[data-r]');
-    for (var j = 0; j < rs.length; j++) {
-      var r = rs[j].getAttribute('data-r');
-      rs[j].style.display = (r === 'custom' && !customRatio) ? 'none' : '';
-      if (isC && r !== 'custom') rs[j].style.display = 'none';
-      rs[j].classList.toggle('on', r === ratio && !isC);
-    }
-    if (rbCustom) {
-      rbCustom.hidden = !customRatio;
-      rbCustom.textContent = '自定义 ' + customRatio;
-    }
+
+  /* ---------------- 字幕框渲染 / 拖动 ---------------- */
+  function renderSub() {
+    if (!subOn) { subFrameEl.style.display = 'none'; return; }
+    subFrameEl.style.display = 'flex';
+    subFrameEl.style.left = subBox.l + 'px';
+    subFrameEl.style.top = subBox.t + 'px';
+    subFrameEl.style.width = subBox.w + 'px';
+    subFrameEl.style.height = subBox.h + 'px';
+    /* 字号跟框高走（×0.4×字号档），和写 ASS 时用的是同一条规则 —— 这样"预览里多大、
+       成片里就多大"，不会出现预览挤成一行、成片忽然变成两行大字。
+       上下夹一道：框拖得极薄时别缩到看不见，极厚时别把示例文字撑爆整屏。 */
+    subFrameEl.style.fontSize = Math.max(11, Math.min(64, Math.round(subBox.h * 0.4 * subFs))) + 'px';
+    subFrameEl.style.fontFamily = subFam || '';
+    subFrameEl.classList.toggle('round', subFrame === 'round');
+    subFrameEl.classList.toggle('square', subFrame === 'square');
+    /* 圆角半径也按框尺寸算（0.18 × 短边，与 ASS 里 subRoundRect 的算法一致）：
+       固定 14px 在框被拉大之后会显得几乎不圆，成片才会"忽然变圆"。 */
+    subFrameEl.style.borderRadius = (subFrame === 'square'
+      ? 2
+      : Math.max(4, Math.round(Math.min(subBox.w, subBox.h) * 0.18))) + 'px';
+  }
+
+  function renderSubToggles() {
+    if (subFrameEl && !subOn) subFrameEl.style.display = 'none';
+  }
+
+  /* 区域整体拖动（全屏预览才允许）：改录制区域位置，字幕/摄像头保持相对位置 */
+  function startScopeMove(e) {
+    if (e.button !== 0) return;
+    dragScope = {
+      mx: e.clientX, my: e.clientY,
+      ax: areaRatio.x, ay: areaRatio.y,
+      cxl: box.l, cyt: box.t, sxl: subBox.l, syt: subBox.t,
+    };
+    e.preventDefault();
+    e.stopPropagation();
   }
 
   /* ---------------- 吸附：贴屏幕边与中线 ---------------- */
@@ -356,6 +408,37 @@
   }
 
   function onMove(e) {
+    /* 字幕框拖动：只改位置，夹在录制范围内（和摄像头小框同一道墙） */
+    if (dragSub) {
+      var nsl = clamp(dragSub.l + (e.clientX - dragSub.mx), area.x, area.x + area.w - subBox.w);
+      var nst = clamp(dragSub.t + (e.clientY - dragSub.my), area.y, area.y + area.h - subBox.h);
+      var asx = [area.x, area.x + (area.w - subBox.w) / 2, area.x + area.w - subBox.w];
+      var asy = [area.y, area.y + (area.h - subBox.h) / 2, area.y + area.h - subBox.h];
+      var ssx = snapEdge(nsl, asx), ssy = snapEdge(nst, asy);
+      if (ssx !== nsl) nsl = ssx;
+      if (ssy !== nst) nst = ssy;
+      subBox.l = clamp(nsl, area.x, area.x + area.w - subBox.w);
+      subBox.t = clamp(nst, area.y, area.y + area.h - subBox.h);
+      renderSub();
+      return;
+    }
+    /* 区域整体拖动：改录制区域位置，字幕/摄像头保持相对位置并夹回范围内 */
+    if (dragScope) {
+      var sdx = e.clientX - dragScope.mx, sdy = e.clientY - dragScope.my;
+      areaRatio.x = clamp(dragScope.ax + sdx / W, 0, Math.max(0, 1 - areaRatio.w));
+      areaRatio.y = clamp(dragScope.ay + sdy / H, 0, Math.max(0, 1 - areaRatio.h));
+      applyArea();
+      renderScope();
+      var ddx = area.x - dragScope.ax * W, ddy = area.y - dragScope.ay * H;
+      box.l = clamp(dragScope.cxl + ddx, area.x, area.x + area.w - box.w);
+      box.t = clamp(dragScope.cyt + ddy, area.y, area.y + area.h - box.h);
+      if (subOn) {
+        subBox.l = clamp(dragScope.sxl + ddx, area.x, area.x + area.w - subBox.w);
+        subBox.t = clamp(dragScope.syt + ddy, area.y, area.y + area.h - subBox.h);
+      }
+      render();
+      return;
+    }
     if (!drag) return;
     var ax2 = area.x + area.w, ay2 = area.y + area.h;
     if (drag.mode === 'move') {
@@ -402,7 +485,7 @@
     render();
   }
 
-  function onUp() { drag = null; }
+  function onUp() { drag = null; dragSub = null; dragScope = null; }
 
   /* ---------------- 切换形状 / 比例 ---------------- */
   function setShape(s) {
@@ -431,7 +514,7 @@
       done = true;
       /* 归一化基准是**录制范围**（= 成片画面），不是整屏：
          录左半屏时，bx=0.9 就该落在左半屏的右边，而不是屏幕右边。 */
-      window.orb.done({
+      var out = {
         kind: 'ok',
         cam: {
           shape: shape,
@@ -441,7 +524,18 @@
           bw: box.w / area.w,
           bh: box.h / area.h,
         },
-      });
+      };
+      /* 全屏预览模式：一起回传字幕框（几何相对录制区域，主进程再夹一次） */
+      if (subOn) {
+        out.sub = {
+          bx: (subBox.l + subBox.w / 2 - area.x) / area.w,
+          by: (subBox.t + subBox.h / 2 - area.y) / area.h,
+          bw: subBox.w / area.w,
+          bh: subBox.h / area.h,
+          frame: subFrame,
+        };
+      }
+      window.orb.done(out);
       return;
     }
     done = true;
@@ -454,6 +548,14 @@
     var hd = e.target && e.target.getAttribute && e.target.getAttribute('data-hd');
     if (hd) { startResize(hd, e); } else { startMove(e); }
     frameEl.focus();
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  /* 字幕框：只有全屏预览模式才可拖（subOn 由 init 决定） */
+  subFrameEl.addEventListener('pointerdown', function (e) {
+    if (e.button !== 0 || !subOn) return;
+    dragSub = { mx: e.clientX, my: e.clientY, l: subBox.l, t: subBox.t };
+    subFrameEl.focus();
     e.preventDefault();
     e.stopPropagation();
   });
@@ -477,12 +579,7 @@
   /* 右键 = 取消（与框选取词 / 录屏选区一致） */
   window.addEventListener('contextmenu', function (e) { e.preventDefault(); finish('cancel'); });
 
-  barEl.addEventListener('click', function (e) {
-    var sb = e.target.closest ? e.target.closest('[data-shape]') : null;
-    if (sb) { e.stopPropagation(); setShape(sb.getAttribute('data-shape')); return; }
-    var rb = e.target.closest ? e.target.closest('[data-r]') : null;
-    if (rb) { e.stopPropagation(); setRatio(rb.getAttribute('data-r')); return; }
-  });
+
   document.getElementById('ok').addEventListener('click', function (e) { e.stopPropagation(); finish('ok'); });
   document.getElementById('cancel').addEventListener('click', function (e) { e.stopPropagation(); finish('cancel'); });
 
@@ -592,6 +689,40 @@
         t: area.y + by * area.h - h / 2,
         w: w, h: h,
       });
+
+      /* 字幕框：只有主进程传了 sub 才进入全屏预览模式（旧摄像头摆位不传，行为不变） */
+      var sb = (s && s.sub) || null;
+      if (sb && Number(sb.bw) > 0 && Number(sb.bh) > 0) {
+        subOn = true;
+        subFrame = sb.frame === 'square' ? 'square' : 'round';
+        var sw = clamp(Number(sb.bw) * area.w, 40, area.w);
+        var sh = clamp(Number(sb.bh) * area.h, 20, area.h);
+        var sbx = Number.isFinite(Number(sb.bx)) ? Number(sb.bx) : 0.5;
+        var sby = Number.isFinite(Number(sb.by)) ? Number(sb.by) : 0.9;
+        subBox = {
+          l: clamp(area.x + sbx * area.w - sw / 2, area.x, area.x + area.w - sw),
+          t: clamp(area.y + sby * area.h - sh / 2, area.y, area.y + area.h - sh),
+          w: sw, h: sh,
+        };
+        /* 字色复用文字模块（sb.color 空则跟主题 --fg）；背景色复用实时字幕窗皮肤。
+           透明皮肤：预览里背景透明，但仍保留 #subFrame 的 accent 描边框 —— 用户要
+           靠这条框确定字幕最终出现在画面哪里（成片里才真正无框无底）。 */
+        if (sb.color && /^#[0-9a-fA-F]{6}$/.test(sb.color)) {
+          subFrameEl.style.setProperty('--sub-fg', sb.color);
+        }
+        subFrameEl.style.setProperty('--sub-bg',
+          sb.skin === 'none' ? 'transparent'
+            : (sb.skin === 'light' ? 'rgba(243,244,248,.88)' : 'rgba(10,12,18,.82)'));
+        subFrameEl.classList.toggle('nobg', sb.skin === 'none');
+        /* 字号倍率 / 字体：与烧录同一份口径（否则预览和成片字不一样大） */
+        subFs = clamp(Number(sb.fontScale) || 1, 0.5, 2.5);
+        subFam = typeof sb.fontFamily === 'string' ? sb.fontFamily : '';
+        /* 区域框可整体拖动（全屏预览才允许调区域位置） */
+        scopeEl.classList.add('draggable');
+        scopeEl.addEventListener('pointerdown', startScopeMove);
+      }
+      renderSubToggles();
+
       render();
       frameEl.focus();
     });
