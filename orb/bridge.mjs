@@ -1,3 +1,18 @@
+/* ORB 桥：面板（Electron 渲染进程）与外部能力之间的唯一进出通道。
+ *
+ * 它同时是三件事：
+ *   ① 一个 HTTP 服务（面板所有 /api/* 都打到这里）；
+ *   ② MCP 客户端（orb / windows / workbuddy 三路会话，按需冷启动）；
+ *   ③ 治理层装配点（账本、工单、产物、播报、急停、GUI 锁在这里接起来）。
+ *
+ * 三条约定，改动时别破：
+ *   1) **不抛异常给面板**：所有处理函数最终都要 send(res, ...)，宁可 500 带 error 字段，
+ *      也不要让一个未捕获的 rejection 把整条流挂住（面板会表现为"永远转圈"）。
+ *   2) **急停检查点在 callToolRaw 入口**：只放一处，覆盖回放/单次/后台/确认四条路。
+ *      分散写检查点一定会漏，而漏的那条就是急停失效的那条。
+ *   3) **状态流里不放会 spawn 的东西**：buildStatusSnapshot 每 1.5s 推一次，
+ *      塞一个 wmic/tasklist 进去就是每 1.5 秒开一次子进程。
+ */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import http from "node:http";
@@ -8,8 +23,260 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, spawn } from "node:child_process";
 import net from "node:net";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { resolvePython, windowsMcpArgs, windowsMcpEnv, matchProcKind, hasWindowsMcp } from "./runtime.mjs";
+/* 确定性锚定解析（方案 A1 / B 的纯逻辑层）。把抗迁移锚定从 OCR/Windows API 里抽出来，
+ * 成为可单测的纯模块；bridge 只把有副作用的解析器（OCR 文字锚定、控件树抓取）以 deps 注入。
+ * 依赖方向单向：bridge → anchorResolver，模块不 import bridge。 */
+import { createAnchorResolver, parseSnapshotTree, buildTreeSelector, matchTreeNode, pruneSnapshotTree, resolveTreeNode, preferSnapshotRef, createTreeCache, primaryPoint, addDeltaToArgs, ANCHORABLE, classifyActionError, decideEscalation, ACTION_ERROR_CODES, verifyEffect } from "./anchorResolver.mjs";
+import { createVisualAnchor, captureVisualCrop } from "./visualAnchor.mjs";
+/* 治理层（2026-11-03 接入）。五个模块都是纯 Node、无第三方依赖，
+ * 之所以单独成文件而不是继续堆进 bridge.mjs：这个文件已经 5700 行，
+ * 再往里塞状态机只会让"谁能写任务状态"重新变回没人说得清。
+ * 依赖方向是单向的：bridge → 模块，模块不 import bridge（pack.cjs 的依赖审计认这个）。 */
+import { createTicketStore } from "./ticketStore.mjs";
+import { createOutbox } from "./outbox.mjs";
+import { createCostLedger } from "./costLedger.mjs";
+import { createGuiLock } from "./guiLock.mjs";
+import { createDispatcher, keywords as keywordsMatcher } from "./dispatcher.mjs";
+/* 本地站点库：书签 + 浏览历史 + 已确认过的解析结果。
+ * 站名 → 官网的通用解析没有 100% 方案，但"你自己去过的站"是零猜测的。 */
+import { createSiteLibrary } from "./siteLibrary.mjs";
+/* 专家团 / 门控 / 插件底座 / 语义路由 / 机器遥测。
+ * 五个模块都是纯逻辑（不调模型、不写库），只在这里挂上桥的生命周期与产物目录。 */
+import { createTeam } from "./team.mjs";
+import { createAffectGate, GATES as AFFECT_GATES } from "./affectGate.mjs";
+import { createPluginHost } from "./pluginHost.mjs";
+/* 跨生态摄入（市场/技能/连接器/生成物 → 同一注册表）+ 本机插件市场只读索引。
+ * 两者都是纯逻辑，安全面统一交给 pluginArtifactGate，桥只负责编排与审批透传。 */
+import { dryRunManifest, installManifest } from "./pluginEcosystem.mjs";
+import { scanMarket, searchMarket, readSource, safeId } from "./pluginMarket.mjs";
+import {
+  readZip, looksLikeZip, unpackTo, packHash, locateRoot,
+  synthesizeSkillManifest, PACK_LIMITS,
+} from "./pluginPack.mjs";
+import { createSemanticRouter } from "./semanticRouter.mjs";
+import { createTelemetry } from "./telemetry.mjs";
+import { createTrajectory } from "./trajectory.mjs";
+import { createWorkerPool } from "./workerPool.mjs";
+import { createWatchdog } from "./watchdog.mjs";
+import { runCommandOp, normalizeCmdOp } from "./cmdchan.mjs";
+import { commandChannelArgs, hardDangerOp } from "./cmdDanger.mjs";
+import { createFreeTier } from "./freetier.mjs";
+import { classifyCommandable, planTask, probeCommandable, planTaskProbed } from "./taskRouter.mjs";
+import { createProber } from "./probe.mjs";
+import { AsyncLocalStorage } from "node:async_hooks";
+/* 阶段一交付层 / 尺子 / 归档（2026-11-04 接入）。
+ * 与上面治理层同一个规矩：模块不 import bridge，全部零三方依赖、可单测。 */
+import { createEpochClock } from "./epoch.mjs";
+import { createCommandGate } from "./cmdGuard.mjs";
+import { createStateWriter, STATE_WRITERS } from "./stateWriters.mjs";
+import { DEFAULT_PROFILE, normalizeProfile, validateProfile } from "./outputProfile.mjs";
+import { createExporter, buildSource } from "./exporter.mjs";
+import { createLogBus, CATEGORIES, LEVELS } from "./logBus.mjs";
+import { createArtifactStore, ALLOWED_EXT } from "./artifactStore.mjs";
+/* I-17 产物浮层：rel 形状 / 四类失效态 / 预览边界的唯一判定处（纯函数，可单测）。 */
+import {
+  productRel, inferRel, viewRow, viewRows, truncatePreview,
+  rootKeyOf, isPreviewable, STATUSES, STATUS_META,
+} from "./artifactView.mjs";
+import { createSpanCollector, METRICS } from "./span.mjs";
+import { createObserveRouter } from "./observeRouter.mjs";
+import { createTextGate } from "./textGate.mjs";
+import { createFastPath } from "./fastPath.mjs";
+import { createSearchProvider } from "./searchProvider.mjs";
+/* 批次C · 多 provider 适配器：厂商差异只在注册表里，编排层 / L4 / 文本闸门零改动。
+ * 用户可申请一个用途明确的检索 key（百度千帆 / 智谱；额度与开通前置条件见各 adapter 的 quotaNote），
+ * 不必碰 dsh 凭据库。 */
+import { getAdapter, ADAPTER_IDS, listAdapters, DEFAULT_ADAPTER_ID } from "./searchProviderAdapters.mjs";
+/* 浏览器操控 provider：纯逻辑状态机（白名单 / epoch / confirm / tab 所有权），
+ * 与 Native Messaging 宿主解耦；桥侧只做授权与记账，真执行在浏览器扩展侧。 */
+import { createBrowserProvider } from "./browserProvider.mjs";
+import { BROWSER_PROTOCOL_VERSION, BROWSER_METHODS } from "./browserProvider.mjs";
+import { createBaseline } from "./perfBaseline.mjs";
+import { createSessionManager } from "./session.mjs";
+/* 应用意图能力表（报告A §4.1）：静态表 + 查表解析，不猜、不填未实测深链模板。 */
+import { appMatrix, APP_COUNT, DEEP_LINKS, CONFIDENCE_GATE, resolveAppAction, resolveWebLanding, resolveClientAction, planClientLaunch, deepLinkAudit, LAUNCH_EVIDENCE } from "./appIntent.mjs";
+/* 报告B §7 批次A 第5、6项：纪律层纯函数（判定口径单一真相源）。 */
+import { isUntrustedSource, authorizeDomain, searchExemptAudit, classifyDegrade, degradeRecord, DEGRADE_CODES, V12_CONTRACT } from "./batchA.mjs";
+/* 报告B §7 批次B 第8项：V-06 L4 对外统一契约（只上契约，不接 provider）。 */
+import { normalizeL4, l4Schema } from "./searchL4.mjs";
+/* 报告B §7 批次C：可插拔凭据来源（默认 inert）+ 结果回填编排。 */
+import { createCredentialProvider, CREDENTIAL_SOURCES } from "./searchCredentials.mjs";
+import {
+  buildSearchDoc, parseProduceIntent, orchestratorSchema,
+} from "./searchOrchestrator.mjs";
+/* 意图未命中闭环（2026-11-07）：只记原句与原因码，纯内存、有上限，供 /api/search/misses 查。
+ * 没有这一步，确定性文法就永远停在写它那天的词表上。 */
+import { missLog } from "./intentMissLog.mjs";
+/* schema 约束兜底（2026-11-07）：只在「文法没认出来」时问一次模型，默认不开。 */
+import { createIntentFallback, needsFallback } from "./intentFallback.mjs";
+
+/* ===== 11-07 增量简报落地：报告可复用项 + 专家团治理纪律层 =====
+ * 两段都是纯逻辑、零三方依赖；有副作用的一律靠注入（hostApi / fs / teamFactory / dir）。
+ * 依赖方向保持单向：bridge → 模块，模块不 import bridge（pack.cjs 的审计认这个）。
+ * 治理层用命名空间导入，避免与桥里既有的 TIERS / GATES / CHANNELS 等标识符撞名。 */
+import { createPolicyTransition, assertSeparateFromStop, drainPlan, POLICY_CHANGE_KINDS, POLICY_PHASES } from "./policyTransition.mjs";
+import { createDreamConsolidator, UNVERIFIED_PREFIX, DEFAULT_QUOTA } from "./dreamConsolidator.mjs";
+import { createArtifactGate, GATE_CODES } from "./pluginArtifactGate.mjs";
+import { createMemoryBudget, budgetFor, BUDGET_MODES } from "./memoryBudget.mjs";
+import { buildCapabilityTable, lookupSite, assertNoInventedSelectors, SITE_STATS } from "./siteCapabilityData.mjs";
+import * as govCore from "./governanceCore.mjs";
+import * as govP0 from "./p0Discipline.mjs";
+import * as govP1 from "./p1FileChannel.mjs";
+import * as govP2 from "./p2SiteAdapter.mjs";
+import * as govSeal from "./p2SealReview.mjs";
+import * as govVerify from "./p3VerifyLite.mjs";
+import * as govHost from "./hostDataApi.mjs";
+import { createApiChannel, USER_DISABLED } from "./apiChannel.mjs";
+import * as govExec from "./executionBridge.mjs";
+import * as govRules from "./injectable.mjs";
+
+/* CLI_EXIT_START —— 11-07 简报 §3.5「失败诚实产品化」：
+ * 旧口径是「stdout 非空即成功」，CLI 内部报错但已吐出半段结果时会被当成成功交付。
+ * 这里把退出码与「是否有输出」合成一个可展示状态；纯函数，单测按标记抽段独立跑。
+ * 约定：err 为空 = 0；err.code 为数字或纯数字串 = 该退出码；字符串错误码
+ * （ENOENT/EACCES）/ killed / signal 一律视为非零失败，不做「补零」。 */
+function cliExitCode(err) {
+  if (!err) return 0;
+  const raw = err.code;
+  if (raw == null) return (err.killed || err.signal) ? -1 : 0;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (/^\d+$/.test(String(raw))) return Number(String(raw));
+  return -1;
+}
+
+function classifyCliExit(err, stdoutText) {
+  const exitCode = cliExitCode(err);
+  const hasOutput = String(stdoutText ?? "").trim().length > 0;
+  const failed = exitCode !== 0;
+  return {
+    exitCode,
+    hasOutput,
+    failed,
+    partialOutput: failed && hasOutput,
+    code: failed ? (hasOutput ? "partial-output-failed" : "cli-failed") : "ok",
+  };
+}
+
+function cliExitMessage(exit) {
+  if (!exit.failed) return "";
+  const tail = exit.partialOutput
+    ? "；已产出的部分内容不作为任务结果交付（副作用可能已产生，不假装没执行）"
+    : "；无可用输出";
+  return `CodeBuddy CLI 以退出码 ${exit.exitCode} 结束${tail}`;
+}
+/* CLI_EXIT_END */
+
+/* 未命中该记什么：只记「本来可以走快速通道」的句子。
+ * 判据是句子里出现了词表里的多字词（单字「查 / 找 / 搜」太宽，普通闲聊也带）；
+ * 词集直接取自 schema，不手抄第二份 —— 手抄的那份迟早和解析器漂移。 */
+const INTENT_HINT_WORDS = (() => {
+  try {
+    const s = orchestratorSchema();
+    const all = [...s.coarse.search, ...s.coarse.produce, ...s.coarse.targets];
+    return [...new Set(all.filter((w) => String(w).length >= 2))];
+  } catch { return []; }
+})();
+function recordIntentMiss(text, reasonCode) {
+  const t = String(text ?? "");
+  if (!t.trim()) return;
+  if (!INTENT_HINT_WORDS.some((w) => t.includes(w))) return;
+  missLog.record(t, reasonCode);
+}
+
+/* 文法没认出来时的兜底（默认关）。
+ * 只有显式 ORB_INTENT_LLM=1 才可能问一次模型，且用的是用户**自己配的**自定义模型：
+ * 没配置就当作不可用 —— 不外呼、不报错、不改原有行为。
+ * 模型输出要过 validateIntentResult（action 必须在动作表里、query 必须是原句子串），
+ * 任何一条不合规都放弃，调用方保持原来的拒绝。 */
+const intentFallback = createIntentFallback({
+  enabled: process.env.ORB_INTENT_LLM === "1",
+  llm: async (sys, usr) => {
+    const custom = readCustomModel();
+    if (!custom || !custom.baseUrl || !custom.key || !custom.model) throw new Error("no-custom-model");
+    const r = await callCustomChat(custom, sys, usr, 4000, { temperature: 0, maxTokens: 300 });
+    return r && r.text;
+  },
+});
+
+/** 解析 + 兜底 + 落点校验，三个端点共用一份，避免各自演化出第二套判定。
+ *  sink 传 null 表示不限落点（/api/search/plan 只做分流，不执行）。 */
+async function parseForSink(text, sink) {
+  let r = parseProduceIntent(text);
+  if (needsFallback(r)) {
+    const fb = await intentFallback.resolve(text);
+    if (fb) r = fb;
+  }
+  if (r.ok && sink && r.sink !== sink) {
+    return { ok: false, reasonCode: "no-whitelist-match", query: "" };
+  }
+  return r;
+}
+import { createArchiver } from "./archiver.mjs";
+import { createVisualTiers, TIERS } from "./visualTiers.mjs";
+import { createTicketControl } from "./ticketControl.mjs";
+import { createReceipts } from "./receipts.mjs";
+import { createEventRecorder } from "./events.mjs";
+/* 自动化回收站：删除改为可撤销的移动，替代「输入删除两字」的通用词确认。 */
+import { createWfTrash } from "./wfTrash.mjs";
+/* 自动化运行账本：给已有的回放解释器补「每次点火算一次可查的运行」。
+   不引入调度器/队列，只补 n8n / Node-RED / Temporal 共有的执行语义。 */
+import { createWfRunLedger } from "./wfRunLedger.mjs";
+/* observe / auto 升降级判据：用运行账本里的执行质量字段决定能不能自动点火。 */
+import { evaluatePolicy, decideTransition } from "./autoPolicy.mjs";
+/* 独立结果判定（OutcomeGate）：把「这次到底成没成」从执行者手里拿走。
+   原先是 runSteps 没抛异常就 ok:true，而 autoPolicy 又拿这个 ok 当零退化样本 ——
+   地基是自证的。现在判定只看观测物：配方声明的判据、回读、前后指纹。 */
+import { buildSpec, judge, toRunStatus, VERDICT } from "./autoOutcome.mjs";
+/* 步级轨迹：运行账本记「跑完没有」，这里记「断在第几步、为什么」。 */
+import { createAutoTrace } from "./autoTrace.mjs";
+/* 失败分类 + 有限重试 + 动作级幂等键。不可逆动作与权限拒绝一律不重试。 */
+import { shouldRetry, riskOf, stepIdemKey, DEFAULT_RETRY } from "./autoRetry.mjs";
+/* 配方版本：保存前留只读快照，可列 / 可 diff / 可一字不差回滚。 */
+import { createRecipeVersions } from "./wfRecipeVersions.mjs";
+/* 受限编排：拓扑序 + 子流程 + 人工闸门。不并行、不做长期等待、不让节点内嵌图。 */
+import { validateGraph, planOrder } from "./wfDag.mjs";
+/* 判据归纳建议：从配方里已有信息（窗口标题、产物路径）推导 outcome 候选。
+   没有它，用户必须手写判据才能脱离弱证据档 —— 而多数人不知道该写什么。 */
+import { suggestOutcomes, buildOutcome } from "./outcomeSuggest.mjs";
+/* 界面证据候选：把「上次运行后界面新出现哪些行」算出来交给用户勾选。
+   机器只取证、不判断哪行算成功 —— 那件事只有人知道，猜错会把每次运行都判成失败。 */
+import { diffLines as diffEvidenceLines } from "./outcomeEvidence.mjs";
+/* 断点续跑：补「第 5 步挂了就得从第 1 步重来」这个洞 —— 桌面动作不可逆，
+   重跑等于把做过的提交再做一遍，所以它是安全功能，不只是省时间。
+   安全门全在模块里（线性配方 + 最后一步已结算 + 配方没改过），bridge 只负责接线。 */
+import { createCheckpoints, canResume, recipeDigest, isLinearRecipe as isLinearRecipeWf } from "./wfCheckpoint.mjs";
+/* 回放前预检：跑之前先对着当前界面把锚点核一遍。静态硬伤判 block（必然失败），
+   锚点核对只判 warn —— 中途界面可能被前面的步骤切走，开局快照看不到。 */
+import { preflight as preflightWf, summarizePreflight } from "./wfPreflight.mjs";
+/* 产物布局（2026-11-04）：录屏/截屏/看视频/导出/日志统一按日期分层。
+ * 单独成模块是为了让主进程（CJS）和桥（ESM）共用同一套路径算法，不出现两套漂移。 */
+import { createLayout } from "./artifactLayout.mjs";
+/* 看视频产物 → 内容提要+关键截图 MD 合成器（2026-11-07）。
+ * 路由与离线补交脚本共用，避免两版逻辑漂移；登记仍交给 registerArtifact。 */
+import { synthesizeVidxMd } from "./vidxSynth.mjs";
+/* 能力清单（2026-11-05）：急停白名单的唯一真相源。
+ * 之前白名单手抄在 bridge、表格手抄在文档、解释手抄在面板 —— 三份，改一处忘两处。
+ * 这里恰是安全边界（多放一个进白名单 = 刹车踩下去还留一只脚），所以必须只有一份。 */
+import { stopExemptSet, isStopExempt, isReadOnly, revocableOf, governWrite, table as capabilityTable } from "./capabilityRegistry.mjs";
+/* 专家契约（2026-11-05）：把"这个专家能做什么"变成可校验的声明，并在派发口强制。
+ * 只读专家若还能拿到写通道，"它说没问题"就不成立 —— 因为它自己改过了。 */
+import { createExpertBook, arbitrate, defaultBookPath } from "./expertContract.mjs";
+/* 大附件采样计划：只回答"这东西大概值多少、该采多少"，不做截断决定。 */
+import { planFor as attachPlanFor, verdictOf as attachVerdict } from "./attachPlan.mjs";
+/* 升级器：换档（视觉档 / 路由 / 通道 / 模式）统一记账 + 世代校验。 */
+import { createUpgrade, LADDERS } from "./upgrade.mjs";
+/* 语气三槽：性格管"是谁在说"，槽位管"这次多热"——两件事正交，别混成 25 套台词。 */
+import { createPersonaSlots, SLOTS as PERSONA_SLOTS } from "./personaSlots.mjs";
+/* 专家团模式 = 任务分配（orchestrator-workers），与上面只读复核的 team.mjs 刻意分开：
+   一个负责「派活」，一个负责「验活」，混在一起就会变成用户批评过的假专家团。 */
+import { createExpertTeam, LEAD as TEAM_LEAD } from "./expertTeam.mjs";
+/* 安全子菜单的只读概览：把治理计数器翻译成状态词，保证「不放任何数值」。 */
+import { safetyOverview } from "./safetyOverview.mjs";
+import { SPEAK_TIERS, inferTierFromText } from "./affectGate.mjs";
+/* 后台自动复核开关由面板持有，桥留一份镜像给安全页做只读展示。 */
+let reviewAutoEnabled = true;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /* 可写目录。**定义必须靠前**：confFlag / writeConfFlag 在模块顶层就会被调用
@@ -18,6 +285,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
    ⚠️ HERE（装目录）在打包态是 Program Files 下的 resources/ —— **不可写**。
    凡是运行时会写的东西（用户级配置、日志、临时文件）都必须落这里。 */
 const DATA_DIR = process.env.ORB_DATA_DIR || path.join(HERE, "..");
+/* 用户可配存储根：由主进程 spawn 时注入（= storage.resolveRoot()）。
+ * 没注入才回退 DATA_DIR。产物树必须挂在这里，否则用户一改「设置 › 存储」，
+ * 面板写新目录、桥还写旧目录，两边分叉。 */
+const STORAGE_ROOT = process.env.ORB_STORAGE_ROOT || DATA_DIR;
 const PORT = Number(process.env.ORB_PORT || 19387);
 
 /** 统一日志（桌面端从 bridge 的 stdout/stderr 抓取）。带标签的调用方把标签作为首参传入。 */
@@ -56,9 +327,14 @@ process.on("unhandledRejection", (err) => {
  */
 const TOKEN_FILE = process.env.ORB_TOKEN_FILE || path.join(HERE, ".bridge.json");
 const TOKEN = process.env.ORB_TOKEN || randomUUID();
-// 仅这两个放行：存活探测、以及 daemon 的结果回调（回调方没有我们的令牌，
-// 但它必须命中一个已知的 runId 才会被采纳，其余一律忽略）。
-const PUBLIC_PATHS = new Set(["/api/health", "/api/wb-callback"]);
+/* 免令牌放行的三个路径：
+ *   · /api/health     存活探测
+ *   · /api/wb-callback daemon 的结果回调（回调方没有我们的令牌，
+ *                     但它必须命中一个已知的 runId 才会被采纳）
+ *   · /api/resolve-site 站名 → 官网地址。后台 CLI 里被提示"拿不准就查这个接口"，
+ *                     而子进程拿不到 X-Orb-Token；接口本身只读、只绑 127.0.0.1、
+ *                     不会执行命令，放行的代价仅限于"本机进程能问一次站名"。 */
+const PUBLIC_PATHS = new Set(["/api/health", "/api/wb-callback", "/api/resolve-site"]);
 
 // Node 可执行文件定位顺序：ORB_NODE 环境变量 → 版本目录里最新可用版本 → 交给 PATH 解析。
 // 不要硬编码 versions/<版本>-<构建号>：WorkBuddy 升级会换目录名（22.22.2-3 → 22.22.2-6），
@@ -299,6 +575,65 @@ const WB_MODEL = (process.env.ORB_WB_MODEL || "").trim();
 const WB_EFFORT = (process.env.ORB_WB_EFFORT || "low").trim();
 const WB_MAX_TURNS = (process.env.ORB_WB_MAX_TURNS || "").trim();
 
+/* 后台 Agent 的运行环境约束，用 --append-system-prompt 注入。
+ *
+ * 为什么必须有这条：后台 CLI 在无 GUI 的前提下想「帮用户搜索」，它自己想到的
+ * 办法就是 `start chrome "https://www.google.com/search?q=…"`。国内 google 打不开，
+ * 用户看到的就是「地址栏里有一串字、没有结果页」，还以为是我们把搜索做坏了。
+ * 这不是代码 bug，是模型不知道这台机器的网络环境 —— 所以要在系统层把事实告诉它，
+ * 而不是等它每次都猜错再去改代码。
+ *
+ * 只写三条确定成立的事实，不教它怎么用浏览器通道（通道的上层调用方还没接，
+ * 现在教了它也只会去调不存在的工具）。ORB_WB_NO_ENV_HINT=1 可关掉。 */
+const WB_ENV_HINT = [
+  "【本机环境约束，优先于任何默认习惯】",
+  "1. 这台机器在中国大陆网络下运行：google.com、googleapis.com、youtube.com、x.com、facebook.com 通常不可访问，",
+  "   不要把这些域名当作可用的搜索或结果页地址。",
+  "2. 需要搜索时，只用必应中国（这台机器的浏览器默认引擎就是 Bing；换成百度会得到另一套排序和满屏推广位，",
+  "   用户会认为「打开错了地方」）：",
+  "   · 必应中国 https://cn.bing.com/search?q=<URL 编码后的搜索词>",
+  "   · 不要用百度/搜狗/360 的搜索页，也不要退而用 google。",
+  "3. 用命令行启动浏览器时，必须传完整且已编码的 URL；只传一个词会被浏览器当成地址栏输入，停在输入状态而不出结果。",
+  "4. 「打开某某官网/首页」这类请求，停在搜索结果页不算完成。不确定域名时先问本机解析接口：",
+  `   curl "http://127.0.0.1:${PORT}/api/resolve-site?q=<站名 URL 编码>"  → {"ok":true,"url":"https://…"}`,
+  "   拿到 url 直接打开；只有接口返回 ok:false 才退回必应搜索结果页，并在回复里说明没找到官网。",
+  "5. 做事顺序：命令行 / HTTP 接口 / 文件操作 优先；GUI 与视觉操作只是**兜底**，",
+  "   仅在确实没有任何命令行手段时才使用。不要一开口就声明「我没有 GUI 操作能力」然后放弃 ——",
+  "   先想办法用命令/接口把事办成（打开网页、调用接口、读写文件都属于命令行可达）。",
+].join("\n");
+const WB_ENV_HINT_ON = String(process.env.ORB_WB_NO_ENV_HINT || "") !== "1";
+
+/* CLI 能力探测：只跑一次 `codebuddy --help`，同时判两件事。
+ * ① --append-system-prompt：版本移除后带着它 spawn 会「未知选项」直接退出；
+ * ② --include-partial-messages：token 级增量的前提，没有它 stream-json 只在
+ *    **整条 assistant 消息写完**时吐一次，用户看到的就是「每隔一段时间蹦一段」。
+ *
+ * 绝不额外再起一个 147MB 进程 —— 这两项共用同一次 help 输出。
+ * 判定规则保守：只有明确探到 false 才停用；未知（还没探完 / 探测本身失败）
+ * 按支持处理，因为当前安装的版本确定支持，探测失败不该反过来把功能关掉。
+ * ORB_WB_NO_PARTIAL=1 可一键退回旧的消息级输出，便于排障。 */
+let appendPromptSupport = null;
+let partialSupport = null;
+const WB_PARTIAL_ON = String(process.env.ORB_WB_NO_PARTIAL || "") !== "1";
+function cliWantsPartial() { return WB_PARTIAL_ON && partialSupport !== false; }
+
+function probeCliFlags() {
+  resolveWbCli(false).then((cli) => {
+    if (!cli.found) return;
+    execFile(cli.path, ["--help"], { timeout: 8000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout) => {
+        if (err || !stdout) return;
+        const help = String(stdout);
+        appendPromptSupport = /--append-system-prompt/.test(help);
+        partialSupport = /--include-partial-messages/.test(help);
+        if (appendPromptSupport === false) {
+          log("[wb] 当前 CLI 不支持 --append-system-prompt，环境约束不注入（搜索仍可用，只是不再提示网络环境）");
+        }
+        if (!partialSupport) log("[wb] 当前 CLI 不支持 --include-partial-messages，退回整条消息级流式");
+      });
+  }).catch(() => { /* 探测失败保持未知，不影响 spawn */ });
+}
+
 /* ---------- 常驻 daemon（可选，用来消掉冷启动） ----------
  *
  * 开启：ORB_WB_DAEMON=1
@@ -363,14 +698,495 @@ function writeConfFlag(name, value) {
 let WB_DAEMON = process.env.ORB_WB_DAEMON === "1" || confFlag("daemon", false);
 const WB_DAEMON_PORT = Number(process.env.ORB_WB_PORT || 19090);
 // daemon 单次等待上限（等一次 run 的回调往返）。
-// 调小可让「daemon 没成」时更快回落到 -p 子进程，代价是长任务更容易走回落。
-// 可变：面板开启热启动时可传 waitMs 一起调小 —— 实测 daemon 有"派发成功但结果
-// 拿不回来"的情况，那时要干等到超时才回落，90s 的默认值会让用户以为卡死。
-let WB_DAEMON_WAIT = Number(process.env.ORB_WB_DAEMON_WAIT || 90000);
+// ⚠️ 2026-11-05 实测把默认值从 90s 降到 12s：这条 daemon 路线在本机 CLI 构建里
+// **回调永远不来**，90s 只是纯空等。用户看到的是「后台执行中 … 91 秒」然后才
+// 开始真正干活（随后还有 24s 的一次性进程），整单将近 100 秒，而且期间没有任何流式
+// 回传 —— 因为那 90 秒里根本没有 agent 在跑。日志实证：
+//   [wb-daemon] 回落到一次性子进程：后台任务在 90s 内未收到回调
+//   [wb] 首字节 4086ms / 结束 24221ms
+// daemon 是"锦上添花"，它的失败成本必须远小于自己省下的冷启动，否则就是负优化。
+let WB_DAEMON_WAIT = Number(process.env.ORB_WB_DAEMON_WAIT || 12000);
 const pendingRuns = new Map();
 let daemonProc = null;
+/* 站名 → 官网地址 的解析缓存：同一个站名一小时内不再问一次 Bing。
+   这类查询的结果是稳定的（"湖南大学官网"不会今天指 A 明天指 B），
+   缓存让第二次「打开 XX 官网」变成零网络请求。 */
+const siteCache = new Map();
+const SITE_CACHE_MS = 3600000;
+/* 本地站点库：先翻"你自己去过的地方"，命中就是零猜测；没命中才去问搜索引擎。
+   建立索引是懒加载的（首次约 250ms），之后 30 分钟刷新一次。 */
+const siteLibrary = createSiteLibrary({ dir: path.join(HERE, "cache"), log });
+/* 解析不到时也要缓存，但只缓存 5 分钟：既避免用户重试时反复吃 2 秒超时，
+   又不至于把一次网络抖动记成"这个站永远解析不出来"。 */
+const SITE_MISS_CACHE_MS = 300000;
+/* 熔断：连续 N 次回调没来就本次会话内不再走 daemon。
+ * 没有这个的话，用户的"热启动"开关会一直挂在那里，每单都白等 12 秒。 */
+let daemonMiss = 0;
+const DAEMON_MISS_LIMIT = 2;
 
 const daemonBase = () => `http://127.0.0.1:${WB_DAEMON_PORT}`;
+
+/* ---------- 站名 → 官网地址 ----------
+ *
+ * 为什么不能"取 Bing 第一条"（2026-11-05 实测翻车）：
+ *   查询「湖南省官网」时 Bing RSS 的 8 条结果全是 kidscodes.cn（少儿编程 SEO 农场），
+ *   取第一条就会把用户送到一个和湖南省毫无关系的招生广告页；查询「河南省官网」时
+ *   第一条又是百度百科 —— 百科能查资料，但不是"官网"，点进去用户还得自己找官网链接。
+ *
+ * 所以改成打分挑，而不是取第一条：
+ *   · 黑名单：百科/知道/知乎/贴吧/微博/豆瓣/CSDN 这类"讲某个东西"的站，永远不是官网；
+ *   · 政府/教育域名（.gov.cn/.edu.cn）天然加分，这是"官网"最强的客观信号；
+ *   · 首页路径、标题含站名主体、标题含"官方/官网/门户"都加分；
+ *   · 同一个站霸屏（8 条里占 4 条以上）判定为 SEO 农场，换一次查询重来。
+ *
+ * 为什么不放在面板里：面板 CSP 只放行 127.0.0.1，发不出这个请求。
+ */
+/* 只拦"讲某个东西"的站：百科、问答、文档农场、维基。
+ * 不拦知乎/豆瓣/哔哩哔哩这类站本身 —— 「打开哔哩哔哩官网」要的正是 bilibili.com，
+ * 第一版把它们一并拉黑，结果官方站被自己拉黑，只剩微软应用商店的下载页能选。 */
+const SITE_BLOCK_HOST = /^(?:baike|zhidao|baijiahao|jingyan|wenku|map|image|v|tieba)\.baidu\.com$|^(?:zhidao|wenda)\.so\.com$|^(?:www\.)?(?:wikipedia\.org|wikiwand\.com|360doc\.com|docin\.com|book118\.com|renrendoc\.com)$|^zhuanlan\.zhihu\.com$|^sm\.cn$/i;
+/* 应用商店 / 下载站：内容对，但不是"这个站的官网"，用户进去还得再点一次下载。 */
+const SITE_STORE_HOST = /^(?:apps|play)\.(?:microsoft|google)\.com$|^apps\.apple\.com$|^(?:www\.)?(?:softonic|coolapk|onlinedown|cr173|pconline|zol)\.com(?:\.cn)?$/i;
+const SITE_ENGINE_HOST = /(^|\.)(bing\.com|baidu\.com|sogou\.com|so\.com|google\.[a-z.]+)$/i;
+const SITE_OFFICIAL_TLD = /\.(gov\.cn|edu\.cn|org\.cn|ac\.cn|gov|edu)$/i;
+
+function regDomain(host) {
+  const h = String(host || "").toLowerCase();
+  const p = h.split(".");
+  if (p.length <= 2) return h;
+  const last2 = p.slice(-2).join(".");
+  /* com.cn / gov.cn / edu.cn 这类二级后缀要往前多取一段，否则 hnu.edu.cn 会被算成 edu.cn，
+     "同站计数"就会把全国所有高校合并成一个站。 */
+  if (/^(com|net|org|gov|edu|ac|co|bj|sh)\.(cn|hk|tw|mo)$/.test(last2)) return p.slice(-3).join(".");
+  return last2;
+}
+
+function siteCore(q) {
+  let s = String(q || "").trim();
+  /* 「在谷歌浏览器里打开XX官网」被整句丢进来时，先把浏览器名剥掉，
+     否则会拿"谷歌浏览器里打开湖南大学"去搜，搜出来全是 Chrome 教程。 */
+  s = s.replace(/^(?:帮我|请|麻烦你?|给我)\s*/, "");
+  s = s.replace(/^在\s*(?:谷歌浏览器|谷歌|chrome|edge|火狐|firefox|浏览器|百度|必应|bing|google)\s*(?:里|中|上)?\s*/i, "");
+  s = s.replace(/^(?:打开|访问|进入|跳转到|导航到|带我到|前往|去)\s*/i, "");
+  /* 后缀词要循环剥：「抖音网页版官网」先剥「官网」得「抖音网页版」，
+     再剥「网页版」才是「抖音」。2026-11-08 实测：core 停在「抖音网页版」时，
+     douyin.com 的标题「抖音 - 记录美好生活」不以它开头，
+     siteSpamDomain 的 selfTitled 判不出来，于是把真官网当成 SEO 农场拒收。 */
+  for (let i = 0; i < 4; i++) {
+    const next = s.replace(/(?:的)?(?:官方网站|官网版|官网|网站|首页|网页版|网页|页面|站点|网址|手机版|电脑版|客户端|官方版|最新版|下载|入口)\s*$/i, "").trim();
+    if (next === s) break;
+    s = next;
+  }
+  return s.trim().slice(0, 40);
+}
+
+/* 这条结果是不是"在说这个单位"。只看标题：
+ *   · 标题里含完整站名（"欢迎光临湖南省人民政府门户网站" 含"湖南省"）；
+ *   · 或首二字与末二字都出现（"中国民用航空局" vs 站名"中国民航局" —— 全称与简称不一致，
+ *     但两头都在，足以认定是同一个单位）。
+ * 反例：「北京协和医学院官网」的 m.beijing.gov.cn（北京市人民政府）、
+ * 「中国人民大学官网」的 www.gov.cn（中国政府网）—— 都是官方域名，但不是这个单位。 */
+function siteEvidence(item, core) {
+  const t = String((item && item.title) || "");
+  if (!core || !t) return false;
+  if (t.includes(core)) return true;
+  if (core.length < 3) return false;
+  /* 末字放宽到 1 个字："中国民用航空局" 与站名 "中国民航局" 连末二字都对不上（"航局" vs "空局"），
+     但"中国…局"已经足够定位。首字仍要求两字，避免"北京"二字把北京市政府当成北京协和医学院。 */
+  return t.includes(core.slice(0, 2)) && t.includes(core.slice(-1));
+}
+
+/* 用户点的名是不是"某个部门/业务站"（招生网、研究生院、图书馆、就业网……）。
+ * 这一位决定了两个相反的处理：
+ *   · 只说机构名（"华南理工大学官网"）→ 招生子站要降权、并换回 www 主页；
+ *   · 点名要部门站（"华南理工大学本科招生网"）→ 恰恰要留在 admission.scut.edu.cn，
+ *     降权和"同域换主页"都得让路，否则用户要招生网、我们给学校官网。 */
+const SITE_DEPT_RE = /招生|研究生院|教务处|图书馆|新闻网|就业|统一身份|认证|邮件|办公|采购|招标|财务|继续教育|本科|研究生|博士|硕士/;
+
+function siteScore(it, core) {  const host = it.host;
+  if (!host) return -1e9;
+  if (SITE_BLOCK_HOST.test(host)) return -1e9;
+  if (SITE_ENGINE_HOST.test(host) && /\/search|\/[sS]\?|format=rss/i.test(it.url)) return -1e9;
+  let s = 10;
+  if (SITE_STORE_HOST.test(host)) s -= 45;
+  /* 官方域名是强信号，但必须配上"这条结果确实在说这个单位"。
+     否则任何一所高校的查询都可能被某个无关的 gov.cn 页面按 .gov.cn 加分顶到第一。 */
+  const ev = siteEvidence(it, core);
+  if (/\.gov\.cn$/i.test(host)) s += ev ? 45 : 8;
+  else if (/\.edu\.cn$/i.test(host)) s += ev ? 38 : 8;
+  else if (/\.(org\.cn|ac\.cn)$/i.test(host)) s += ev ? 22 : 6;
+  else if (/\.(com\.cn|net\.cn|cn)$/i.test(host)) s += 6;
+  try {
+    const p = new URL(it.url).pathname;
+    if (!p || p === "/") s += 12;
+    else if (p.length > 40) s -= 8;
+  } catch { /* 解析不了就当没有路径信息 */ }
+  const t = String(it.title || "");
+  /* 标题里站名的位置很说明问题：官网首页的标题以站名开头（"淘宝"、"湖南大学"），
+     而 SEO 农场的标题是"科技特长生：湖南省……整理汇总大全"，站名被埋在中间。
+     只给"开头 + 后面不长"的标题加分，避免这种页面仅凭"包含站名"就拿高分。 */
+  if (core && t.trim().startsWith(core)) {
+    const tail = t.trim().slice(core.length).replace(/^[\s\-_|·:：,，]+/, "");
+    if (tail.length <= 8 || /官网|官方|门户|首页|网站|欢迎/.test(t)) s += 30;
+    else s += 10;
+  } else if (core && t.includes(core)) {
+    s += 8;
+  }
+  if (/官方|官网|门户|首页/.test(t)) s += 14;
+  /* "下载中心/客户端下载/登录入口"这类页面属于功能页，不是官网首页。
+     实测「哔哩哔哩官网」会把 app.bilibili.com（哔哩哔哩下载中心）顶到 www 前面。 */
+  if (/下载中心|客户端下载|下载页|入口|登录页|注册页/.test(t)) s -= 20;
+  /* 院系/职能部门子站，标题里都带着自己的职能名：
+     「华南理工大学官网」把 yz.scut.edu.cn（研究生招生网）排在了 www.scut.edu.cn 前面，
+     因为它的标题以站名开头、又短又"像首页"。这类站是学校的一部分，不是学校本身。
+     但用户点名要的就是这类站时（"…本科招生网"）不能压它的分。 */
+  if (!SITE_DEPT_RE.test(core) && SITE_DEPT_RE.test(t)) s -= 25;
+  /* pt.hnu.edu.cn / yz.tsinghua.edu.cn 这类业务子域经常排在首页前面，
+     但用户要的是首页 —— 非 www 的多级子域降一点。 */
+  const labels = host.split(".");
+  if (!/^(www|www\d|m)$/i.test(labels[0]) && labels.length > regDomain(host).split(".").length) s -= 10;
+  return s;
+}
+
+/* 把"我对这个结果有多确定"量化出来。上层的规矩是：≥0.8 才允许直接跳转，
+ * 低于 0.8 一律不猜 —— 要么交后台核对，要么退回搜索页并说明。 */
+function siteConfidence(best, core, opts = {}) {
+  if (!best) return 0;
+  const t = String(best.title || "").trim();
+  const head = t.replace(/[\s\-_|·:：,，（(].*$/, "").trim();
+  let c = 0;
+  if (opts.deptSameSite) c = 0.9;
+  else if (core && (head === core || t === core)) c = 0.92;
+  else if (core && t.startsWith(core)) c = 0.82;
+  else if (core && t.includes(core)) c = 0.66;
+  else if (SITE_OFFICIAL_TLD.test(best.host) && siteEvidence(best, core)) c = 0.8;
+  if (c < 0.66) return Math.round(c * 100) / 100;
+  if (SITE_OFFICIAL_TLD.test(best.host)) c += 0.05;
+  if (best.s >= 80) c += 0.03;
+  return Math.min(0.98, Math.round(c * 100) / 100);
+}
+
+/* 一个站霸屏 = SEO 农场。正常的官网查询里，同一注册域最多出现两三次。
+ * 但「淘宝官网」这种商业站，官方主站本来就会占据大半结果 —— 区分办法是看
+ * 该站的标题是不是以站名开头：官网首页的 title 就是"淘宝"/"中国银行"，
+ * SEO 农场的 title 是"科技特长生：湖南省……整理汇总大全"，站名埋在中间。 */
+function siteSpamDomain(items, core) {
+  if (items.length < 6) return "";
+  const counts = new Map();
+  for (const it of items) {
+    const d = regDomain(it.host);
+    if (!d) continue;
+    counts.set(d, (counts.get(d) || 0) + 1);
+  }
+  let dom = "", n = 0;
+  for (const [k, v] of counts) if (v > n) { dom = k; n = v; }
+  if (n < 4 || !dom) return "";
+  if (SITE_OFFICIAL_TLD.test(dom)) return "";
+  /* 官网首页的 title 就是站名本身（"淘宝"/"中国银行"），顶多带个后缀；
+     SEO 农场的 title 是"湖南省科技特长生的政策 - 少儿编程学习网"，站名只是开头几个字，
+     所以要用"以站名开头 + 标题不长"两个条件一起卡。
+     再放一条反向：core 比 title 长（「抖音网页版」vs「抖音」）也算自指 ——
+     后缀剥离没剥干净时，别拿真官网当农场杀（2026-11-08 实际误杀 douyin.com）。 */
+  const selfTitled = !!core && items.some((it) => {
+    if (regDomain(it.host) !== dom) return false;
+    const t = String(it.title || "").trim();
+    if (!t) return false;
+    if (t.startsWith(core) && t.length <= 24) return true;
+    return core.length > t.length && core.startsWith(t);
+  });
+  return selfTitled ? "" : dom;
+}
+
+/* Bing 的 RSS 接口会偶发 ECONNRESET（实测：连续十几条查询时必然撞上几次）。
+ * 一个域名失败就换另一个域名再试一次 —— 代价只有几秒的上限，
+ * 而不重试的代价是"输入了正确站名却被打回搜索页"。
+ * 2026-11-08 事故：串行 + 1.8 秒/host 在这台机器上连续两次超时，
+ * 「抖音官网」直接被打回搜索页。改成两个 host **并行**取先到的非空结果：
+ * 总耗时从 2×timeout 降到 1×timeout，成功率还翻倍。 */
+const SITE_RSS_HOSTS = ["cn.bing.com", "www.bing.com"];
+const SITE_RSS_TIMEOUT_MS = 3000;
+
+async function fetchSiteRssOnce(host, q) {
+  const r = await fetch(`https://${host}/search?q=` + encodeURIComponent(q) + "&format=rss&setlang=zh-CN", {
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/rss+xml,text/xml,*/*" },
+    /* 单 host 上限 3 秒：两个 host 并行，最坏也就是 3 秒 —— 宁可多等这一下，
+       也不要像串行版那样"第一次超时就把用户打回搜索页"。 */
+    signal: AbortSignal.timeout(SITE_RSS_TIMEOUT_MS),
+  });
+  const xml = await r.text();
+  const items = [];
+  for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+    const body = m[1];
+    const link = (body.match(/<link>\s*(?:<!\[CDATA\[)?\s*([^<\]]+?)\s*(?:\]\]>)?\s*<\/link>/) || [])[1] || "";
+    const title = (body.match(/<title>\s*(?:<!\[CDATA\[)?\s*([^<\]]+?)\s*(?:\]\]>)?\s*<\/title>/) || [])[1] || "";
+    let p = null;
+    try { p = new URL(link.trim()); } catch { continue; }
+    if (!/^https?:$/.test(p.protocol)) continue;
+    /* RSS 头部那几个 bing 自指链接长这样 `http://www.bing.com:80/search?q=...` ——
+       带端口，字符串包含判断会漏，所以按 hostname 过滤。 */
+    if (/(^|\.)bing\.com$/i.test(p.hostname)) continue;
+    items.push({ url: p.href, host: p.hostname, title: title.trim() });
+  }
+  return items;
+}
+
+async function fetchSiteRss(q) {
+  /* 并行竞速：任一 host 拿到非空结果立刻返回；全空/全挂才回落。
+     全挂时抛最后一个错误（保持"上层打日志"的旧语义）。 */
+  return new Promise((resolve, reject) => {
+    let left = SITE_RSS_HOSTS.length;
+    let lastErr = null;
+    let done = false;
+    for (const host of SITE_RSS_HOSTS) {
+      fetchSiteRssOnce(host, q).then((items) => {
+        if (done) return;
+        if (items && items.length) { done = true; resolve(items); return; }
+        if (--left === 0) { done = true; lastErr ? reject(lastErr) : resolve([]); }
+      }).catch((err) => {
+        if (done) return;
+        lastErr = err;
+        log(`[resolve-site] ${host} 取不到结果：${err?.message ?? err}`);
+        if (--left === 0) { done = true; reject(lastErr); }
+      });
+    }
+  });
+}
+
+function pickSite(items, core) {
+  /* 同一查询里被引用最多的注册域，通常是真站（官方主站的栏目页会一起被召回）。
+     实测「微信官网」：真正的 weixin.qq.com 占 6 条，而套壳站 wechatapp.com 只有 1 条，
+     但两者标题都是"微信，是一个生活方式"，光看标题分不开 —— 用出现次数当旁证。
+     加分封顶 +12，不足以推翻政府/教育域名的强信号。 */
+  const counts = new Map();
+  for (const it of items) {
+    const d = regDomain(it.host);
+    if (d) counts.set(d, (counts.get(d) || 0) + 1);
+  }
+  const score = (it) => siteScore(it, core) + Math.min(3, (counts.get(regDomain(it.host)) || 1) - 1) * 4;
+  let best = null, bestScore = -1e9;
+  for (const it of items) {
+    const s = score(it);
+    if (s > bestScore) { bestScore = s; best = it; }
+  }
+  if (!best || bestScore <= -1e8) return null;
+  /* 同域"主页优先"：学校/机关的官网是 www.<域名>，而 yz./jw./admission./my. 都是下属站点。
+     只在官方域名上这么做 —— 拿 weixin.qq.com 去换 www.qq.com 会开到腾讯门户，那是另一个站。
+     用户点名要部门站（"本科招生网"）时不动 —— 那时 www 才是答错。 */
+  if (SITE_OFFICIAL_TLD.test(best.host) && !SITE_DEPT_RE.test(core)) {
+    const reg = regDomain(best.host);
+    const home = items.find((it) => it.host === "www." + reg || it.host === reg);
+    if (home && home.host !== best.host) {
+      best = home;
+      bestScore = Math.max(bestScore, score(home));
+    }
+  }
+  return { url: best.url, host: best.host, title: best.title, s: bestScore };
+}
+
+/* 「打开 X 官网」要的是首页，不是某个频道页。
+ * 实测「教育部官网」挑中的是 moe.gov.cn/was5/web/search?channelid=… 这种站内搜索页，
+ * 「知乎」挑中的是 zhihu.com/selection/ —— 域名对、页面错，用户还得自己找首页。
+ * 所以解析结果一律收回站点根（目标里写了完整路径的走不到这里，那条路直接开原 URL）。 */
+function siteHomeUrl(raw) {
+  try { return new URL(raw).origin + "/"; } catch { return raw; }
+}
+
+/* 把"华南理工大学本科招生网"拆成「机构 + 部门」。
+ * 为什么要拆：Bing 的 RSS 对长查询几乎不按整体匹配 —— 实测「华南理工大学本科招生网」
+ * 返回的是"华南地区_百度百科 / 华南金牌 / 华南师范大学"，机构名都被拆成"华南"了。
+ * 拆开之后可以按"机构"先把域名找准，再在结果里找带部门词的那个子站。 */
+function splitDeptName(core) {
+  const m = String(core || "").match(
+    /^(.{2,}?)((?:本科|研究生|博士|硕士|普通|成人|继续|网络|国际)?招生(?:信息)?(?:网|网站|办|信息网)?|研究生院|教务处|图书馆|就业(?:指导)?(?:网|中心)?|校友会|新闻网|统一身份认证)$/);
+  if (!m) return null;
+  const org = m[1].replace(/[的之]\s*$/, "").trim();
+  const dept = m[2];
+  if (org.length < 2) return null;
+  /* 部门词再抽一次：'本科招生网' → '招生'，'研究生院' → '研究生院'。
+     搜"机构+招生"比搜"机构+本科招生网"稳得多。 */
+  const kw = /招生/.test(dept) ? "招生" : dept.replace(/(网|网站|办)$/, "");
+  return { org, dept, kw };
+}
+
+/* 部门意图的打分：在通用打分之上，认"标题里有部门词"和"标题里有机构名"。 */
+function deptScore(it, core, sp) {
+  const t = String(it.title || "");
+  const host = String(it.host || "");
+  let s = siteScore(it, core);
+  if (sp.kw && t.includes(sp.kw)) s += 22;
+  if (t.includes(sp.org)) s += 18;
+  /* 部门自己的站点，标题常常就叫"图书馆"——短到只有部门名，这正是"这是部门首页"的特征。
+     而"广州国际校区图书馆 - 华南理工大学"是门户里的一个栏目页，标题里机构名齐全反而更像答案。 */
+  if (sp.kw && t.trim().startsWith(sp.kw) && t.trim().length <= sp.kw.length + 6) s += 25;
+  /* www2/www3 这类"第二门户"常把各部门的栏目页都挂在下面，抢分能力虚高。 */
+  if (/^www\d/i.test(host)) s -= 15;
+  /* "广州国际校区图书馆"是分校区/分馆，不是本部门。 */
+  if (/校区|分馆|分部/.test(t)) s -= 20;
+  return s;
+}
+
+/* 用户点名要某个部门/业务站（招生网、研究生院、图书馆……）。 */
+async function resolveDeptSite(q, core, sp) {
+  const queries = [];
+  const push = (x) => { if (x && !queries.includes(x)) queries.push(x); };
+  push(q);
+  push(sp.org + sp.kw);
+  push(sp.org + "官网");
+  const tried = [];
+  let best = null, bestScore = -1e9;
+  /* 机构域名：部门站几乎总是挂在机构自己的域名下（lib.scut.edu.cn ⊂ scut.edu.cn）。
+     只有"标题含机构名 + 官方域名"的结果才有资格定义它，免得被 SEO 站带偏。 */
+  let orgReg = "";
+  const pool = [];
+  for (const query of queries) {
+    let items = [];
+    try {
+      items = await fetchSiteRss(query);
+    } catch (err) {
+      log("[resolve-site] 查询失败：", err?.message ?? err);
+    }
+    tried.push(query);
+    for (const it of items) pool.push(it);
+    if (!orgReg) {
+      let pick = null, top = -1e9;
+      for (const it of items) {
+        if (!SITE_OFFICIAL_TLD.test(it.host)) continue;
+        if (!String(it.title || "").includes(sp.org)) continue;
+        const s = siteScore(it, sp.org);
+        if (s > top) { top = s; pick = it; }
+      }
+      if (pick) orgReg = regDomain(pick.host);
+    }
+    /* 这里原本有个"拿到机构名下带部门词的结果就提前收工"的短路 —— 实测会误判：
+       「华南理工大学图书馆」第一条候选是 www2.scut.edu.cn（标题"图书馆 - 华南理工大学"），
+       已满足短路条件，于是真正的 lib.scut.edu.cn 根本没机会出现在后面的查询里。
+       所以三条查询一律跑完（单条 ~120ms，结果按站名缓存一小时）。 */
+  }
+  for (const it of pool) {
+    const s = deptScore(it, core, sp) + (orgReg && regDomain(it.host) === orgReg ? 20 : 0);
+    if (s > bestScore) { bestScore = s; best = { ...it, s }; }
+  }
+  const t = String((best && best.title) || "");
+  const sameSite = !!best && !!orgReg && regDomain(best.host) === orgReg;
+  /* 点名要部门站时，标题里必须真的出现那个部门词。
+     没有这条，「华南理工大学教务处」会被 yz.scut.edu.cn（研究生招生网）拿走 ——
+     它同域名、标题含机构名，唯独没有"教务处"。宁可退回搜索页，也不给一个不相干的部门。 */
+  const deptOk = !sp.kw || t.includes(sp.kw) || t.trim().startsWith(sp.dept);
+  if (!best || bestScore < 45 || !deptOk || (!t.includes(sp.org) && !sameSite && !siteEvidence(best, core))) {
+    log(`[resolve-site] 未采纳(部门) ${JSON.stringify(q)} → ${best ? best.host + "(" + bestScore + ")" : "无"} tried=${tried.join("|")}`);
+    return { url: "", tried, confidence: 0 };
+  }
+  /* 部门站的首页往往在子域根（admission.scut.edu.cn），但也可能挂在 www2 的某个目录下
+     （…/graduate）。浅路径保留，深路径（文章页）收回站点根。 */
+  let home = best.url;
+  try {
+    const u = new URL(best.url);
+    const segs = u.pathname.split("/").filter(Boolean);
+    home = (segs.length <= 2 ? u.origin + u.pathname.replace(/\/?$/, "/") : u.origin + "/");
+  } catch { home = best.url; }
+  const conf = siteConfidence(best, core, { deptSameSite: sameSite && deptOk });
+  log(`[resolve-site] (部门) ${JSON.stringify(q)} → ${best.host}(${bestScore}, ${conf}) ${home} tried=${tried.join("|")}`);
+  return { url: home, tried, confidence: conf };
+}
+
+async function resolvePlainSite(q, core) {
+  let tried = [];
+  let items = [];
+  try {
+    items = await fetchSiteRss(q);
+    tried.push(q);
+  } catch (err) {
+    log("[resolve-site] 查询失败：", err?.message ?? err);
+  }
+  let best = pickSite(items, core);
+  /* 该换查询重来的情况：
+     1) 一条可用结果都没有；
+     2) 首选分数明显偏低（<45，即没有官方域名、也不像首页）；
+     3) 结果被同一个非官方站霸屏（kidscodes.cn 那种 SEO 农场）。
+     第 2 条一开始写成"分数低**且**标题里没有站名"，结果「湖南省官网」漏了：
+     SEO 农场的标题恰好以"湖南省"开头（"湖南省科技特长生的政策 - 少儿编程学习网"），
+     于是既不算弱、也不算无标题，补救查询不触发，最后被 30 分门槛拒掉。 */
+  const spam = siteSpamDomain(items, core);
+  const weak = !best || best.s < 45;
+  /* "官方域名但不像在说这个单位"也当作弱结果，必须换查询重来。 */
+  const offTarget = !!best && SITE_OFFICIAL_TLD.test(best.host) && !siteEvidence(best, core);
+  if ((!best || weak || spam || offTarget) && core && core !== q) {
+    try {
+      const items2 = await fetchSiteRss(core);
+      tried.push(core);
+      const best2 = pickSite(items2, core);
+      if (best2 && (!best || best2.s > best.s)) best = best2;
+    } catch (err) {
+      log("[resolve-site] 补救查询失败：", err?.message ?? err);
+    }
+  }
+  /* 官方域名或高分才算解析成功。剩下的交给面板退回搜索页 ——
+     给一个明显错的地址，比停在搜索结果页更糟。 */
+  if (spam && best && regDomain(best.host) === spam) {
+    log(`[resolve-site] 拒收霸屏站 ${JSON.stringify(q)} → ${best.host} tried=${tried.join("|")}`);
+    return { url: "", tried, spam, confidence: 0 };
+  }
+  /* 官方域名、但标题里找不到这个单位 —— 那是"另一个政府/学校的官网"，
+     打开它比停在搜索结果页更误导。 */
+  if (best && SITE_OFFICIAL_TLD.test(best.host) && !siteEvidence(best, core)) {
+    log(`[resolve-site] 拒收错主体 ${JSON.stringify(q)} → ${best.host}｜${String(best.title || "").slice(0, 24)} tried=${tried.join("|")}`);
+    return { url: "", tried, confidence: 0 };
+  }
+  if (!best || best.s < 30) {
+    log(`[resolve-site] 未采纳 ${JSON.stringify(q)} → ${best ? best.host + "(" + best.s + ")" : "无"} tried=${tried.join("|")}`);
+    return { url: "", tried, confidence: 0 };
+  }
+  const home = siteHomeUrl(best.url);
+  const conf = siteConfidence(best, core);
+  log(`[resolve-site] ${JSON.stringify(q)} → ${best.host}(${best.s}, ${conf}) ${home} tried=${tried.join("|")}`);
+  return { url: home, tried, confidence: conf };
+}
+
+/* 名字本身可能就是域名。
+ *
+ * 起因（2026-11-06）：用户输入「湖南奶龙大学官网」——这不是虚构机构，
+ * 而是有人真的注册了 `湖南奶龙大学.com`（IDN，punycode xn--6kr28k0gz4eq33b7r1e.com），
+ * 访问后 301 到 https 站点。搜索引擎对它一无所获（返回全是 SEO 农场），
+ * 但"这个域名存在"是可以用 DNS 直接验证的客观事实 —— 比任何排名都硬。
+ *
+ * 只在解析器已经放弃（没有 ≥0.8 的答案）时才用，绝不覆盖正规官网；
+ * 而且必须有 DNS 解析 + HTTP 可达（2xx/3xx）双证据，纯 DNS 的死域名不给过。 */
+async function probeDomainAlias(core) {
+  const name = String(core || "").trim().replace(/\s+/g, "");
+  if (name.length < 2 || name.length > 40) return null;
+  if (/[，,。、；;：:！!？?（）()【】\[\]"'“”]/.test(name)) return null;
+  const bare = name.replace(/^www\./i, "");
+  const cands = [];
+  if (name !== bare) cands.push(name);
+  if (/\.[a-z]{2,}$/i.test(bare)) cands.push(bare);
+  else for (const tld of ["com", "cn", "com.cn", "net"]) cands.push(`${bare}.${tld}`);
+  let dns = null;
+  try { dns = await import("node:dns"); } catch { return null; }
+  for (const host of cands.slice(0, 4)) {
+    try { await dns.promises.lookup(host, { timeout: 900 }); } catch { continue; }
+    try {
+      const r = await fetch("http://" + host + "/", {
+        redirect: "manual",
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+        signal: AbortSignal.timeout(1800),
+      });
+      if (r.status >= 400) continue;
+      const url = r.status >= 300 ? (r.headers.get("location") || "http://" + host + "/") : (r.url || "http://" + host + "/");
+      return { url, host, status: r.status, confidence: 0.85 };
+    } catch {
+      /* DNS 有解析但连不上：可能只是这台机器到该站不通（https 超时很常见）。
+         给低置信度，让上层按"不猜"处理，而不是硬开一个打不开的页面。 */
+      return { url: "http://" + host + "/", host, status: 0, confidence: 0.6 };
+    }
+  }
+  return null;
+}
+
+async function resolveSite(q) {
+  const core = siteCore(q) || q;
+  const sp = splitDeptName(core);
+  return sp ? resolveDeptSite(q, core, sp) : resolvePlainSite(q, core);
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function daemonHealth() {
@@ -833,17 +1649,24 @@ async function runWorkbuddy(task, timeoutMs = JOB_TIMEOUT_MS, model = "", sink =
 
   // 常驻 daemon 优先（可选开启，见 WB_DAEMON 处的实测说明）；
   // 拿不到结果就回落到一次性子进程 —— 保证后台始终有可用路径。
-  if (WB_DAEMON) {
+  // 熔断：这台机器上的 daemon 若连续两次不回回调，剩下的任务直接走 -p，
+  // 不再让每单都先白等一次 WAIT（用户感知就是"点了没反应"）。
+  if (WB_DAEMON && daemonMiss < DAEMON_MISS_LIMIT) {
     try {
       const text = await daemonRun(task, timeoutMs, useModel);
-      if (text) return { content: [{ type: "text", text }], isError: false };
+      if (text) { daemonMiss = 0; return { content: [{ type: "text", text }], isError: false }; }
     } catch (err) {
-      log("[wb-daemon] 回落到一次性子进程：", err?.message ?? err);
+      daemonMiss += 1;
+      log("[wb-daemon] 回落到一次性子进程：", err?.message ?? err,
+        daemonMiss >= DAEMON_MISS_LIMIT
+          ? "（连续 " + daemonMiss + " 次未回回调，本次会话内不再尝试 daemon；"
+            + "可在状态栏把「热启动」关掉以免每次启动都白试）"
+          : "");
     }
   }
   /* 进度可见：把普通后台任务也挂进 LIVE（面板每 5 秒轮询 /api/status 就能读到）。
      total=0 时面板不画步数，只显示「最近一个工具 · 已用几秒」。
-     只有 LIVE 空闲时才接管，免得和正在跑的工作流回放抢同一个槽。 */
+     只有 LIVE 空闲时才接管，免得和正在跑的自动化回放抢同一个槽。 */
   const ownLive = !LIVE.active;
   if (ownLive) liveStart("workbuddy", String(task || "").replace(/\s+/g, " ").slice(0, 24), 0, "后台任务");
   tokBegin(engine, wantCustom ? useModel : (useModel || "").trim());
@@ -863,15 +1686,144 @@ async function runWorkbuddy(task, timeoutMs = JOB_TIMEOUT_MS, model = "", sink =
   }
 }
 
-/** 流式版一次性执行：--output-format stream-json。
+/** 流式版一次性执行：--output-format stream-json + 增量消息。
  *
- *  正文怎么取：**把所有 assistant 事件的 text 拼起来**。这是最稳的一条 ——
- *  不依赖 result 事件里叫什么字段，也不受 CLI 版本改动影响；万一哪天
- *  事件形状变了，只要还有 assistant 文本就有内容，不会把整个后台通道弄哑。
- *  真要出问题，用 ORB_WB_TEXT=1 一键退回 spawnOnce。
+ *  正文怎么取：双轨。
+ *   · 最终答案 text：只把**完整的 assistant 事件**里的 text 拼起来。这是最稳的一条 ——
+ *     不依赖 result 事件里叫什么字段，也不受 CLI 版本改动影响；万一哪天事件形状变了，
+ *     只要还有 assistant 文本就有内容，不会把整个后台通道弄哑。
+ *   · 实时预览 preview：--include-partial-messages 推来的 content_block_delta 逐块
+ *     累加，只用于推给面板（sink(text + preview)），**不进最终答案**。完整消息到达时
+ *     text 收下整段、preview 清零，两边不重复；收尾时 commitPreview 兜底，
+ *     保证「只给增量不给完整消息」的实现也不会交出空答案。
+ *
+ *  真要出问题，用 ORB_WB_NO_PARTIAL=1 退回消息级输出，或 ORB_WB_TEXT=1 整体退回 spawnOnce。
  *
  *  顺带把每个 tool_use 的名字写进 LIVE.lastTool，供面板做过程播报。
  */
+
+/* ==== WB_PARTIAL_START ====
+ * 流式正文状态机（纯函数、零副作用）。按标记抽出来由 test/wbStreamPartial.test.mjs 独立跑。
+ *
+ * 为什么要单独一层：开启 --include-partial-messages 后，同一个 token 可能出现两次 ——
+ * 先在 content_block_delta 里，后在完整的 assistant 消息里。直接在解析回调里
+ * 两边都 `text +=` 会把答案翻倍；只认增量又怕某些 CLI 版本不给完整消息、最后交空答案。
+ *
+ * 契约：
+ *   · text    —— 最终答案，只由完整 assistant 消息提交；
+ *   · preview —— 当前消息尚未提交的增量，只用于推给面板，不进 text；
+ *   · 完整消息到达：text += 整段，preview 清零（面板看到的内容连续、不回退）；
+ *   · 收尾由调用方 commitPreview() 兜底：只给增量时把残留预览并进 text。
+ */
+function applyStreamEvent(state, ev) {
+  const out = {
+    text: String((state && state.text) || ""),
+    preview: String((state && state.preview) || ""),
+    partialSeen: !!(state && state.partialSeen),
+    chunk: "",        // 本次新增的增量文本（决定要不要推一次 sink）
+    committed: false, // 发生了完整消息提交（调用方据此强制推一次）
+    toolUses: [],
+    isResult: false,
+    usage: null,
+    errors: [],
+  };
+  if (!ev || typeof ev !== "object") return out;
+  /* stream_event 是外层包装，真事件在 .event 里；没有 .event 就当它自己是真的。 */
+  let e = ev;
+  if (e.type === "stream_event" && e.event && typeof e.event === "object") e = e.event;
+  const t = e.type;
+
+  // ① 文本增量：只认 text_delta，thinking_delta / input_json_delta 一律不进正文
+  /* 兼容三种外壳：裸 content_block_delta、裸 text_delta、以及没带 .event 的
+     stream_event 自身裹着 delta（不同 CLI 版本见过不止一种）。 */
+  if (t === "content_block_delta" || t === "text_delta" || t === "stream_event") {
+    const d = (e.delta && typeof e.delta === "object") ? e.delta : {};
+    let chunk = null;
+    if ((t === "content_block_delta" || t === "stream_event")
+      && (d.type === "text_delta" || !d.type) && typeof d.text === "string") chunk = d.text;
+    else if (t === "text_delta" && typeof e.text === "string") chunk = e.text;
+    if (chunk) { out.preview += chunk; out.partialSeen = true; out.chunk = chunk; }
+    return out;
+  }
+
+  // ② 完整 assistant 消息：提交整段、清预览；工具名照旧留给过程播报
+  if (t === "assistant" && e.message && Array.isArray(e.message.content)) {
+    for (const c of e.message.content) {
+      if (!c) continue;
+      if (c.type === "text" && typeof c.text === "string") {
+        out.text += c.text;
+        if (out.partialSeen) { out.preview = ""; out.partialSeen = false; }
+        out.committed = true;
+      } else if (c.type === "tool_use" && c.name) {
+        out.toolUses.push(String(c.name));
+      }
+    }
+    return out;
+  }
+
+  // ③ result：整轮累计用量在这里，assistant 事件上的 usage 全是 0 或占位
+  if (t === "result") {
+    out.isResult = true;
+    out.usage = e.usage || null;
+    if (e.is_error && Array.isArray(e.errors)) out.errors = e.errors.slice();
+    return out;
+  }
+  return out;
+}
+
+/** 收尾兜底：把尚未提交的预览并进最终答案。 */
+function commitStreamPreview(state) {
+  return {
+    text: String((state && state.text) || "") + String((state && state.preview) || ""),
+    preview: "",
+    partialSeen: false,
+  };
+}
+/* ==== WB_PARTIAL_END ==== */
+
+/* ---------------- 接口级拒绝 ≠ 任务结果 ----------------
+ * 真实故障（2026-11-05）：后台任务跑完 91 秒，模型侧已限流，CLI 把
+ * 「429 您的使用量已超出频率限制，将在 … 重置」当成**模型正文**回吐。
+ * 旧逻辑只看「正文非空」，于是面板显示「后台完成：429 …」、人格再补一句
+ * 「搞定了」—— 用户被界面和语音双重误导，还以为任务真做完了。
+ *
+ * 现在分三层处理：
+ *   ① 流式过程中一旦认出这句是接口拒绝 → 立刻杀进程（不再白等 100 秒）；
+ *   ② 收尾时正文 / result 事件判成接口拒绝 → 抛错（job 记 error，不走成功分支）；
+ *   ③ 面板侧再兜一层（见 panel.html 的 looksLikeProviderError）。
+ *
+ * 误伤防线：不接受"正文里顺带提到 429"这种情形 —— 必须
+ *   要么 result 事件自己标了 is_error，要么这句落在正文开头 60 字内且全文很短。 */
+const FATAL_PROVIDER_RE = /(\b429\b[^\n]{0,60}(频率|限流|rate[\s_-]?limit|too many requests|使用量已超出|请求过于频繁|稍后重试|重置)|(频率|限流|请求过于频繁)[^\n]{0,30}\b429\b|rate[\s_-]?limit|too many requests|insufficient_quota|quota exceeded|额度(不足|已用尽|已超出|已用完)|用量已超出|invalid[_ ]api[_ ]key|\b401\b[^\n]{0,40}(unauthorized|invalid|未授权|鉴权)|unauthorized|API key[^\n]{0,30}(invalid|expired|无效|过期))/i;
+const FATAL_MAX_LEN = 400;
+
+function fatalProviderText(text, resultIsError) {
+  const s = String(text || "").trim();
+  if (!s) return "";
+  const m = s.match(FATAL_PROVIDER_RE);
+  if (!m) return "";
+  const atFront = (m.index || 0) <= 60;
+  if (!resultIsError && !(atFront && s.length <= FATAL_MAX_LEN)) return "";
+  return m[0];
+}
+
+/** 把接口原文翻成"用户能照着做"的一句话。 */
+function fatalProviderMessage(raw, fallbackDetail) {
+  const s = String(raw || "") + "\n" + String(fallbackDetail || "");
+  const reset = s.match(/(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+  const when = reset ? `${reset[1]} ${reset[2]}` : "";
+  if (/\b429\b|rate[\s_-]?limit|too many requests|频率|限流|用量已超出/i.test(s)) {
+    return "模型调用被限流（429）：额度已用完或请求过快，这次任务没有做成。"
+      + (when ? `额度预计 ${when} 重置。` : "")
+      + "可以先在「后台模型」里换一个模型再试。";
+  }
+  if (/401|unauthorized|invalid[_ ]api[_ ]key|鉴权|API key[^\n]{0,20}(无效|过期)/i.test(s)) {
+    return "模型接口鉴权失败（401）：Key 无效或已过期，这次任务没有做成。"
+      + "请到「后台模型 › 自定义 API」重填 Key 后再派一次。";
+  }
+  return "模型接口拒绝了这次调用（额度或配额问题），任务没有做成。换模型或稍后重试。";
+}
+
 function spawnOnceStream(task, timeoutMs, model, cliPath = "", sink = null) {
   return new Promise(async (resolve, reject) => {
     if (!task.trim()) return reject(new Error("workbuddy_execute 需要一个 task 参数"));
@@ -886,8 +1838,15 @@ function spawnOnceStream(task, timeoutMs, model, cliPath = "", sink = null) {
       "-p", task,
       "--port", String(port),
       "--output-format", "stream-json",
+      /* token 级增量：不开这个开关时，stream-json 只在整条 assistant 消息**写完**
+         才吐一行，面板就是「隔十几秒蹦一整段」。开了之后 CLI 会额外推
+         stream_event / content_block_delta，onLine 把它们逐块接进预览文本。
+         --verbose 是这套原始 SSE 增量在 print 模式下的前置开关（本机 CLI 的
+         --help 明确列出两者）。能力探测判不支持时自动退回旧的消息级输出。 */
+      ...(cliWantsPartial() ? ["--include-partial-messages", "--verbose"] : []),
       // 后台无人值守，不能卡在权限确认上
       "--permission-mode", "bypassPermissions",
+      ...(WB_ENV_HINT_ON && appendPromptSupport !== false ? ["--append-system-prompt", WB_ENV_HINT] : []),
       ...((model || WB_MODEL).trim() ? ["--model", (model || WB_MODEL).trim()] : []),
       ...(WB_EFFORT ? ["--effort", WB_EFFORT] : []),
       ...(WB_MAX_TURNS ? ["--max-turns", WB_MAX_TURNS] : []),
@@ -906,8 +1865,13 @@ function spawnOnceStream(task, timeoutMs, model, cliPath = "", sink = null) {
     trackProc(child);
     registerChild(child.pid, "cli");
 
-    const MAX_BYTES = 8 * 1024 * 1024;   // 与旧 execFile 的 maxBuffer 对齐
-    let text = "";
+    /* 开启增量后 stdout 里多的是每个 delta 的事件元数据（不只是正文本身），
+       行数可能比旧的消息级输出高两个数量级。上限从 8MB 放宽到 32MB，
+       否则长回答会在半路被 MAX_BYTES 误杀，表现成「跑到一半突然没结果」。 */
+    const MAX_BYTES = 32 * 1024 * 1024;
+    let text = "";       // 最终答案：只由完整的 assistant 消息提交，绝不重复累加
+    let preview = "";    // 当前消息尚未提交的增量文本，只用于实时预览推送
+    let partialSeen = false;
     let stderr = "";
     let bytes = 0;
     let buf = "";
@@ -915,12 +1879,33 @@ function spawnOnceStream(task, timeoutMs, model, cliPath = "", sink = null) {
     let timedOut = false;
     let toolSeen = 0;
     let lastSinkPush = 0;
+    /* 接口级拒绝：一旦认出就把原文留在这里，并在流式途中直接杀进程。
+       resultIsError 来自 CLI 的 result 事件，是比正文匹配更硬的信号。 */
+    let fatalRaw = "";
+    let resultIsError = false;
+    /* 耗时分解：用户抱怨「反应慢」时，必须能分清是 CLI 冷启动、还是模型生成。
+       不记这三个数，任何优化都是瞎猜。 */
+    const tSpawn = Date.now();
+    let firstByteMs = 0;
+    /* 增量推送节流：350ms 是给「整条消息级」输出定的（约 3 次/秒），
+       套在 token 级增量上就还是「每隔一段时间蹦一段」。100ms ≈ 10 帧/秒，
+       面板侧已有 rAF 批量 + 增量追加，不会把渲染主线程压垮。 */
+    const SINK_PUSH_MS = cliWantsPartial() ? 100 : 350;
     const sinkPush = (force) => {
       if (!sink) return;
       const now = Date.now();
-      if (!force && now - lastSinkPush < 350) return;   // 节流：最多 ~3 次/秒
+      if (!force && now - lastSinkPush < SINK_PUSH_MS) return;
       lastSinkPush = now;
-      try { sink(text); } catch {}
+      /* 预览只进推送、不进最终答案：完整 assistant 消息到达时会把它提交成 text，
+         这样两边不会把同一段字算两遍，面板看到的也是连续不回退的一段。 */
+      try { sink(text + preview); } catch {}
+    };
+    /* 兜底提交：万一某个 CLI 版本只给增量、不给完整 assistant 消息，
+       收尾时把残留预览并进最终答案，保证「有输出就该有结果」。
+       合并规则与上面同源，走纯函数 commitStreamPreview。 */
+    const commitPreview = () => {
+      const r = commitStreamPreview({ text, preview, partialSeen });
+      text = r.text; preview = r.preview; partialSeen = r.partialSeen;
     };
 
     /* execFile 的 timeout 只杀父进程，孙进程会成孤儿；这里自己计时 + 树杀 */
@@ -930,10 +1915,34 @@ function spawnOnceStream(task, timeoutMs, model, cliPath = "", sink = null) {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      /* 接口拒绝优先于"正文非空 = 成功"这条老判定 —— 否则限流提示会被
+         当成任务结果交付（面板显示「后台完成：429 …」，人格还说"搞定了"）。 */
+      if (fatalRaw) {
+        const msg = fatalProviderMessage(fatalRaw, stderr);
+        log("[wb] 接口拒绝，判失败：" + msg);
+        return reject(new Error(msg));
+      }
       const out = text.trim();
+      const exit = classifyCliExit(err, out);
+      const fatalInAnswer = fatalProviderText(out, resultIsError);
+      if (fatalInAnswer) {
+        const msg = fatalProviderMessage(fatalInAnswer, stderr);
+        log("[wb] 正文即接口拒绝，判失败：" + msg);
+        return reject(new Error(msg));
+      }
+      /* 失败诚实：非零退出码优先于「正文非空」。半段结果必须如实上报，
+       * 不能让面板显示「后台完成」、人格再补一句「搞定了」。 */
+      if (exit.failed) {
+        const msg = cliExitMessage(exit);
+        log("[wb] " + msg);
+        const e = new Error(msg);
+        e.exitCode = exit.exitCode;
+        e.partialOutput = exit.partialOutput;
+        return reject(e);
+      }
       if (out) {
         wbCliAuth = "ok";
-        return resolve({ content: [{ type: "text", text: extractAnswer(out) }], isError: false });
+        return resolve({ content: [{ type: "text", text: extractAnswer(out) }], isError: false, exitCode: exit.exitCode });
       }
       const detail = String(stderr || (err && err.message) || "").trim();
       if (/Authentication required|Please use \/login|not logged in|unauthorized/i.test(detail)) {
@@ -948,29 +1957,61 @@ function spawnOnceStream(task, timeoutMs, model, cliPath = "", sink = null) {
       return reject(new Error(`CodeBuddy CLI 无输出：${detail || "exit " + ((err && err.code) ?? "?")}`));
     };
 
+    /* 解析回调只负责把状态机结果落回局部变量 + 发副作用；
+       文本合并规则全在 applyStreamEvent（WB_PARTIAL_START 段），可独立单测。 */
     const onLine = (line) => {
       const s = line.trim();
       if (!s || s.charCodeAt(0) !== 123) return;      // 只吃 JSON 行
       let ev;
       try { ev = JSON.parse(s); } catch { return; }
-      if (ev.type === "assistant" && ev.message && Array.isArray(ev.message.content)) {
-        for (const c of ev.message.content) {
-          if (!c) continue;
-          if (c.type === "text" && typeof c.text === "string") { text += c.text; sinkPush(false); }
-          else if (c.type === "tool_use" && c.name) {
-            toolSeen += 1;
-            if (LIVE.active) liveStep(toolSeen, String(c.name));
+      const r = applyStreamEvent({ text, preview, partialSeen }, ev);
+      text = r.text; preview = r.preview; partialSeen = r.partialSeen;
+
+      if (r.chunk) {
+        sinkPush(false);
+        /* 接口拒绝也可能先出现在增量里：识别到就立刻杀进程，别白等 90 秒。 */
+        if (!fatalRaw) {
+          const hit = fatalProviderText(text + preview, false);
+          if (hit) {
+            fatalRaw = text + preview;
+            log("[wb] 流式识别到接口拒绝（" + hit.slice(0, 40) + "），立即停止 CLI");
+            try { killProcTree(child); } catch {}
           }
         }
-      } else if (ev.type === "result") {
+      }
+      if (r.committed) {
+        sinkPush(true);   // 提交这一帧必须推，别被节流吞掉
+        /* 流式就认出来：这句不是任务结果，是接口拒绝。
+           立刻杀掉 CLI —— 限流不会因为再跑 90 秒而自愈，
+           白等只会让用户以为"还在努力"。 */
+        if (!fatalRaw) {
+          const hit = fatalProviderText(text, false);
+          if (hit) {
+            fatalRaw = text;
+            log("[wb] 流式识别到接口拒绝（" + hit.slice(0, 40) + "），立即停止 CLI");
+            try { killProcTree(child); } catch {}
+          }
+        }
+      }
+      for (const name of r.toolUses) {
+        toolSeen += 1;
+        if (LIVE.active) liveStep(toolSeen, name);
+      }
+      if (r.isResult) {
         /* 整轮累计用量就在这里（assistant 事件上的 usage 全是 0 或占位）。
            自定义模型也照给，所以两种引擎同一条取数路径。 */
-        if (ev.usage) tokAddTask(ev.usage);
-        if (ev.is_error && Array.isArray(ev.errors)) stderr += ev.errors.join("\n") + "\n";
+        if (r.usage) tokAddTask(r.usage);
+        if (r.errors.length) stderr += r.errors.join("\n") + "\n";
       }
     };
 
     child.stdout.on("data", (d) => {
+      if (!firstByteMs) {
+        firstByteMs = Date.now() - tSpawn;
+        /* 首字节 = 冷启动（拉起 CLI + 完成鉴权/建连）+ 首 token。这个数一出来，
+           「慢在壳还是慢在模型」就不用再猜了。 */
+        log("[wb] 首字节 " + firstByteMs + "ms（含冷启动）");
+      }
       bytes += d.length;
       if (bytes > MAX_BYTES) { try { killProcTree(child); } catch {} return; }
       buf += d.toString("utf8");
@@ -984,10 +2025,60 @@ function spawnOnceStream(task, timeoutMs, model, cliPath = "", sink = null) {
     child.on("error", (e) => finish(e));
     child.on("close", (code, sig) => {
       if (buf) { onLine(buf); buf = ""; }
+      commitPreview();   // 只给增量、不给完整消息的实现在这里兜底，别让答案变空
       sinkPush(true);   // 收尾再推一次，确保最后一段不丢
+      log("[wb] 结束 " + (Date.now() - tSpawn) + "ms，首字节 " + (firstByteMs || 0)
+        + "ms，工具 " + toolSeen + " 次，正文 " + text.length + " 字");
       finish(sig || code ? { code, signal: sig } : null);
     });
   });
+}
+
+/* ---------------- 后台 CLI 预热 ----------------
+ * Windows 上这个 CLI 每次冷启动都要重新映射一批 DLL，二次启动明显更快（二进制与依赖
+ * 已进系统文件缓存）。这里在桥起来之后延迟跑一次极短调用，把这份固定成本摊到用户
+ * 开口之前 —— 代价是一次几百 token 的空调用。
+ *
+ * 为什么不用 daemon（--serve 常驻）：实测那条路会先等约 90s 回调、不来再回落 -p，
+ * 反而更慢（见 bridge.conf 的 _daemon_note）。预热是同一目标下更笨但不会倒退的做法。
+ * 常驻单进程（--input-format stream-json 连发多轮）也实测过：那条路径不走 -p 的鉴权，
+ * 第一轮就回 "Authentication required / Please use /login"，本轮直接不可用。
+ *
+ * 现在有两处触发：① 桥起来 8 秒后自动一次；② 面板唤出 / 输入框聚焦时按需再热一次
+ * （带 TTL，见 PREWARM_TTL_MS）—— 用户打字的那几秒正好把 2.5 秒启动成本摊掉。
+ * ORB_WB_PREWARM=0 关闭；若此刻已有真实任务在跑就直接跳过，绝不叠加。 */
+const PREWARM_TTL_MS = 180000;      // 3 分钟内热过就不再重复
+let cliPrewarmAt = 0;
+let cliPrewarming = false;
+function prewarmCli(force = false) {
+  if (String(process.env.ORB_WB_PREWARM || "") === "0") return;
+  if (LIVE.active || cliPrewarming) return;
+  const now = Date.now();
+  if (!force && cliPrewarmAt && now - cliPrewarmAt < PREWARM_TTL_MS) return;
+  cliPrewarmAt = now;
+  cliPrewarming = true;
+  (async () => {
+    try {
+      const cli = await resolveWbCli();
+      if (!cli.found) return;
+      const viaNode = /\.(m?js)$/i.test(cli.path);
+      const t0 = Date.now();
+      const child = spawn(viaNode ? NODE_EXE : cli.path, [
+        ...(viaNode ? [cli.path] : []),
+        "-p", "ok",
+        "--output-format", "stream-json",
+        "--permission-mode", "bypassPermissions",
+      ], { windowsHide: true, stdio: ["ignore", "ignore", "ignore"], env: cleanCliEnv() });
+      child.on("error", () => {});
+      const t = setTimeout(() => { try { killProcTree(child); } catch {} }, 90000);
+      if (t && typeof t.unref === "function") t.unref();
+      child.on("close", () => {
+        clearTimeout(t);
+        cliPrewarming = false;
+        log("[wb] 预热完成 " + (Date.now() - t0) + "ms（之后的任务省掉冷启动）");
+      });
+    } catch { cliPrewarming = false; }
+  })();
 }
 
 /* ---------------- 人格台词批量生成（B + E 的措辞来源） ----------------
@@ -1451,6 +2542,7 @@ async function spawnOnce(task, timeoutMs, model, cliPath = "") {
     "--output-format", "text",
     // 后台无人值守，不能卡在权限确认上；与 dsh 轨道的「直接干活」语义对齐。
     "--permission-mode", "bypassPermissions",
+    ...(WB_ENV_HINT_ON && appendPromptSupport !== false ? ["--append-system-prompt", WB_ENV_HINT] : []),
     // 单次指定的 model 优先，其次才用环境变量里的默认值
     ...((model || WB_MODEL).trim() ? ["--model", (model || WB_MODEL).trim()] : []),
     ...(WB_EFFORT ? ["--effort", WB_EFFORT] : []),
@@ -1477,8 +2569,17 @@ async function spawnOnce(task, timeoutMs, model, cliPath = "") {
            ⚠️ 不能改用"超时 + 500ms 的定时器"：timeout 一到 exit 立刻就来了
            （实测 timeoutMs+16ms），定时器会先被 exit 清掉，等于什么都没做。 */
         if (err && (err.killed || err.signal)) killProcTree(child);
-        // CLI 非零退出时也可能已在 stdout 里产出结果，优先取 stdout。
         const out = String(stdout || "").trim();
+        const exit = classifyCliExit(err, out);
+        /* 与 spawnOnceStream 的 finish 使用同一份判定，杜绝两条 CLI 路径口径漂移。
+         * 旧注释说「非零退出时也可能已产出结果，优先取 stdout」——按 11-07 简报
+         * §3.5 改成：退出码优先，部分输出不采纳，且如实说明副作用可能已产生。 */
+        if (exit.failed) {
+          const e = new Error(cliExitMessage(exit));
+          e.exitCode = exit.exitCode;
+          e.partialOutput = exit.partialOutput;
+          return reject(e);
+        }
         if (!out) {
           const detail = String(stderr || err?.message || "").trim();
           // 未登录是最常见的失败：直接把「怎么修」给到面板，而不是只回一句英文报错。
@@ -1490,7 +2591,7 @@ async function spawnOnce(task, timeoutMs, model, cliPath = "") {
           return reject(new Error(`CodeBuddy CLI 无输出：${detail}`));
         }
         wbCliAuth = "ok";   // 真实调用成功过一次，登录态才算确认
-        resolve({ content: [{ type: "text", text: extractAnswer(out) }], isError: false });
+        resolve({ content: [{ type: "text", text: extractAnswer(out) }], isError: false, exitCode: exit.exitCode });
       },
     );
     trackProc(child);   // 登记进活动表：急停时连它一起杀（后台 AI 任务就靠这个能停住）
@@ -1913,7 +3014,7 @@ function repairFront() {
   });
 }
 
-/* ---------------- 工作流录制 / 回放 ----------------
+/* ---------------- 自动化录制 / 回放 ----------------
  * 目标：把「录一遍 → 一键重放」做出来，固定流程不再消耗 AI 调用。
  * 落盘：<控制台>/workflows/<名称>.json
  * 录制原理：录制期间拦截每一次 /api/call，把 (tool, args) 原样记下来；
@@ -1921,10 +3022,33 @@ function repairFront() {
  * 说明：只读工具（Snapshot/Screenshot）默认也录，但可按 skipRead 跳过，
  *      避免回放时因"多看一眼"把节奏拖慢。
  */
-/* 工作流目录跟着 DATA_DIR 走：桥与面板共用同一处，
+/* 自动化目录跟着 DATA_DIR 走：桥与面板共用同一处，
    避免「桥写包内、面板读 APPDATA」分叉（DATA_DIR 的定义见文件头部）。 */
 const WORKFLOW_DIR = path.join(DATA_DIR, "workflows");
+/* 与 WORKFLOW_DIR 同级而非其子目录：wfList() 直接 readdir(WORKFLOW_DIR)，
+   放子目录虽会被 .json 后缀过滤掉，但同级隔离更彻底，也方便用户手动清理。 */
+const WF_TRASH_DIR = path.join(DATA_DIR, "workflows-trash");
+const wfTrash = createWfTrash({ dir: WORKFLOW_DIR, trashDir: WF_TRASH_DIR, safeName: (s) => wfSafeName(s) });
+const wfRuns = createWfRunLedger({ file: path.join(DATA_DIR, "wf-runs.jsonl"), log: (s) => console.log(s) });
+/* 步级轨迹：一个运行一个 jsonl，按运行查是最高频用法，不必扫全表。
+   轨迹是观测，不是执行前提 —— 写不进去也绝不拖垮回放（模块内部已吞异常）。 */
+const wfTrace = createAutoTrace({ dir: path.join(DATA_DIR, "wf-trace") });
+/* 配方版本：<dir>/<配方名>/<rev>.json，body 存原始文本，回滚可以一字不差。
+   与 wfTrash 分工明确：回收站管「删了能捡回来」，版本管「改坏了能退回去」。 */
+const wfRevs = createRecipeVersions({ dir: path.join(DATA_DIR, "workflows-rev") });
+/* 动作级幂等收据：单独一个实例，不与智能体任务的 receipts 抢 2000 额度 ——
+   一条 30 步的自动化跑 70 次就能把智能体收据全挤掉，那是最难查的一类丢活。
+   key = runId|步号|server|tool|参数指纹，同一次运行的同一步稳定复算。 */
+const wfReceipts = createReceipts({
+  file: () => path.join(DATA_DIR, "wf-receipts.jsonl"),
+  snapshot: () => path.join(DATA_DIR, "wf-receipts.json"),
+  max: 6000,
+});
 const READ_TOOLS_FOR_REC = new Set(["Snapshot", "Screenshot", "DisplayInventory", "Process"]);
+
+/* 断点存储：一条配方一个断点（后写覆盖）。放在 DATA_DIR 下与其他运行数据同级，
+   故意不进 WORKFLOW_DIR —— 配方目录要能整体拷贝给别人，断点是本机状态。 */
+const wfCps = createCheckpoints({ dir: path.join(DATA_DIR, "wf-checkpoints") });
 
 const REC = { on: false, name: "", steps: [], startedAt: 0, pendingWinCaps: [] };
 
@@ -1975,32 +3099,79 @@ function wfList() {
       .map((f) => {
         try {
           const j = JSON.parse(fsSync.readFileSync(path.join(WORKFLOW_DIR, f), "utf8"));
-          return { name: j.name, steps: (j.steps || []).length, savedAt: j.savedAt };
+          /* 列表直接带最近一次运行：observe 阶段判断「哪类菜谱值得升 auto」时，
+             用户在自动化列表就能看见，不必去翻日志。 */
+          let lastRun = null;
+          try { lastRun = wfRuns.lastFor(j.name); } catch {}
+          return { name: j.name, steps: (j.steps || []).length, savedAt: j.savedAt, lastRun };
         } catch { return null; }
       })
       .filter(Boolean);
   } catch { return []; }
 }
 
+/**
+ * 保存 / 录制覆盖前，把**即将被替换掉**的那份内容留成版本。
+ *
+ * 只在这次保存真的会改变文件内容时才建版本 —— 反复点保存、内容一字未动却留一堆
+ * 同内容快照，会把 maxPerName 的额度耗光，等到真改坏时发现最早的干净版本已被挤掉。
+ * 判据是「新内容 vs 磁盘上现有内容」，不是「现有内容 vs 上一个版本」：
+ * 后者会把「把当前状态再存一遍」也当成一次改动，快照里全是重复项，回滚时根本分不清哪版是好的。
+ * 版本号语义是「第 N 版 = 第 N+1 次保存之前的内容」，回滚到 rev k 即回到那一刻。
+ */
+function snapshotRecipeVersion(name, opts = {}) {
+  const safe = wfSafeName(name);
+  if (!safe) return { ok: false, error: "配方名为空" };
+  let body = "";
+  try { body = String(fsSync.readFileSync(wfFile(name), "utf8")); } catch { return { ok: false, error: "没有可留档的旧内容" }; }
+  if (!body.trim()) return { ok: false, error: "旧内容为空" };
+  /* 内容没变 = 这次保存是空操作，留档没有意义（比对原文，不做 JSON 归一化）。 */
+  if (typeof opts.next === "string" && opts.next === body) {
+    return { ok: true, rev: null, skipped: true };
+  }
+  let steps = 0;
+  try { steps = (JSON.parse(body).steps || []).length; } catch { /* 旧内容坏掉也照样留档，回滚时由 rollback 拒绝 */ }
+  return wfRevs.save(safe, body, { note: String(opts.note || ""), source: String(opts.source || ""), steps });
+}
+
+/** 解析失败返回 null，不抛：版本内容可能被外部改坏，接口不该因此 500。 */
+function safeParse(text) {
+  try { return JSON.parse(String(text)); } catch { return null; }
+}
+
 /** 录制中：把一次工具调用追加进步骤表 */
 function wfCapture(server, tool, args) {
   if (!REC.on) return;
-  REC.steps.push({
+  const step = {
     server, tool,
     args: args ?? {},
     wait: 0,                       // 回放时该步之前额外等待(ms)，MVP 先留 0
-  });
+  };
+  REC.steps.push(step);
+  /* 抗迁移 + 录制即定身份：异步抓「窗口 + 控件树身份」，抓到就挂到 step 上。
+     fire-and-forget，不影响回放/录制节奏；rec-stop 会等这些抓取收尾。 */
+  const pp = primaryPoint(step);
+  if (pp) {
+    const p = captureWinAt(pp[0], pp[1])
+      .then((anchor) => { if (anchor) step.win = anchor; })
+      .then(() => captureTreeRef(step))   // 录制即定结构化身份（回放不依赖 OCR）
+      .catch(() => {});
+    (REC.pendingWinCaps || (REC.pendingWinCaps = [])).push(p);
+  }
 }
 
 /* ---------------- 任务编排执行器 ----------------
- * 让工作流会判断、会循环、能带参数。节点类型：
- *   action（默认，兼容老工作流）/ set（变量赋值）/ loop（次数或条件）/ if（then-else）
+ * 让自动化会判断、会循环、能带参数。节点类型：
+ *   action（默认，兼容老自动化）/ set（变量赋值）/ loop（次数或条件）/ if（then-else）
  * 字符串里写 {{变量名}} 会被插值替换。
  * **两道防跑飞保险**：嵌套深度上限、while 循环最大轮数上限 ——
  * 编排最容易出的灾难就是"条件永远成立 → 无限循环把机器跑满"。
  */
 const MAX_DEPTH = 8;
 const MAX_WHILE = 500;
+/* 子流程链路上限：subflow 引用另一条配方，只串行不递归展开。
+   三层足够表达「准备 → 主流程 → 收尾」，再多说明该拆成两条配方而不是嵌套。 */
+const MAX_SUBFLOW_DEPTH = 3;
 
 /* ---------------- 急停（Kill Switch） ----------------
  * 自动化跑飞时唯一能救命的东西。设计取向：**宁可误停，不可漏停**。
@@ -2008,18 +3179,861 @@ const MAX_WHILE = 500;
  *  · 急停时**连触发器一起卸掉** —— 否则定时/文件触发器还会继续点火
  *  · 停下后必须**手动恢复**：避免条件重新满足就自己又跑起来（那才是真灾难）
  */
-const STOP = { on: false, at: 0, reason: "" };
+const STOP = { on: false, at: 0, reason: "", epoch: 0 };
+/* epoch（世代号）是这次改造的核心。
+ *
+ * 原来的急停只有一个布尔：`STOP.on`。它能拦住"下一步"，但拦不住**已经飞出去的**东西 ——
+ * 后台任务跑完的回调、MCP 迟到的结果、WorkBuddy CLI 的流式尾包，都会在恢复之后
+ * 若无其事地写回状态。于是出现最坏的一种：用户以为停了，面板过了两分钟自己变成"完成"。
+ *
+ * 世代号把"停"从"把开关拨回去"变成"换一代"：
+ *   · 每次急停 epoch + 1；
+ *   · 任务开工时记下当时的 epoch；
+ *   · 任何写状态/拿 GUI 锁/恢复工单，都要比对 epoch，旧世代一律拒收。
+ * 这样"恢复"就是一次干净的换代，而不是在旧垃圾上继续叠加。 */
+const ticketStore = createTicketStore({
+  dir: DATA_DIR,
+  log: (...a) => log("[tickets]", ...a),
+});
+/* 启动即收尾上一进程遗留的非终态工单。此刻内存里没有任何在跑任务，
+ * 所以状态非终态的必然是幽灵（崩溃/被杀时没结算）。不收尾的话它们会永远
+ * 计入 summary().open，面板就会在什么都没跑的时候显示"有任务在跑"。 */
+try {
+  const r = ticketStore.reapDangling("上次进程未正常收尾");
+  if (r.reaped) log("[tickets] 收尾遗留工单", r.reaped, "条");
+} catch (err) {
+  log("[tickets] 收尾遗留工单失败：", err?.message ?? err);
+}
+/* ⚠️ 世代号只有一个来源：工单表的（它落盘、跨重启连续）。
+ * 曾经这里让 STOP.epoch 从 0 自己数，而 ticketStore.epoch 从上一次的 2 续上 ——
+ * 两个计数器一旦不等，所有"这单是不是上一代的"判断全部失效：
+ * 急停后任务照样被当成当代任务、结果被当成成功交付、工单永远收不了尾。
+ * 现在只做一件事：内存值跟随落盘值，之后每次急停两边一起 +1。 */
+STOP.epoch = Number(ticketStore.epoch || 0);
+
+/* 面板可见的通知（“已停止 3 个任务”“这单花了多少钱”这类）。
+ * 用环形缓冲而不是无限数组：控制台是长期常驻的，任何"只增不减"的列表
+ * 最后都会变成内存泄漏（SuperAgent 原型被自己列为缺陷的正是这一类）。 */
+const NOTICES = [];
+const NOTICE_MAX = 50;
+function pushNotice(kind, text) {
+  const n = { id: `n${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, at: Date.now(), kind, text: String(text).slice(0, 400) };
+  NOTICES.push(n);
+  if (NOTICES.length > NOTICE_MAX) NOTICES.splice(0, NOTICES.length - NOTICE_MAX);
+  return n;
+}
+
+/* 发件箱：把"要通知面板"这件事变成一条**有 id、可重试、不重发**的记录。
+ * 原来急停是直接 push 一次，SSE 断线就永远丢了；重连后又可能收到两遍。 */
+const outbox = createOutbox({
+  dir: DATA_DIR,
+  log: (...a) => log("[outbox]", ...a),
+  send: async (row) => {
+    if (row.kind === "notice") {
+      pushNotice("system", row.payload?.text || "");
+      // 通知落地后立刻推一帧，不等 1.5s 的安全网 —— 急停的反馈必须是即时的。
+      await broadcastStatus({ force: true });
+      return;
+    }
+    // 未知类型：不静默吞掉，也不无限重试。标记为永久失败，留在 outbox 里可查。
+    const e = new Error(`未知的通知类型：${row.kind}`);
+    e.permanent = true;
+    throw e;
+  },
+});
+
+const costLedger = createCostLedger({
+  dir: DATA_DIR,
+  log: (...a) => log("[cost]", ...a),
+});
+
+const guiLock = createGuiLock({
+  log: (...a) => log("[gui]", ...a),
+  epoch: 0,
+});
+
+/* 派发器：**今天的行为与改造前完全一致**（没有注册专家 = 永远走 fallback）。
+ * 它存在的意义是给"多 Agent / 派发者专家团"留一个唯一的决策入口，
+ * 避免以后出现"面板判一次、桥里再判一次"的两套真相。 */
+const dispatcher = createDispatcher({
+  log: (...a) => log("[dispatch]", ...a),
+});
+
+/* ---------------- 自由路由（命令通道优先，失败回落 GUI 模拟） ----------------
+ *
+ * 桌面动作（"用 X 打开 Y" / "运行 X" / "写文件"）的通道选择层。
+ *   · 命令通道 = cmdchan（文件 + 进程，不碰 GUI 全局态、不占 GUI 锁）；
+ *   · GUI 模拟通道 = windows-mcp 的真实桌面自动化工具，经 guiLock 串行化。
+ *
+ * guiSimulate 是 GUI 回退的**具体实现**：命令通道失败后，由 freeTier 在持有
+ * guiLock 的前提下调用它，通过 windows-mcp 的启动工具驱动真实桌面。
+ * 工具名用常量 ORB_GUI_LAUNCH_TOOL 暴露，因为不同 windows-mcp 发行版的
+ * 启动工具名不一（launch_app / launch / open / run…），装好哪版改一个常量即可。 */
+const GUI_LAUNCH_TOOL = process.env.ORB_GUI_LAUNCH_TOOL || "launch_app";
+
+async function guiSimulate(intent) {
+  const app = intent.app || intent.command || "";
+  if (!app && !intent.filePath) {
+    throw new Error("GUI 模拟需要 app 或 filePath（纯写入动作没有 GUI 等价操作）");
+  }
+  const args = [];
+  if (intent.filePath) args.push(intent.filePath);
+  if (Array.isArray(intent.args)) args.push(...intent.args);
+  try {
+    // callTool 是函数声明（已提升），此处引用不受定义位置影响。
+    const r = await callTool("windows", GUI_LAUNCH_TOOL, { path: app, args });
+    if (r && r.isError) {
+      throw new Error(Array.isArray(r.content) ? r.content.map((c) => c?.text || "").join("") : "GUI 工具返回错误");
+    }
+    return r;
+  } catch (e) {
+    throw new Error(`GUI 模拟失败（tool=${GUI_LAUNCH_TOOL}）：${e?.message ?? e}`);
+  }
+}
+
+const freeTier = createFreeTier({
+  log: (...a) => log("[freetier]", ...a),
+  cmd: { runCommandOp, normalizeCmdOp },
+  guiLock,
+  gui: guiSimulate,
+});
+
+/* 环境探测器：判定「能不能命令化」前先查环境（which/exists），只读、带超时与缓存。 */
+const prober = createProber({ log: (...a) => log("[probe]", ...a) });
+
+/* 任务作用域：把"这个子进程属于哪张工单"自动带上。
+ * 为什么用 AsyncLocalStorage 而不是给每个函数加参数：
+ * spawn 点在 4 个不同的调用链上（CLI / 流式 / daemon / 翻译），
+ * 逐个透传参数等于把 jobId 一路缝进 20 个签名里，漏一个就"停不掉那个进程"。
+ * 用异步上下文，只有 trackProc 一处需要知道这件事。 */
+const jobScope = new AsyncLocalStorage();
+const jobProcs = new Map();   // jobId -> Set<proc>，供"只停这一单"用
+
+const trajectory = createTrajectory({
+  dir: path.join(DATA_DIR, "trail"),
+  log: (...a) => log("[trail]", ...a),
+});
+
+/* Worker 池：**默认关着**（maxWorkers 通过 ORB_POOL_WORKERS 打开）。
+ *
+ * 为什么默认关：今天的行为是"派一个跑一个"，没有上限。直接套一层队列会
+ * 悄悄改变时序，而并发恰恰是这份方案里唯一被写死前置条件（P0 全绿、P1 有基线、
+ * P2 有 observe 数字）的一项。机制先做出来、用例先跑通，什么时候开是运营决定，不是今晚的决定。 */
+const POOL_WORKERS = Number(process.env.ORB_POOL_WORKERS || 0) || 0;
+const pool = createWorkerPool({
+  maxWorkers: Math.max(1, POOL_WORKERS || 1),
+  lock: guiLock,
+  log: (...a) => log("[pool]", ...a),
+});
+let poolEnabled = POOL_WORKERS > 0;
+
+const watchdog = createWatchdog({
+  tickets: ticketStore,
+  trajectory,
+  log: (...a) => log("[watchdog]", ...a),
+  onAlert: (a) => {
+    // 看门狗只报告。落成一条通知，推给面板 —— 不自动杀任务。
+    if (a.kind === "stalled") {
+      /* 5 分钟一个桶：同一次卡住只报一次，不会每分钟刷一条。
+       * 用分钟做桶的话，一个卡了半小时的任务会刷 30 条通知 —— 那本身就是噪音污染。 */
+      outbox.enqueue({ kind: "notice", dedupe: `stall:${a.ticketId}:${Math.floor(a.idleMs / 300000)}`, payload: { text: `可能卡住：${a.title || a.ticketId} —— ${a.reason}` } });
+      outbox.pump().catch(() => {});
+    } else if (a.kind === "repeating") {
+      outbox.enqueue({ kind: "notice", dedupe: `repeat:${a.ticketId}:${a.message.slice(0, 40)}`, payload: { text: `同一错误已重复 ${a.count} 次：${a.message.slice(0, 120)}` } });
+      outbox.pump().catch(() => {});
+    }
+  },
+});
 
 /* 在跑的子进程登记表。
  * 为什么需要：急停只把 JS 层的循环停下来，但**已经 spawn 出去的子进程还在跑**
  * （最典型的是后台 AI 的 CodeBuddy CLI），那才是真正失控的东西。
  * Windows 上必须用 taskkill /T 连同**子进程树**杀 —— CLI 会拉起孙进程，
  * 只 kill 父进程的话孙进程会变孤儿继续跑。 */
+/* ---------------- 阶段一：交付层 / 尺子 / 归档 的实例 ----------------
+ * 世代号只有 STOP.epoch 一个来源。历史上 STOP 与 ticketStore 各数各的，
+ * 结果所有跨代比较都为假；这里所有新模块一律注入 epochOf() 读取，不另存。 */
+/* 2026-11-04 起固定下来的三棵树（形状写死在 artifactLayout.cjs，别在别处另拼路径）：
+ *   ① 产物树  <storageRoot>/<kind>/<YYYY-MM-DD>/<product>   （扁平两层，无会话层、无 artifacts 容器）
+ *        kind ∈ {recordings,screenshots,vidx,exports,archive,misc}
+ *        类别目录即真实落点：录屏/截屏/看视频/导出/归档/杂项直接按日期铺放，打开即见。
+ *        （旧 artifacts/<day>/sessions/<cid>/<kind> 仅作只读兼容，由 layout.resolveSafe 双形态解析，
+ *          运行时绝不在 artifacts/ 下创建或写入。）
+ *   ② 日志树  <storageRoot>/logs/<YYYY-MM-DD>/      logBus 唯一写者、safety.stop、spool、哈希链 manifest
+ *   ③ 治理树  <storageRoot>/governance/<YYYY-MM-DD>/ 观测流 jsonl（span / observe / events / receipts ...）
+ * 为什么日志不在产物树里：产物目录要能整体交付/打包，混进 jsonl 日志就不干净了
+ * （用户明确要求「除日志文件外」）。三棵树同根、平级，都按 Asia/Shanghai 结束日分区。
+ * 日志**绝不写进 audit/**：那里只保留原有「执行审计」与面板查看器，旧契约一个字不动。 */
+const layout = createLayout({ root: STORAGE_ROOT });
+/* ARTIFACTS_DIR 现在指向「存储根」本身（不再是 legacy 的 artifacts/ 容器）。
+ * 扁平化后：sessionMgr 只建 <root>/<day>/ 工作父目录，archiver 落位到 <root>/<relDir>
+ * （归档 relDir = archive/<day>/<cid>），artifacts.resolve 的兜底根也是它。
+ * 运行时绝不往 artifacts/ 写：那是旧结构的只读兼容路径。 */
+const ARTIFACTS_DIR = layout.root();
+const govDirOf = () => layout.govDir();
+const govFileOf = (name) => () => layout.govFile(name);
+try { layout.ensureDay(); } catch {}   // 建当天公共层，失败不影响启动
+const epochOf = () => STOP.epoch;
+const commandGate = createCommandGate({ isStopped: () => STOP.on, epochOf });
+const stateWriter = createStateWriter();
+const logBus = createLogBus({
+  dirFor: (day) => layout.logsDir(day),
+  dayOf: (ts) => layout.day(ts),
+  epoch: epochOf,
+  minLevel: "info",
+  redactPaths: true,
+  spoolDirFor: (day) => layout.spoolDir(day),
+  chain: {
+    stateFile: (day) => layout.chainStateFile(day),
+    manifestFile: (day) => layout.manifestFile(day),
+  },
+});
+/* ---------------- 专家团 / 门控 / 插件 / 路由 / 遥测 ----------------
+ * 全部只在桥进程里建一份实例，面板通过 /api/ops 读写。
+ * 为什么实例化放在这里而不是各模块内部单例：单例会让单测互相污染，
+ * 也让"改一份配置立刻生效"变得不可能。桥是唯一宿主，依赖注入即可。 */
+const team = createTeam();
+const affectGate = createAffectGate();
+/* 专家团模式（任务分配）默认关：它是用户主动开的一档，不是后台常驻。 */
+const expertTeam = createExpertTeam();
+const pluginHost = createPluginHost();
+const semanticRouter = createSemanticRouter();
+/* 遥测只读、不驻留。exec 由桥提供（取磁盘容量与进程内存前 5）。
+   拿不到的字段模块自己会返回 null + reason，桥不替它补零。 */
+const telemetry = createTelemetry({
+  exec: (cmd) => new Promise((resolve) => {
+    try {
+      const ch = spawn(cmd, { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+      let out = "";
+      ch.stdout.on("data", (d) => { out += String(d); });
+      ch.on("error", () => resolve(""));
+      ch.on("close", () => resolve(out));
+    } catch { resolve(""); }
+  }),
+});
+
+/* ===== 11-07 新增实例：策略 / 记忆 / 插件闸门 / 治理层 =====
+ * 与上面那批共用同一条纪律：桥进程里只建一份，面板经 /api/ops 读写。
+ * hostApi 默认关（enabled:false），杜绝配置误开偷偷发请求；要启用必须显式动作。 */
+const policyTransition = createPolicyTransition({
+  notify: (n) => { try { log("[policy] 收敛通知：" + JSON.stringify(n)); } catch {} },
+});
+const dream = createDreamConsolidator();
+const artifactGate = createArtifactGate({ epochProvider: () => epochOf() });
+
+/* ===== 插件市场索引（只读本机 marketplaces；60s 内复用同一次扫描） =====
+ * 数据全在磁盘上：known_marketplaces.json + 各市场 marketplace.json，
+ * 不联网、不猜。某个市场清单坏了只跳过它，其余照常可用。 */
+let marketIdx = null;
+let marketIdxAt = 0;
+const MARKET_TTL_MS = 60_000;
+function marketIndex(force = false) {
+  if (!force && marketIdx && Date.now() - marketIdxAt < MARKET_TTL_MS) return marketIdx;
+  try {
+    marketIdx = scanMarket();
+  } catch (e) {
+    marketIdx = {
+      ok: false, root: "", marketplaces: [], plugins: [],
+      warnings: ["扫描失败：" + String((e && e.message) || e)], scannedAt: Date.now(),
+    };
+  }
+  marketIdxAt = Date.now();
+  return marketIdx;
+}
+
+function findMarketEntry(name, marketplace) {
+  return marketIndex().plugins.find(
+    (p) => p.name === name && (!marketplace || p.marketplace === marketplace),
+  ) || null;
+}
+
+/* 从市场装：读本机源码目录 → 统一摄入 → 真实闸门 → 注册表。
+ * 与导入区的「校验」共用 installManifest / dryRunManifest，
+ * 所以「校验通过」与「装得上」不会各说各话。 */
+function installFromMarket(b = {}) {
+  const name = String(b.name || "");
+  const mkt = String(b.marketplace || "");
+  const entry = findMarketEntry(name, mkt);
+  if (!entry) return { ok: false, error: "market-entry-not-found", name, marketplace: mkt };
+  if (!entry.hasSource || !entry.dir) {
+    return { ok: false, error: "source-not-local", name, note: "该条目只有远端来源，控制台不联网拉包" };
+  }
+  const src = readSource(entry.dir);
+  if (!src.ok) return { ok: false, error: src.error, name, dir: entry.dir };
+
+  const sourceHash = "sha256:" + createHash("sha256")
+    .update(JSON.stringify(src.manifest) + "|" + entry.marketplace + "|" + entry.version)
+    .digest("hex").slice(0, 32);
+
+  const res = installManifest(
+    pluginHost,
+    { manifest: src.manifest, skillMd: src.skillMd, hasScripts: src.hasScripts },
+    { sourceHash, epoch: epochOf(), approvedBy: String(b.approvedBy || "") },
+  );
+  if (res.ok) {
+    ledgerRecord({
+      name: String(src.manifest.name || name), dir: entry.dir, sourceHash,
+      approvedBy: String(b.approvedBy || ""), via: "market", marketplace: entry.marketplace,
+      id: (res.plugins && res.plugins[0] && res.plugins[0].id) || "",
+    });
+  }
+  return { ...res, name, marketplace: entry.marketplace, dir: entry.dir, sourceHash, hasScripts: src.hasScripts };
+}
+
+/* ===== 安装台账（桥重启后按它装回来） =====
+ * pluginHost 是纯内存的。没有这份台账，用户从市场装的、拖进来的插件在桥重启后
+ * 全部消失 —— 而他刚才明明看到「已安装 2 个」。台账是唯一的状态源，
+ * 记的是「从哪来、指纹是什么、谁批的」，重装时按同一条摄入路径再走一遍闸门。
+ * 同一 sourceHash 只留一条：重复装同一个包不会让台账无限长。 */
+const PLUGIN_LEDGER_FILE = process.env.ORB_PLUGIN_LEDGER || path.join(DATA_DIR, "plugins-installed.json");
+function ledgerKeyOf(rec) {
+  return String((rec && (rec.sourceHash || rec.dir || rec.name)) || "");
+}
+function ledgerRead() {
+  try {
+    const j = JSON.parse(fsSync.readFileSync(PLUGIN_LEDGER_FILE, "utf8"));
+    return { version: 1, entries: Array.isArray(j && j.entries) ? j.entries : [] };
+  } catch { return { version: 1, entries: [] }; }
+}
+function ledgerWrite(led) {
+  try { writeJsonAtomic(PLUGIN_LEDGER_FILE, led); return true; }
+  catch (e) { log("[plugin] 写台账失败:", (e && e.message) || e); return false; }
+}
+function ledgerRecord(rec) {
+  const led = ledgerRead();
+  const key = ledgerKeyOf(rec);
+  led.entries = led.entries.filter((e) => ledgerKeyOf(e) !== key);
+  led.entries.push({ ...rec, at: Date.now() });
+  ledgerWrite(led);
+}
+function ledgerForget(key) {
+  const led = ledgerRead();
+  const before = led.entries.length;
+  led.entries = led.entries.filter((e) => ledgerKeyOf(e) !== String(key));
+  if (led.entries.length !== before) ledgerWrite(led);
+}
+
+/**
+ * 启动时把台账里记的插件装回注册表。
+ * 逐条独立：某一条失效（目录被删、清单改坏）只让它自己失败，不连累别人。
+ * approvedBy 沿用当初的审批 —— 同一个 sourceHash 用户已经批过一次，
+ * 重启不该让他再批一遍；但 epoch 用**当前**的，急停之后旧审批不自动延续。
+ */
+function restoreInstalledPlugins() {
+  const led = ledgerRead();
+  const rows = [];
+  for (const rec of led.entries) {
+    const dir = String(rec.dir || "");
+    const src = dir ? readSource(dir) : { ok: false, error: "source-missing" };
+    if (!src.ok) { rows.push({ name: String(rec.name || ""), ok: false, error: src.error }); continue; }
+    try {
+      const r = installManifest(
+        pluginHost,
+        { manifest: src.manifest, skillMd: src.skillMd, hasScripts: src.hasScripts },
+        { sourceHash: String(rec.sourceHash || ""), epoch: epochOf(), approvedBy: String(rec.approvedBy || "") },
+      );
+      const bad = (r.plugins || []).find((p) => !p.ok);
+      rows.push({ name: String(rec.name || ""), ok: Boolean(r.ok), error: r.ok ? "" : String((bad && bad.code) || "install-failed") });
+    } catch (e) {
+      rows.push({ name: String(rec.name || ""), ok: false, error: String((e && e.message) || e).slice(0, 120) });
+    }
+  }
+  const restored = rows.filter((r) => r.ok).length;
+  if (rows.length) log(`[plugin] 台账恢复：${restored}/${rows.length} 成功`);
+  return { ok: true, total: rows.length, restored, failed: rows.length - restored, rows };
+}
+
+/* ===== 本地插件包：拖进来 / 选文件 =====
+ * 落盘目录是稳定的（按内容指纹命名），所以它同时是台账的重装锚点：
+ * 桥重启后 readSource(同一个 dir) 就能原样装回来。 */
+const PACK_STORE = process.env.ORB_PACK_STORE || path.join(DATA_DIR, "plugin-store");
+
+function decodePackFiles(list) {
+  if (!Array.isArray(list) || !list.length) return { ok: false, error: "pack-empty", warnings: [] };
+  const entries = [];
+  const warnings = [];
+  let total = 0;
+  for (const f of list) {
+    const p = String((f && (f.path || f.name)) || "");
+    const b64 = String((f && f.b64) || "");
+    if (!p || !b64) continue;
+    let data;
+    try { data = Buffer.from(b64, "base64"); } catch (e) { continue; }
+    if (!data.length) continue;
+    total += data.length;
+    /* 总量闸放在解码循环里：等全部解完再看大小，垃圾早就进内存了 */
+    if (total > PACK_LIMITS.maxTotalBytes) {
+      return { ok: false, error: "pack-too-large", warnings: [`超过 ${Math.round(PACK_LIMITS.maxTotalBytes / 1048576)}MB 上限`] };
+    }
+    if (entries.length >= PACK_LIMITS.maxFiles) return { ok: false, error: "pack-too-many-files", warnings: [`超过 ${PACK_LIMITS.maxFiles} 个文件`] };
+    entries.push({ path: p, data });
+  }
+  if (!entries.length) return { ok: false, error: "pack-empty", warnings };
+  return { ok: true, entries, warnings };
+}
+
+/** 单个 zip 就解压；单个清单/skill 原样用；其它按文件清单处理。 */
+function expandPack(decoded) {
+  const one = decoded.entries.length === 1 ? decoded.entries[0] : null;
+  if (one && looksLikeZip(one.data)) {
+    const z = readZip(one.data);
+    if (!z.ok) return { ok: false, error: z.error, warnings: z.warnings };
+    return { ok: true, entries: z.entries, warnings: z.warnings, zipped: true };
+  }
+  if (one && /\.zip$/i.test(one.path)) {
+    return { ok: false, error: "zip-corrupt", warnings: ["扩展名是 .zip 但内容不是，文件可能没传完"] };
+  }
+  return { ok: true, entries: decoded.entries, warnings: decoded.warnings, zipped: false };
+}
+
+/**
+ * 本地包 → 注册表。dry=true 时只判定。
+ * 与市场安装共用 readSource / dryRunManifest / installManifest，
+ * 所以「校验通过」与「装得上」在这里也不会各说各话。
+ */
+function installFromPack(b = {}, { dry = false } = {}) {
+  const dec = decodePackFiles(b.files);
+  if (!dec.ok) return { ok: false, error: dec.error, warnings: dec.warnings || [] };
+  const ex = expandPack(dec);
+  if (!ex.ok) return { ok: false, error: ex.error, warnings: ex.warnings || [] };
+
+  const hash = packHash(ex.entries);
+  const label = safeId(String(b.name || ex.entries[0].path || "pack").replace(/\.(zip|json|md|skill)$/i, "")) || "pack";
+  const storeDir = path.join(PACK_STORE, `${label}-${hash.slice(7, 15)}`);
+
+  const up = unpackTo(storeDir, ex.entries);
+  const warnings = [...(ex.warnings || []), ...up.warnings];
+  if (!up.ok) return { ok: false, error: up.error || "pack-write-failed", sourceHash: hash, warnings };
+
+  const root = locateRoot(storeDir);
+  let src = readSource(root);
+  /* 只拖一个 SKILL.md 也是合法包：补一份最小清单（标记 __synthesized），
+     并写到盘上 —— 否则重启后台账恢复会读不到清单。 */
+  if (!src.ok && src.error === "manifest-unreadable") {
+    const synth = synthesizeSkillManifest(root);
+    if (synth) {
+      try { writeJsonAtomic(path.join(root, "plugin.json"), synth); } catch (e) { /* 写不进就让下面照常失败 */ }
+      src = readSource(root);
+    }
+  }
+  if (!src.ok) {
+    return { ok: false, error: src.error, dir: root, sourceHash: hash, files: up.written.length, warnings };
+  }
+
+  const ctx = { sourceHash: hash, epoch: epochOf(), approvedBy: String(b.approvedBy || "") };
+  const input = { manifest: src.manifest, skillMd: src.skillMd, hasScripts: src.hasScripts };
+  const res = dry
+    ? dryRunManifest(artifactGate, input, ctx)
+    : installManifest(pluginHost, input, ctx);
+
+  if (!dry && res.ok) {
+    ledgerRecord({
+      name: String(src.manifest.name || label), dir: root, sourceHash: hash,
+      approvedBy: ctx.approvedBy, via: "pack",
+      id: (res.plugins && res.plugins[0] && res.plugins[0].id) || "",
+    });
+  }
+  return {
+    ...res,
+    name: String(src.manifest.name || label),
+    kind: res.kind,
+    dir: root,
+    sourceHash: hash,
+    files: up.written.length,
+    zipped: Boolean(ex.zipped),
+    warnings: [...warnings, ...(res.warnings || [])],
+  };
+}
+
+/* 台账恢复放在这里：pluginHost 与 artifactGate 都已就绪，晚于任何常量定义。 */
+const pluginRestore = (() => {
+  try { return restoreInstalledPlugins(); }
+  catch (e) { log("[plugin] 台账恢复异常:", (e && e.message) || e); return { ok: false, total: 0, restored: 0, failed: 0, rows: [] }; }
+})();
+
+const memoryBudget = createMemoryBudget({ mode: "normal" });
+const hostApi = govHost.createHostDataApi({ enabled: false });
+/* API 通道的用户开关（宿主侧唯一状态源，默认关）。
+ * 放在 DATA_DIR 而非安装目录：打包态 HERE 在 Program Files 下不可写，
+ * 写那儿会让「用户拨开关」静默失败（表现为拨了没反应、重启又变回去）。
+ * 读不懂/读到坏文件时 apiChannel 自己退回关闭，这里不做任何"猜"。 */
+const API_CHANNEL_FILE = path.join(DATA_DIR, "api-channel.json");
+const apiChannel = createApiChannel({
+  load: () => {
+    try { return JSON.parse(fsSync.readFileSync(API_CHANNEL_FILE, "utf8")); } catch { return null; }
+  },
+  save: (s) => {
+    try { writeJsonAtomic(API_CHANNEL_FILE, s); return { ok: true }; } catch (e) {
+      return { ok: false, warning: String(e && e.message ? e.message : e).slice(0, 160) };
+    }
+  },
+});
+const sealReview = govSeal.createSealReview({ mode: "normal", teamFactory: () => team });
+const GOV_CHANNEL_DIR = path.join(DATA_DIR, "gov-channel");
+try { fsSync.mkdirSync(GOV_CHANNEL_DIR, { recursive: true }); } catch {}
+const govChannel = govP1.createFileChannel({ dir: GOV_CHANNEL_DIR });
+
+/* 最近一次评审结果：面板重开时要能立刻看到上次结论，不必重跑。 */
+let teamLastReview = null;
+
+/**
+ * 采集当前运行状态，生成一批**确定性**发现。
+ * 为什么不用模型：阶段一形态的定义就是「单模型多视角 + 确定性校验器」，
+ * 这里如果偷偷调一次模型，"可复现、可解释"这条就没了。
+ * 每条发现都必须能指到具体的状态字段（evidence），指不到的不写。
+ */
+/* 收集本轮可验证的异常项。
+ * light=true 时**跳过遥测**：telemetry.snapshot() 要 spawn wmic/tasklist 这类命令，
+ * 而自动复核是挂在「每条任务收尾」上的 —— 每单开一次子进程，用户会直接感觉到卡。
+ * 轻量档只看内存里的计数器（急停/限流/插件/派发器/门控），毫秒级。
+ * 深档（light=false）才连内存与磁盘一起看，供面板手动发起。 */
+function teamCollectFindings(opts = {}) {
+  const light = !!opts.light;
+  const rows = [];
+  const add = (expertId, claim, topic, severity, confidence, evidence) => {
+    rows.push({ expertId, claim, topic, severity, stance: "support", confidence, evidence });
+  };
+  try { if (STOP.on) add("sec", "急停处于开启状态，所有自动化已被拦下", "stop-on", "block", 1, "STOP.on=true"); } catch {}
+  try {
+    const lb = logBus.stats();
+    if (Number(lb.rejected) > 0) add("sec", "日志写入被限流 " + lb.rejected + " 条", "log-throttle", "warn", 0.8, "logBus.stats().rejected");
+  } catch {}
+  try {
+    const ps = pluginHost.stats();
+    if (Number(ps.failed) > 0) add("correct", "插件调用失败 " + ps.failed + " 次", "plugin-failure", "warn", 0.75, "pluginHost.stats().failed");
+  } catch {}
+  try {
+    const n = dispatcher.list().length;
+    if (!n) add("arch", "派发器没有注册任何专家，路由仍走单路", "dispatcher-empty", "info", 0.6, "dispatcher.list().length === 0");
+  } catch {}
+  try {
+    const a = affectGate.stats();
+    if (Number(a.blocked) > 0) add("ux", "门控最近拦下 " + a.blocked + " 次主动开口", "gate-blocked", "info", 0.55, "affectGate.stats().blocked");
+  } catch {}
+  if (!light) {
+    try {
+      const t = telemetry.snapshot();
+      if (t && t.mem && Number.isFinite(t.mem.usedPct) && t.mem.usedPct > 92) {
+        add("perf", "内存占用 " + Math.round(t.mem.usedPct) + "%", "mem-high", "warn", 0.8, "telemetry.mem.usedPct");
+      }
+      if (t && Array.isArray(t.disk)) {
+        for (const d of t.disk) {
+          if (d && Number.isFinite(d.usedPct) && d.usedPct > 90) {
+            add("perf", "磁盘 " + String(d.mount) + " 已用 " + Math.round(d.usedPct) + "%", "disk-high", "warn", 0.85, "telemetry.disk");
+          }
+        }
+      }
+    } catch {}
+  }
+  /* 一条发现都没有时也要给一条，否则面板会以为"没跑"。 */
+  if (!rows.length) add("correct", "本轮自检未发现异常项", "all-clear", "info", 1, "collect");
+  return rows;
+}
+
+let logForwardEnabled = true;   // /api/log 接收闸；主进程另有 state.logForward 开关
+/* 桥起来后回放主进程在桥未就绪期间落的 spool，并按保留期清一次过期行。
+ * 都放在下一个事件循环，别拖慢监听端口的启动。 */
+setTimeout(() => {
+  try { logBus.replaySpool?.(); } catch {}
+  try { logBus.cleanup?.(Date.now()); } catch {}
+}, 2000);
+/* 运行期主进程日志偶尔 POST 失败会重建同名 spool 文件；只靠启动回放会把那批拖到下次重启。
+ * replaySpool 已验证幂等（同名重建只补写新批次、不重复行），60s 兜底一次即可。
+ * unref 掉：别让这个定时器拖住进程退出。 */
+setInterval(() => { try { logBus.replaySpool?.(); } catch {} }, 60000).unref?.();
+let profile = normalizeProfile(DEFAULT_PROFILE);   // 七键交付契约，勿漏：下面 exporter 与 /api/ops 都用它
+let exporter = createExporter({ profile, epoch: STOP.epoch });
+const artifactStore = createArtifactStore({ dir: govDirOf });
+
+/* ---- I-17：产物登记唯一入口 ----------------------------------------------
+ * 之前三处各自 register({ rel: path.basename(...) })，登记表里只有一个文件名，
+ * 主进程想定位就得扫目录 —— 这正是 I-17 明令禁止的。现在统一写完整 rel：
+ *   <day>/sessions/<cid>/<kind>/<name>
+ * layout.resolveSafe() 能直接把它解析回 artifactsRoot 下的绝对路径，不扫目录。
+ * 旧调用方（含面板 artifacts.register）传裸文件名时，这里按当前会话补齐形状，
+ * 老数据由 artifactView.inferRel() 兜底，不需要迁移。
+ */
+function currentArtifactCtx() {
+  const c = sessionMgr.current();
+  return {
+    cid: String(c?.conversationId || "local"),
+    day: layout.day(),
+    epoch: epochOf(),
+  };
+}
+
+function registerArtifact(o = {}) {
+  const ctx = currentArtifactCtx();
+  const cid = String(o.conversationId || ctx.cid);
+  const day = String(o.day || ctx.day);
+  /* 旧登记表把导出类写成 "artifacts"，但布局六类里没有这一项（是 exports）。
+     不归一的话，面板 PDF 两跳那条老入口会永远登记失败。 */
+  const rawKind = String(o.kind || "exports");
+  const kind = rawKind === "artifacts" ? "exports" : rawKind;
+  const p = productRel(day, cid, kind, o.fileName || o.rel || "");
+  if (!p.ok) {
+    return { ok: false, id: null, reason: `rel 不合法: ${p.reason}`, hint: "产物表登记失败，文件本身不受影响" };
+  }
+  return artifactStore.register({
+    conversationId: cid,
+    epoch: Number(o.epoch ?? ctx.epoch),
+    ticketId: String(o.ticketId || ""),
+    kind,
+    rel: p.rel,
+    ext: String(o.ext || p.ext).toLowerCase(),
+    size: Number(o.size) || 0,
+    sha: String(o.sha || ""),
+    rootKey: rootKeyOf(layout.root()),
+    createdAt: Number(o.createdAt) || Date.now(),
+  });
+}
+
+/* 按 artifactId 查表 → 安全解析绝对路径。两处都要用（列表判定存在、详情读预览）。
+ * 只认登记表里的 rel，绝不接受客户端传来的任意路径。 */
+function artifactSafeRel(entry) {
+  const direct = String(entry?.rel || "");
+  if (direct && layout.resolveSafe(direct)) return direct;
+  return inferRel(entry, { day: layout.day(), cid: entry?.conversationId, now: Date.now() });
+}
+function artifactAbs(entry) {
+  const rel = artifactSafeRel(entry);
+  return rel ? layout.resolveSafe(rel) : null;
+}
+
+const MEDIA_RETENTION_MS = 30 * 24 * 3600 * 1000;
+function artifactViewCtx(extra = {}) {
+  return {
+    now: Date.now(),
+    currentRootKey: rootKeyOf(layout.root()),
+    mediaRetentionMs: MEDIA_RETENTION_MS,
+    ...extra,
+  };
+}
+
+const spanCollector = createSpanCollector({ file: govFileOf("spans") });
+const observeRouter = createObserveRouter({ file: govFileOf("observe") });
+const textGate = createTextGate({ mode: "balanced" });
+/* 报告B V-10：域名授权白名单只从环境注入，默认空 = 带 url 的检索一律要求人工授权。
+   与 searchProvider 的开关同一套 fail-closed 约定，代码里不硬塞任何站点。 */
+const SEARCH_ALLOWED_HOSTS = String(process.env.ORB_SEARCH_HOSTS || "")
+  .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+/* 报告B §10.2：V-01 回落从「隐式失败」变成「显式可审计分支」。
+   只留最近 200 条在内存，可从 /api/ops gov 查；不落盘、不进安全页（§5 约束）。 */
+const v01Degrades = [];
+function noteV01Degrade(rec = {}) {
+  const row = {
+    ...degradeRecord(rec.reasonCode || "", rec.stage || "v01-compile"),
+    at: Date.now(),
+    textLen: Number(rec.textLen || 0),
+  };
+  v01Degrades.push(row);
+  if (v01Degrades.length > 200) v01Degrades.shift();
+  return row;
+}
+/* 从 MCP content 里抽文本，供三个不可信入口统一过闸。 */
+function toolTextOf(r) {
+  const parts = (r && Array.isArray(r.content)) ? r.content : [];
+  return parts.filter((c) => c && c.type === "text" && typeof c.text === "string")
+    .map((c) => c.text).join("\n");
+}
+const fastPath = createFastPath({ probe: prober });
+/* 外部检索 provider（批次C 降级接线）：
+ *  · 默认 inert 凭据来源：不读本机 dsh 凭据库、不读账号平台签发的那把 key，
+ *    零外发、零计费 —— 授权范围未经确认，本轮不挪作检索用途。
+ *  · 只有「总开关显式打开」且「来源显式登记」时，才从用户自己设的
+ *    ORB_SEARCH_API_KEY 拿 key（不管是哪家，统一填这一个变量）。
+ *  · ORB_SEARCH_PROVIDER 选厂商形状（anysearch / deepseek / zhipu / baidu / custom），
+ *    未登记的拼法一律回落到 deepseek，绝不猜。anysearch 与 custom 允许无 Key 匿名
+ *    调用（官方端点 key 可选），此时 CREDENTIAL_SOURCE=inert、API_KEY 为空，由 adapter
+ *    省略 Authorization 头；除此之外无 Key 一律 no-credential 降级。
+ *  · ORB_SEARCH_MODEL 是可选的「模型 / 引擎」名；deepseek 无此项会忽略。
+ *  · 凭证绝不来自请求体 / /api/ops / 运行时的 HTTP 调用，绝不写进日志、
+ *    状态或任何返回值。面板「检索工具」栏目填的 Key 也不是运行时注入：
+ *    它由 Electron 主进程在**启动本进程时**从系统加密库取出、注入成
+ *    ORB_SEARCH_API_KEY，本进程仍然只认启动期的受控环境变量。
+ *  · 失败一律降级，绝不回落截图 / 视觉循环。
+ */
+const SEARCH_PROVIDER_ID = String(process.env.ORB_SEARCH_PROVIDER || DEFAULT_ADAPTER_ID).trim().toLowerCase();
+const searchAdapter = getAdapter(SEARCH_PROVIDER_ID) || getAdapter(DEFAULT_ADAPTER_ID);
+const searchCredentials = createCredentialProvider({
+  enabled: process.env.ORB_SEARCH_ENABLED === "1",
+  source: process.env.ORB_SEARCH_CREDENTIAL_SOURCE || "inert",
+});
+const searchProvider = createSearchProvider({
+  enabled: searchCredentials.describe().enabled,
+  apiKey: searchCredentials.resolve().apiKey,
+  adapter: searchAdapter.id,
+  model: process.env.ORB_SEARCH_MODEL || "",
+  endpoint: process.env.ORB_SEARCH_ENDPOINT || "",
+  timeoutMs: Number(process.env.ORB_SEARCH_TIMEOUT_MS),
+  maxResults: Number(process.env.ORB_SEARCH_MAX_RESULTS),
+});
+/* 离线 fixture 只用于验收「编排层真的会消费 results[]」：默认关闭。
+ * 开启时产物会显式标注「非真实检索」；它不触发任何网络请求，也不消耗凭据。 */
+const SEARCH_OFFLINE_FIXTURE = process.env.ORB_SEARCH_OFFLINE_FIXTURE === "1";
+/* 浏览器操控 provider。onCommand 是桥侧执行器，也是**第二道**白名单：
+ * provider 自身已做过一次白名单 / epoch / confirm / tab 所有权校验，这里不放宽、只复核。
+ * 真执行在浏览器扩展侧，桥只做授权与记账 —— 绝不执行任意 JS、绝不访问网络、
+ * 绝不读 cookie、不注入任何凭据；只回固定形状的结构化结果。 */
+const browserReadMethods = new Set(BROWSER_METHODS.read);
+const browserWriteMethods = new Set(BROWSER_METHODS.write);
+/* 桥主动下发命令的回执关联表：
+ *   browserCmdResults: corrId -> { resolve, timer, promise }
+ *     —— POST /api/browser/command 时登记，command_done 回执到达或超时后 settle。
+ *   extToCorr:        扩展重派发的 command_id -> 桥侧 corrId
+ *     —— 扩展收到桥下发的命令后会用自有 command_id 重新派发，桥授权后执行，
+ *        回执 command_done 里带的是扩展的 command_id；这里把它映射回我们的 corrId，
+ *        好让 /api/browser/command-result 找到等待的调用方。映射表是无界的，但每条
+ *        只在「下发→回执」这一小段生命周期内存在，且 command_done 到达即删。 */
+const BROWSER_CMD_TIMEOUT_MS = 8000;
+const browserCmdResults = new Map();
+const extToCorr = new Map();
+const BROWSER_CMD_ERR = {
+  "method-denied": "方法不在浏览器通道白名单内",
+  "confirmation-required": "写操作需要 confirm:true",
+  "no-channel": "浏览器扩展通道当前不在线，无法下发命令",
+};
+function registerBrowserCommand(corrId) {
+  const slot = { resolve: null, timer: null, promise: null };
+  slot.promise = new Promise((resolve) => {
+    slot.resolve = resolve;
+    slot.timer = setTimeout(() => {
+      browserCmdResults.delete(corrId);
+      for (const [k, v] of extToCorr) if (v === corrId) extToCorr.delete(k);
+      resolve({ ok: false, error: { code: "timeout", message: "命令在限定时间内未收到扩展执行回执", outcome: "timeout" } });
+    }, BROWSER_CMD_TIMEOUT_MS);
+    if (slot.timer.unref) slot.timer.unref();
+  });
+  browserCmdResults.set(corrId, slot);
+  return slot.promise;
+}
+const browserProvider = createBrowserProvider({
+  onCommand: async (method, params, ctx) => {
+    /* 记录关联：扩展会用新 command_id 重派发，桥授权后执行，回执带扩展的 command_id。
+       这里把扩展的 command_id 映射回桥侧 corrId（放在 params._orbCmd 透传过来）。 */
+    if (ctx && typeof ctx.command_id === "string" && params && typeof params._orbCmd === "string") {
+      extToCorr.set(ctx.command_id, params._orbCmd);
+    }
+    if (browserReadMethods.has(method)) {
+      /* authorized:true 是扩展侧 handleProviderResult 的唯一放行闸；
+         delegated 仅作兼容老版本扩展（它只看 ok），两者都给，互不冲突。 */
+      return { ok: true, authorized: true, delegated: true, method, note: "执行在浏览器扩展侧" };
+    }
+    if (browserWriteMethods.has(method)) {
+      if (!params || params.confirm !== true) {
+        return { ok: false, degraded: true, reasonCode: "confirmation-required" };
+      }
+      return { ok: true, authorized: true, delegated: true, method, note: "执行在浏览器扩展侧" };
+    }
+    return { ok: false, degraded: true, reasonCode: "method-denied" };
+  },
+  /* 用户开关：provider 不存值，只转发给 apiChannel 并回带真值，
+   * 保证「面板显示的」与「执行时用的」是同一份状态。 */
+  settingsSnapshot: () => ({
+    api_channel_enabled: apiChannel.isEnabled(),
+    /* 端点清单由代码里的白名单生成：界面不再手写"2 个"，扩端点时文案自动跟着变。 */
+    api_channel_endpoints: govHost.listEndpoints().map((e) => e.label),
+  }),
+  onSettings: ({ api_channel_enabled }) => {
+    const r = apiChannel.setEnabled(api_channel_enabled, { by: "popup" });
+    try {
+      log(`[api-channel] 面板开关 → ${r.enabled ? "开" : "关"}（来源 ${r.updatedBy}，persisted=${r.persisted}）`);
+      if (r.warning) log("[api-channel] " + r.warning);
+    } catch { /* 日志失败不影响开关本身 */ }
+    return r;
+  },
+});
+const baseline = createBaseline({ file: govFileOf("baseline") });
+const eventRecorder = createEventRecorder({ file: govFileOf("events") });
+/* 效果收据：审计流 append-only 走 receipts，另存一份"当前有效索引"快照。
+ * 快照是幂等能跨重启生效的前提 —— 只有内存态时，重启后同一件事会做第二遍。 */
+const receipts = createReceipts({ file: govFileOf("receipts"), snapshot: govFileOf("receipts-snapshot") });
+try {
+  const l = receipts.load();
+  if (l.loaded) log(`[receipts] 恢复 ${l.loaded} 张已结算收据（generation=${l.generation}）`);
+} catch {}
+const ticketCtl = createTicketControl({ file: govFileOf("ticket-control") });
+/* 自动化步骤收据同样跨重启恢复：只有内存态的话，重启后同一步会做第二遍。 */
+try {
+  const l = wfReceipts.load();
+  if (l.loaded) console.log(`[wf-receipts] 恢复 ${l.loaded} 条已结算步骤收据`);
+} catch { /* 恢复失败不阻塞启动，只是幂等退化成同进程内 */ }
+/* 专家契约：默认最保守，用户可在运行目录下放 expertBook.json 覆盖。
+ * 读不懂覆盖文件时整份退回默认并留 warning —— 绝不"读不懂就全放开"。 */
+const expertBook = createExpertBook({ file: defaultBookPath(DATA_DIR) });
+try {
+  const eb = expertBook.load();
+  if (eb.warning) log(`[expertBook] ${eb.warning}`);
+} catch {}
+/** 仲裁一次专家动作。没带 expertId 或专家未登记 → 放行（不是专家链路，不归它管）。 */
+function arbitrateExpert(expertId, ask = {}) {
+  const id = String(expertId || "");
+  if (!id || !expertBook.has(id)) return { ok: true, reason: "no-expert", detail: "" };
+  const v = arbitrate(expertBook.get(id), { ...ask, tool: `${ask.server || ""}|${ask.tool || ""}` });
+  if (v.allow) return { ok: true, reason: v.reason, detail: "" };
+  try {
+    logBus.write({ category: "safety", level: "warn", epoch: epochOf(),
+      message: `专家越权被拒：${id} / ${ask.server}.${ask.tool}（${v.reason}）` });
+  } catch {}
+  return { ok: false, reason: v.reason, detail: v.detail };
+}
+/* 升级器（2026-11-05）：所有"换档"都记在同一个账本里，并统一做世代校验。
+ * 为什么必须统一：旧世代迟到的降级回调会把状态改回去，而每处各自决定要不要看
+ * epoch，就一定有一处忘了。这里只记账 + 校验，不替业务决定该不该换。 */
+const upgrade = createUpgrade({ epoch: () => epochOf() });
+const personaSlots = createPersonaSlots();
+const visualTiers = createVisualTiers({
+  epoch: epochOf,
+  probe: prober,
+  /* 视觉档位换档 → 记进升级账本。参数名对不上就静默丢弃，
+     不让"记账"这件事有本事把选档带崩。 */
+  onTransition: (ev) => {
+    try { upgrade.transition(ev.ladder, ev.from, ev.to, { cause: ev.cause, epoch: ev.epoch }); } catch {}
+  },
+});
+const sessionMgr = createSessionManager({
+  root: ARTIFACTS_DIR,
+  onFinalize: (r) => {
+    try {
+      logBus.write({ category: "artifact", level: "info", epoch: epochOf(),
+        message: `会话归档触发：${r?.conversationId || "-"} / ${r?.reason || "finalize"}${r?.interrupted ? "（急停冻结）" : ""}` });
+    } catch {}
+  },
+});
+const archiver = createArchiver({ root: ARTIFACTS_DIR, linkMode: "copy" }); // 默认纯复制，L4 只留引用
+
+/* 命令通道「启动类」进程的可枚举登记表。
+ * launchApp 刻意 detached + unref，让被打开的程序独立于桥存活 —— 这是设计，不是漏洞，
+ * 因此不进 activeProcs（急停不该顺手杀掉用户刚打开的记事本）。但两件事必须成立：
+ * ① 可枚举（这里登记 pid/command/epoch），② 急停后不许新建（commandGate 入口 409）。 */
+const launchedProcs = new Map();
+function noteLaunched(result) {
+  const l = result && result.launched;
+  if (!l || !l.pid) return;
+  launchedProcs.set(String(l.pid), {
+    pid: l.pid, command: String(l.command || ""), args: Array.isArray(l.args) ? l.args : [],
+    epoch: epochOf(), at: Date.now(), orphaned: false,
+  });
+  if (launchedProcs.size > 200) launchedProcs.delete(launchedProcs.keys().next().value);
+}
+
 const activeProcs = new Set();
 
 function trackProc(p) {
   if (!p || typeof p.once !== "function") return p;
   activeProcs.add(p);
+  /* 归属到工单：`jobScope` 是异步上下文，spawn 发生在哪条链上就自动归到哪张工单，
+   * 不需要把 jobId 一路透传进 20 个函数签名。
+   * 有了这张表才能做"只停这一单"——否则 /api/job/:id/abort 只能全杀。 */
+  const scope = jobScope.getStore();
+  if (scope && scope.id) {
+    let set = jobProcs.get(scope.id);
+    if (!set) { set = new Set(); jobProcs.set(scope.id, set); }
+    set.add(p);
+    const drop = () => { set.delete(p); if (!set.size) jobProcs.delete(scope.id); };
+    p.once("exit", drop);
+    p.once("error", drop);
+  }
   const done = () => activeProcs.delete(p);
   p.once("exit", done);
   p.once("error", done);
@@ -2058,7 +4072,7 @@ function killActiveProcs() {
  * 为什么需要它：MCP 工具（比如一条跑很久的 PowerShell、一次大范围 Snapshot）
  * 是在 **MCP server 子进程内部**执行的，bridge 这边只是 await，kill 不到它。
  * 唯一能真正中断的办法是**把连接断掉** —— stdio 一关，子进程收到 EOF 退出，
- * 卡在 callTool 上的 Promise 立刻 reject，工作流也就停下来了。
+ * 卡在 callTool 上的 Promise 立刻 reject，自动化也就停下来了。
  * 但断连代价不小（下次调用要重连、要几秒），所以**只在确实有在途调用时才断**。 */
 const inflightMcp = new Map();
 const inflightTotal = () => [...inflightMcp.values()].reduce((a, b) => a + b, 0);
@@ -2089,25 +4103,116 @@ function killInflightMcp() {
   return busy;
 }
 
+/* 最近一次急停的收场报告：doStop 每次都写，面板用 /api/stop/report 读。
+   急停最该回答的不是「停没停」，而是「哪些活白做了、哪些能续」。 */
+let LAST_STOP_REPORT = null;
+
 function doStop(reason) {
   STOP.on = true;
   STOP.at = Date.now();
   STOP.reason = reason || "手动急停";
-  console.log(`[stop] 急停生效：${STOP.reason}`);
+  /* 换代。这是"停得住"的关键：先抬 epoch，再杀进程 ——
+   * 反过来的话，杀进程期间跑完的任务会以"当前世代"写回状态，正好漏掉。 */
+  STOP.epoch = Number(STOP.epoch || 0) + 1;
+  /* 运行账本同步作废：在跑的 recipe 标 interrupted，不留「永远在跑」的幽灵。
+     恢复不重放旧 run —— 与 doResume 的既有语义一致。 */
+  try {
+    const n = wfRuns.abortAll(STOP.reason, STOP.epoch);
+    if (n) console.log(`[stop] 已作废 ${n} 条在跑的自动化运行`);
+  } catch {}
+  /* 浏览器扩展通道也一并停掉：急停不是只停 GUI。provider 会推 channel_close，
+     宿主轮询 /api/browser/pending 取走并转交扩展。 */
+  try { browserProvider.closeAll("stopped"); } catch {}
+  /* 阶段一接线：抬代之后立刻做三件带外的事，且必须排在 killActiveProcs 之前。
+     safety.stop 是急停期间最后一条日志，日志总线写的是文件不是子进程，不会被进程树清理带走。 */
+  try { commandGate.onEpochAdvanced(); } catch {}
+  try { logBus.stopSafe(`${STOP.reason} / 第 ${STOP.epoch} 代`); } catch {}
+  try { eventRecorder.flush(); } catch {}
+  try {
+    const frozen = sessionMgr.finalize("stop");
+    if (frozen && frozen.ok) {
+      logBus.write({ category: "artifact", level: "warn", epoch: STOP.epoch,
+        message: `急停：会话 ${frozen.conversationId} 已冻结为只读快照（${frozen.dir}）` });
+    }
+  } catch {}
+  console.log(`[stop] 急停生效（第 ${STOP.epoch} 代）：${STOP.reason}`);
+  let staled = 0;
+  try {
+    const bumped = ticketStore.bumpEpoch(STOP.reason);
+    staled = bumped.staled;
+    /* 以工单表的世代为准（它是落盘的那份）。正常情况下两者本就相等，
+     * 这里只是防止某条路径漏抬一次导致长期漂移 —— 漂移的后果是"急停后
+     * 任务仍被当成当代"，属于一次就够毁掉整个语义的错误。 */
+    if (Number(bumped.epoch) !== Number(STOP.epoch)) {
+      console.log(`[stop] 世代号不一致（内存 ${STOP.epoch} / 工单表 ${bumped.epoch}），以工单表为准`);
+      STOP.epoch = Number(bumped.epoch);
+    }
+  } catch (err) {
+    console.log("[stop] 作废工单失败：", err?.message ?? err);
+  }
+  try { guiLock.setEpoch(STOP.epoch); } catch { /* 锁没起也无所谓 */ }
   try { disarmTriggers(); } catch {}
   const killed = killActiveProcs();     // 关键：连正在跑的子进程一起干掉
   console.log(`[stop] 已终止 ${killed} 个在跑的子进程`);
   // MCP 内部的长任务：没有在途调用就不动它，避免误触后每次操作都要重连
   const mcpCut = killInflightMcp();
-  return { on: STOP.on, at: STOP.at, reason: STOP.reason, killed, mcpCut };
+  /* 通知走发件箱而不是直接 push：急停的反馈恰恰是最不能丢的一条，
+   * 而 SSE 此刻可能正在断线重连。幂等键带上 epoch，重连后不会收到两遍。 */
+  try {
+    outbox.enqueue({
+      kind: "notice",
+      dedupe: `stop:${STOP.epoch}`,
+      payload: { text: `已急停（第 ${STOP.epoch} 代）：终止 ${killed} 个子进程，中断 ${mcpCut.length} 个在途调用，作废 ${staled} 张工单` },
+    });
+    outbox.pump().catch(() => {});
+  } catch (err) {
+    console.log("[stop] 通知入箱失败：", err?.message ?? err);
+  }
+  /* 池里的排队项直接清掉：急停之后它们不该再"按顺序慢慢跑起来"。
+   * 在跑的那些由上面的 killActiveProcs 统一杀，这里不重复动手。
+   * ⚠️ 被清掉的必须**同时把 job 结算掉** —— 否则它们永远停在 running，
+   * 面板会挂着几个永远转圈的任务（runBody 从未被调用，没有任何后续回调）。 */
+  let droppedJobs = [];
+  try { droppedJobs = pool.halt(STOP.reason).dropped || []; } catch {}
+  for (const jid of droppedJobs) {
+    const j = jobs.get(jid);
+    if (!j) continue;
+    const next = { ...j, status: "error", stopped: true, finishedAt: Date.now(), error: "急停：任务还在队列里，未开始执行" };
+    jobs.set(jid, next);
+    pushJobFinal(jid, next);
+    settleJobTicket(next, "stopped", "急停清队");
+  }
+  LAST_STOP_REPORT = {
+    on: STOP.on, at: STOP.at, reason: STOP.reason, epoch: STOP.epoch,
+    killed, mcpCut: mcpCut.length, staled, dropped: droppedJobs.length,
+  };
+  return LAST_STOP_REPORT;
 }
 
 function doResume() {
+  const wasOn = STOP.on;
   STOP.on = false;
+  /* reopen 只恢复协议状态（stopped=false），不会自动重连扩展；扩展自己会重连并重新 hello/open。 */
+  try { browserProvider.reopen(); } catch {}
   STOP.reason = "";
-  console.log("[stop] 已恢复");
+  console.log(`[stop] 已恢复（第 ${STOP.epoch} 代）`);
   try { armTriggers(); } catch {}
-  return { on: STOP.on };
+  /* 注意：恢复**不回退 epoch**。回退等于让旧世代重新有效，
+   * 那些迟到的回调立刻就又能写状态了 —— 这正是要防的东西。 */
+  if (wasOn) {
+    try {
+      outbox.enqueue({
+        kind: "notice",
+        dedupe: `resume:${STOP.epoch}`,
+        payload: { text: `已恢复（第 ${STOP.epoch} 代）。上一世代的迟到回调会被拒收，需要续跑请重新派单` },
+      });
+      outbox.pump().catch(() => {});
+    } catch {}
+  }
+  try { pool.resume(); } catch {}
+  /* 恢复 = 新世代开新会话组，被冻结的旧组不复活。 */
+  try { sessionMgr.start({ reason: "resume", epoch: STOP.epoch }); } catch {}
+  return { on: STOP.on, epoch: STOP.epoch };
 }
 
 /* ---------------- 执行审计日志 ----------------
@@ -2115,6 +4220,9 @@ function doResume() {
  * 落盘 <控制台>/audit/YYYY-MM-DD.jsonl（按天分文件、追加写）。
  * 只记**摘要**，不存 result 全文 —— 否则一条截图就能写出几 MB。
  */
+/* 注意：这里是**执行审计**（谁在何时调了哪个工具、结果如何），不是运行日志。
+ * 面板「设置 › 存储 › 执行审计日志」查看器读的就是这个目录，旧契约保持不动。
+ * 新的结构化日志一律走 artifacts/<日期>/logs/，绝不写进本目录。 */
 const AUDIT_DIR = path.join(DATA_DIR, "audit");
 const AUDIT_KEEP_DAYS = 30;
 const AUDIT_MEM_MAX = 500;
@@ -2337,7 +4445,12 @@ function settleAgent(payload) {
 const DANGER_FILE = process.env.ORB_DANGER_FILE || path.join(DATA_DIR, "danger-tools.json");
 const DANGER_DEFAULTS = {
   tools: ["PowerShell"],
-  args: { FileSystem: [{ mode: "delete" }] },
+  args: {
+    FileSystem: [{ mode: "delete" }],
+    /* 命令通道：这三类另有"代码级硬闸"兜底（见 cmdDanger.mjs）——
+       列出是为了配置文件自解释；即便老机器的 danger-tools.json 没有这段，也拦得住。 */
+    CommandChannel: [{ op: "move" }, { op: "rename" }, { op: "copy", overwrite: "true" }],
+  },
 };
 let DANGER = structuredClone(DANGER_DEFAULTS);
 const DANGER_TOOLS = new Set(DANGER.tools);   // 兼容老代码：只放"整工具危险"的那部分
@@ -2416,11 +4529,28 @@ function isDangerous(server, tool, args) {
   return dangerByArgs(tool, args);   // 例如 FileSystem 只有 delete 才拦，read/list 不该打扰用户
 }
 
-function listPending() {
-  return [...approvals.values()].map((a) => ({ id: a.id, tool: a.tool, args: a.args, at: a.at }));
+/* 命令通道危险判定：**硬闸优先，配置兜底**。
+ * move/rename/copy+overwrite 会令源消失或毁目标 —— 无条件需确认，不受旧 danger-tools.json
+ * / 白名单影响（旧配置不会自动补齐新规则，靠配置会漏）。其余（write/launch/openWith/
+ * 非覆盖 copy）交给可配置 DANGER，口径与既有治理层完全一致。 */
+function commandChannelDanger(body = {}) {
+  const args = commandChannelArgs(body);
+  const hard = hardDangerOp(args);
+  if (hard) return { danger: true, reason: hard, args, hard: true };
+  const danger = DANGER_TOOLS.has("CommandChannel") || dangerByArgs("CommandChannel", args);
+  return { danger, reason: danger ? "命中可配置危险规则" : "", args, hard: false };
 }
 
-function resolveApproval(id, allow, reason, remember) {
+function listPending() {
+  return [...approvals.values()].map((a) => ({ id: a.id, tool: a.tool, args: a.args, at: a.at, ticketId: a.ticketId || "" }));
+}
+
+/* 11-07 简报 §3.1 hermes「No, and tell Hermes what to do instead」：
+ * 一次交互里同时否决 + 给纠正。旧实现里「否决」只是抛个拒绝文案，
+ * 用户想说「别这么干，改成那样」必须再打一次 /api/tickets，等于两轮。
+ * extra = { correction, ticketId, replan }；否决且带纠正时同步写入 ticketCtl 的
+ * steers（correct）或重排（rethink），并把结果回给等待方，不另起一轮。 */
+function resolveApproval(id, allow, reason, remember, extra = {}) {
   const a = approvals.get(id);
   if (!a) return false;
   clearTimeout(a.timer);
@@ -2445,11 +4575,28 @@ function resolveApproval(id, allow, reason, remember) {
     }
   }
 
-  a.resolve({ allow: !!allow, reason: reason || (allow ? "已允许" : "已拒绝") });
+  const correction = String(extra.correction || "").trim().slice(0, 2000);
+  const ticketId = String(extra.ticketId || a.ticketId || "").trim();
+  const veto = !allow && !!correction;
+  let steer = null;
+  if (veto) {
+    try {
+      steer = ticketCtl.control(ticketId, extra.replan ? "rethink" : "correct", { text: correction });
+      log(`[confirm] 否决并纠正：${ticketId || "(无工单号)"} → ${correction.slice(0, 60)}`);
+    } catch (e) {
+      steer = { ok: false, error: String(e?.message ?? e) };
+    }
+  }
+
+  a.resolve({
+    allow: !!allow,
+    reason: reason || (allow ? "已允许" : (veto ? "已否决并给出纠正" : "已拒绝")),
+    veto, correction, ticketId, replan: !!extra.replan, steer,
+  });
   return true;
 }
 
-function waitApproval(server, tool, args) {
+function waitApproval(server, tool, args, meta = {}) {
   const id = "c" + (++confirmSeq);
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -2457,7 +4604,7 @@ function waitApproval(server, tool, args) {
       console.log(`[confirm] ${id} 超时未确认，按拒绝处理`);
       resolve({ allow: false, reason: "超时未确认（安全默认：拒绝）" });
     }, CONFIRM_TIMEOUT_MS);
-    approvals.set(id, { id, server, tool, args, at: Date.now(), timer, resolve });
+    approvals.set(id, { id, server, tool, args, ticketId: String(meta.ticketId || ""), at: Date.now(), timer, resolve });
     console.log(`[confirm] 等待确认：${tool} ${JSON.stringify(args).slice(0, 120)}`);
   });
 }
@@ -2506,6 +4653,7 @@ async function runSteps(steps, ctx, depth = 0) {
     /* 智能体判定最终目标已达成：整条流程收工。
        只 return 不够 —— 嵌套层返回只能结束本层，父层循环还会跑下一轮。 */
     if (ctx.finished) return;
+    const idemBefore = ctx.lastIdem;
     const sig = await runNode(list[i], ctx, depth);
     if (sig && sig.downgraded) {
       /* 这一步「配了锚点却找不到」——界面变了。交给接管层处理：
@@ -2523,6 +4671,15 @@ async function runSteps(steps, ctx, depth = 0) {
       }
       i = back;
       continue;
+    }
+    /* 断点只认「这一步真产生了一条已结算收据」的边界。
+       纯 set 这类不落收据的步不推进断点 —— 让断点稍微滞后一点，
+       总比让断点声称"后面几步也做完了"要安全（只是多跑几步本地赋值）。 */
+    if (depth === 0 && typeof ctx.onStepDone === "function"
+      && ctx.lastIdem && ctx.lastIdem !== idemBefore) {
+      try {
+        ctx.onStepDone((Number(ctx.baseIndex) || 0) + i + 1);
+      } catch { /* 断点写失败绝不影响回放：它是观测，不是执行前提 */ }
     }
     i++;
   }
@@ -2612,7 +4769,7 @@ async function runNode(s, ctx, depth) {
     return null;
   }
 
-  // 默认：普通动作（老工作流的步骤没有 type，走这里）
+  // 默认：普通动作（老自动化的步骤没有 type，走这里）
   ctx.step = (ctx.step || 0) + 1;
   liveStep(ctx.step, s.tool);
   // 抗迁移：先按窗口锚定 / 文字锚定 / 兜底重算坐标，再回放
@@ -2621,7 +4778,7 @@ async function runNode(s, ctx, depth) {
 
   if (conf === "absolute") {
     /* 配了锚点却落到录制坐标 = 真降级，界面上那个文字找不到了。
-       三种处置由工作流的 escalate 决定。 */
+       三种处置由自动化的 escalate 决定。 */
     if (ctx.escalate === "stop") {
       throw new Error(`第 ${ctx.step} 步「${(s.args && s.args.anchor) || s.tool}」在界面上找不到，已按「遇到意外就停」停下`);
     }
@@ -2630,13 +4787,124 @@ async function runNode(s, ctx, depth) {
        父层的循环次数、分支选择、迭代变量完全不受影响 —— 这是 UiPath
        Retry Scope 的作用域语义，也是唯一不会搞乱控制流的接法。 */
     if (ctx.escalate === "agent" || ctx.escalate === "once") {
-      return { downgraded: true, conf, tool: s.tool, anchor: (s.args && s.args.anchor) || "" };
+      // 预测降级：锚点没找到 = 界面变了，语义对应 STALE_REF。
+      return { downgraded: true, conf, tool: s.tool, anchor: (s.args && s.args.anchor) || "", code: ACTION_ERROR_CODES.STALE_REF };
     }
   }
 
-  await callTool(s.server, s.tool, interp(actArgs, ctx), s.timeoutMs ?? CALL_TIMEOUT_MS);
+  // 方案 B：真实动作失败按结构化错误码决策升级，不再只会「整条抛错挂掉」。
+  // conf==='absolute' 的「预测降级」已在上面提前 return 触发接管；这里覆盖的是
+  // 高可信锚定（tree/text/window/none）却仍被工具拒绝的情形。
+  const hadRef = conf === "tree" || conf === "text" || !!(s.args && s.args.anchor);
+  // 方案 E：verify 环（opt-in，只记日志、不阻断）。动作前抓一次控件树当基线，
+  // 动作后再抓一次比对指纹；只在明显"没生效"时告警，供人排查 / 后续接重锚。
+  const VERIFY_ON = process.env.ORB_VERIFY === "1";
+  let beforeVerifyText = null;
+  if (VERIFY_ON) { try { beforeVerifyText = await getSnapshotText(8000); } catch { /* 抓不到就跳过 verify */ } }
+
+  /* 动作级幂等键：同一次运行的同一步必须稳定复算出同一个键。
+     用 ctx.step（每执行一次动作就 +1，循环里重复执行也算新步）而不是静态下标 ——
+     静态下标会让循环第 2 轮被误判成「这一步做过了」而整段跳过。 */
+  const actArgsNow = interp(actArgs, ctx);
+  const idemKey = stepIdemKey({
+    runId: ctx.runId, stepNo: ctx.step, server: s.server, tool: s.tool, args: actArgsNow,
+  });
+  /* 风险档由能力清单给，不由配方自称。未登记的工具一律按不可逆处理（fail-closed）。 */
+  const risk = riskOf({ readOnly: isReadOnly(s.server, s.tool), revocable: revocableOf(s.server, s.tool) });
+
+  /* 有限重试：只有「界面漂移类错误码 + 动作可逆 + 未达上限」三条同时成立才重试。
+     桌面 GUI 与云端不同 —— 点过「提交」再点一次就是提交两次，所以默认 maxAttempts=2，
+     而且不可逆动作直接判死，不看错误码。 */
+  let attempt = 0;
+  let failure = null;
+  let out = null;
+  for (;;) {
+    attempt++;
+    try {
+      out = await callTool(s.server, s.tool, actArgsNow, s.timeoutMs ?? CALL_TIMEOUT_MS);
+      failure = null;
+      break;
+    } catch (err) {
+      const code = classifyActionError(String(err?.message ?? err), { hadRef });
+      const rt = shouldRetry({ code, risk, attempt, hadRef });
+      if (rt.retry) {
+        if (ctx.q) ctx.q.retries = (ctx.q.retries || 0) + 1;
+        traceStep(ctx, { no: ctx.step, tool: s.tool, server: s.server, conf, attempt,
+          ok: false, code, retryIn: rt.delayMs, message: String(err?.message ?? err) });
+        await sleep(rt.delayMs);
+        continue;
+      }
+      failure = { err, code, rt };
+      break;
+    }
+  }
+
+  if (failure) {
+    const { err, code } = failure;
+    const decision = decideEscalation(code, { escalate: ctx.escalate });
+    if (decision === "hard-stop") {
+      // 权限/急停拒绝：绝不重试、绝不升级视觉（确认交人），直接硬停。
+      traceStep(ctx, { no: ctx.step, tool: s.tool, server: s.server, conf, attempt, ok: false, code, message: "hard-stop" });
+      throw new Error(`第 ${ctx.step} 步「${s.tool}」被权限/急停拒绝（${code}），已停止并交人工处理：${String(err?.message ?? err)}`);
+    }
+    if (decision === "takeover") {
+      // STALE_REF / AMBIGUOUS_TARGET / WINDOW_GONE / UNKNOWN + escalate∈{agent,once}：
+      // 交给接管层按视觉推进。
+      if (ctx.q) ctx.q.anchorFallbacks++;   // 抗迁移三道防线失守一次，记账不改行为
+      traceStep(ctx, { no: ctx.step, tool: s.tool, server: s.server, conf, attempt,
+        ok: false, code, downgraded: true, message: String(err?.message ?? err) });
+      return { downgraded: true, conf, tool: s.tool, anchor: (s.args && s.args.anchor) || "", code };
+    }
+    // off / stop 且真实失败（含 UNKNOWN）：原样抛出，由 wfPlay 捕获上报（行为不变）。
+    traceStep(ctx, { no: ctx.step, tool: s.tool, server: s.server, conf, attempt, ok: false, code,
+      message: String(err?.message ?? err) });
+    throw err;
+  }
+
+  /* 本次真的执行完毕：结算幂等收据。
+     收据是「这一步确实做成了」的独立痕迹 —— 同 key 再来一次会被识别成已完成，
+     断点续跑与重复点火都据此判断，不必猜。写不进去绝不影响回放。 */
+  try {
+    const iss = wfReceipts.issue({ idempotencyKey: idemKey, effect: { server: s.server, tool: s.tool } });
+    if (iss && iss.receiptId && !iss.duplicate) wfReceipts.settle(iss.receiptId, { ok: true, result: { step: ctx.step } });
+    /* 交给 runSteps 记断点：只有真的落了收据的这一步，才是可确认的续跑边界。 */
+    ctx.lastIdem = idemKey;
+  } catch { /* 收据是观测，不是执行前提 */ }
+
+  /* 只读动作的回读计数：判只读配方「有没有真的拿到东西」时唯一的客观依据。 */
+  const isRead = READ_TOOLS_FOR_REC.has(s.tool) || isReadOnly(s.server, s.tool);
+  if (isRead) {
+    const txt = toolTextOf(out);
+    if (txt && String(txt).trim() && ctx.q) ctx.q.readbacks = (ctx.q.readbacks || 0) + 1;
+  }
+  traceStep(ctx, { no: ctx.step, tool: s.tool, server: s.server, conf, attempt, ok: true,
+    readonly: isRead, idem: idemKey.slice(-8) });
+
+  if (VERIFY_ON) {
+    try {
+      await sleep(120);                 // 给界面一点时间落定，避免读到"还没来得及变"的旧树
+      snapTreeCache.clear();            // 清掉动作前缓存，强制拿动作后的新树
+      const afterVerifyText = await getSnapshotText(8000);
+      const mutating = !READ_TOOLS_FOR_REC.has(s.tool);
+      const v = verifyEffect({ beforeText: beforeVerifyText, afterText: afterVerifyText, mutating });
+      if (!v.ok) {
+        if (ctx.q) ctx.q.verifyFailed++;
+        log(`[verify] 第 ${ctx.step} 步「${s.tool}」疑似未生效：${v.reason}`);
+      }
+    } catch { /* verify 失败绝不影响回放 */ }
+  }
   if (ctx.gap) await sleep(ctx.gap);
   return null;
+}
+
+/** 写一条步级轨迹。没有 runId（内部直调 / 单测）时静默跳过。 */
+function traceStep(ctx, entry) {
+  if (!ctx || !ctx.runId) return;
+  /* 子流程共享父级 runId，并打上 node 标记。
+     不共享的话，子流程内部的断点只能从父层那句"子流程失败了"往前猜 ——
+     而子流程恰恰是最容易藏住"第几步"的地方（它有自己的 steps 数组）。 */
+  const e = ctx.traceNode ? Object.assign({}, entry, { node: String(ctx.traceNode), nested: true }) : entry;
+  try { wfTrace.step(ctx.runId, e); } catch { /* 轨迹失败不影响执行 */ }
 }
 
 /** 回放：支持编排节点；失败立即停并汇报 */
@@ -2644,16 +4912,50 @@ async function wfPlay(name, opts = {}) {
   const file = wfFile(name);
   let wf;
   try { wf = JSON.parse(fsSync.readFileSync(file, "utf8")); }
-  catch { throw new Error(`读不到工作流：${name}`); }
+  catch { throw new Error(`读不到自动化：${name}`); }
 
   const gap = Number(opts.gap ?? wf.gap ?? 700);
   /* escalate：界面变了怎么办。
-     off   —— 老行为，直接按录制坐标点下去（默认，不改变既有工作流的语义）
+     off   —— 老行为，直接按录制坐标点下去（默认，不改变既有自动化的语义）
      stop  —— 立刻停并报错（宁可不做，也不乱点）
      once  —— 先问一次视觉模型，救不回来再用录制坐标顶上
      agent —— 交给视觉智能体分几小步推进，每批停下探一次是否回到原轨道 */
   const escalate = ["off", "stop", "once", "agent"].includes(wf.escalate) ? wf.escalate : "off";
+  const subDepth = Number(opts._depth) || 0;
+  /* 人工批准：由调用方（面板点「批准」/ 外部通道）传进来，只认节点 id。
+     不给就一律当作未批准 —— fail-closed，绝不让"没人批过"变成"默认放行"。 */
+  const approvedSet = new Set(
+    (Array.isArray(opts.approved) ? opts.approved : []).map((x) => String(x)),
+  );
+
+  /* 受限编排：配方带 graph 段时以图为准（拓扑序 + 子流程 + 人工闸门），
+     steps 退化成图里 step 节点的默认动作序列。
+     图有环 / 引用不存在的节点 / 节点类型不认识 → 直接拒绝，不跑半张图。 */
+  let plan = null;
+  let steps = wf.steps || [];
+  if (wf.graph && typeof wf.graph === "object") {
+    const p = planOrder(wf.graph, { vars: Object.assign({}, wf.vars || {}), ...(opts.env || {}) });
+    if (!p.ok) throw new Error(`编排图不合法，拒绝执行：${(p.errors || []).join("；")}`);
+    plan = p.plan || [];
+    for (const w of p.warnings || []) log(`[wf] 编排警告（${name}）：${w}`);
+  }
+
+  /* 断点续跑：跳过前 resumeFrom 个顶层步（0 基）。
+     调用方（/api/wf resume）已经用 canResume 过了一遍安全门，这里仍要校一次区间 ——
+     入参来自外部，只信任上游是不够的。skipRead 会改变步索引，与续跑互斥。 */
+  let resumeFrom = 0;
+  if (opts.resumeFrom != null && opts.resumeFrom !== "" && Number(opts.resumeFrom) !== 0) {
+    if (opts.skipRead) throw new Error("skipRead 与断点续跑不能同时用：前者会改变步索引，续跑位置会错位");
+    if (plan) throw new Error("编排图配方不支持断点续跑（节点内会重复执行同一段）");
+    const n = Number(opts.resumeFrom);
+    if (!Number.isInteger(n) || n < 1 || n >= steps.length) {
+      throw new Error(`续跑起点不合法：${opts.resumeFrom}（配方共 ${steps.length} 步，合法范围 1..${steps.length - 1}）`);
+    }
+    resumeFrom = n;
+  }
+
   const ctx = {
+    runId: String(opts.runId || ""),      // 有 runId 才写步级轨迹；内部直调不写
     vars: Object.assign({}, wf.vars || {}),
     gap,
     goal: String(wf.goal || ""),          // 给智能体看的最终目标，接管时原样拼进提示词
@@ -2663,40 +4965,225 @@ async function wfPlay(name, opts = {}) {
     startedAt: Date.now(),                // 轮次推定的时间基线：只数这次运行之后的动作
     scopes: [],                           // 循环作用域栈：接管靠它知道「在哪一层、第几轮」
     finished: false,                      // 智能体判定最终目标已达成 → 整条流程收工
+    /* 回放质量计数：确定性执行有没有退化成视觉摸索。只统计，不改任何执行语义。
+       运行账本据此回答「这条菜谱在 observe 一周里值不值得升 auto」。
+       retries / readbacks 是 2026-11-08 新增的独立观测量：
+       前者数重试，后者数只读动作真的拿到了数据（只读配方的唯一判据）。 */
+    q: { takeovers: 0, verifyFailed: 0, skippedRead: 0, anchorFallbacks: 0, retries: 0, readbacks: 0 },
+    baseIndex: resumeFrom,                // 顶层步的原始下标基准（续跑时非 0）
+    lastIdem: "",                         // 最近一条已结算收据的幂等键 → 断点的确认凭据
   };
 
-  let steps = wf.steps || [];
-  if (opts.skipRead) {
-    // 只跳过顶层的只读动作；编排节点原样保留
-    steps = steps.filter((s) => !(s.type === undefined && READ_TOOLS_FOR_REC.has(s.tool)));
+  /* 断点：线性配方每完成一个「已结算」的顶层步就落一次，失败时它就是救命记录。
+     含 loop / if / subflow / graph 的配方一律不落 —— 顶层索引表达不了循环体中间的位置，
+     落下去只会诱导人去续跑一个本来就跑不准的点。 */
+  let resumeCapable = false;
+  {
+    const linearSelf = plan ? { ok: false } : isLinearRecipeWf(wf);
+    resumeCapable = !!linearSelf.ok;
+    if (resumeCapable) {
+      ctx.onStepDone = (nextIndex) => {
+        wfCps.save(name, {
+          workflow: wf.name || name,
+          runId: ctx.runId,
+          nextIndex,
+          total: (Array.isArray(wf.steps) ? wf.steps.length : 0),
+          /* 内容指纹：只比步数会漏掉"步数没变但某步被改过"，那种情况续跑会接错位置。 */
+          stepsDigest: recipeDigest(wf.steps),
+          vars: ctx.vars,
+          lastIdem: ctx.lastIdem,
+        });
+      };
+    }
   }
 
+  if (opts.skipRead) {
+    // 只跳过顶层的只读动作；编排节点原样保留
+    const before = steps.length;
+    steps = steps.filter((s) => !(s.type === undefined && READ_TOOLS_FOR_REC.has(s.tool)));
+    ctx.q.skippedRead = before - steps.length;
+  }
+
+  /* 结果判据与探测计划：配方没声明 postconditions 时，唯一能拿到的客观证据就是
+     「整条运行有没有真的改变界面」。纯只读配方没有副作用可观测，改用回读计数判。
+     探测失败一律当"没拿到证据"，绝不因此判成功 —— 这是 OutcomeGate 的红线。 */
+  const spec = buildSpec(wf);
+  const flatSteps = plan ? plan.flatMap((it) => (it.kind === "step"
+    ? (Array.isArray(it.node.steps) ? it.node.steps : steps) : [])) : steps;
+  const mutating = flatSteps.some((s) => s && s.type === undefined && !READ_TOOLS_FOR_REC.has(s.tool));
+  const readonlyRun = !mutating;
+  const needProbe = opts.noProbe === true ? false : ((spec.postconditions || []).length === 0 && mutating);
+  let beforeText = null;
+  if (needProbe) {
+    try { snapTreeCache.clear(); beforeText = await getSnapshotText(6000); } catch { /* 抓不到就退成"没证据" */ }
+  }
+
+  const totalForLive = plan ? plan.length : steps.length;
   // 标记来源 + 推送实时状态（面板靠这个显示进度，不再是黑盒等待）
   const prevSource = CURRENT_SOURCE;
   CURRENT_SOURCE = opts.source || "workflow";
   ctx.step = 0;
-  liveStart(CURRENT_SOURCE, wf.name || name, steps.length, "回放工作流");
-  try {
-    await runSteps(steps, ctx, 0);
-    liveEnd(true);
-    return {
-      ok: true, total: steps.length, stoppedAt: null, results: [], vars: ctx.vars,
-      // finished：智能体在接管时判定「最终目标已达成」，整条流程提前收工（不是失败）
-      finished: !!ctx.finished,
-    };
-  } catch (err) {
-    const msg = String(err?.message ?? err);
-    liveEnd(false, msg);
-    return { ok: false, total: steps.length, stoppedAt: -1, error: msg, vars: ctx.vars };
-  } finally {
-    CURRENT_SOURCE = prevSource;
+  /* 子流程不再自己 begin/end、也不再抢实时进度：它和父流程共用一条轨迹与一个进度条。
+     否则每进一层子流程，面板上的「第 N/M 步」会跳回 0，看着像重新开始了。 */
+  const nested = subDepth > 0;
+  if (nested) ctx.traceNode = String(opts._traceNode || wf.name || name);
+  if (!nested) liveStart(CURRENT_SOURCE, wf.name || name, totalForLive, "回放自动化");
+  if (ctx.runId && !nested) {
+    try {
+      wfTrace.begin(ctx.runId, {
+        workflow: wf.name || name, mode: plan ? "graph" : "steps",
+        nodes: plan ? plan.length : 0, steps: steps.length, escalate,
+      });
+    } catch { /* 轨迹失败不影响回放 */ }
   }
+
+  /* 图执行的单节点派发。刻意只做「先后与依赖」：
+     不并行（GUI 独占）、不做长期等待（人工节点 fail-closed）、节点内不嵌图。 */
+  const runPlan = async () => {
+    for (const item of plan) {
+      if (ctx.finished) break;
+      const node = item.node || {};
+      if (item.kind === "step") {
+        const body = Array.isArray(node.steps) ? node.steps : steps;
+        if (node.when && !(await evalWhen(node.when, ctx))) {
+          traceStep(ctx, { node: item.id, kind: "step", skipped: true, reason: "when 未满足" });
+          continue;
+        }
+        traceStep(ctx, { node: item.id, kind: "step", started: true, steps: body.length });
+        await runSteps(body, ctx, 0);
+      } else if (item.kind === "subflow") {
+        if (subDepth >= MAX_SUBFLOW_DEPTH) {
+          throw new Error(`子流程嵌套超过上限（${MAX_SUBFLOW_DEPTH}）：${node.workflow}`);
+        }
+        traceStep(ctx, { node: item.id, kind: "subflow", workflow: String(node.workflow || "") });
+        const sub = await wfPlay(String(node.workflow || ""), {
+          ...opts, _depth: subDepth + 1, approved: opts.approved,
+          /* 子流程共享父级的 runId 与轨迹：不共享的话，父层只剩一句
+             「子流程 X 失败」，而它自己的第几步挂了完全查不到。 */
+          runId: ctx.runId, _traceNode: String(item.id || node.workflow || ""),
+          source: opts.source,
+          /* 续跑起点绝不能被子流程继承：那会跳过子流程自己的前几步。 */
+          resumeFrom: 0,
+        });
+        if (!sub.ok) {
+          throw new Error(`子流程「${node.workflow}」失败：${sub.error || sub.status || "未知原因"}`);
+        }
+        /* 子流程的产出变量并回父层：不并回去的话，"准备"那一步算出来的东西
+           在"主流程"里就看不见，subflow 也就没意义了。 */
+        Object.assign(ctx.vars, sub.vars || {});
+      } else if (item.kind === "approval") {
+        if (approvedSet.has(String(item.id))) {
+          traceStep(ctx, { node: item.id, kind: "approval", approved: true });
+          continue;
+        }
+        if (String(node.onMissing || "") === "continue") {
+          /* 配方自己写了"没人批也继续"。这是绕过批准，必须留痕 ——
+             悄悄放行等于把人工闸门做成装饰。 */
+          log(`[wf] 人工节点 ${item.id} 未批准，但配方写了 onMissing=continue，已绕过批准继续`);
+          traceStep(ctx, { node: item.id, kind: "approval", approved: false, bypassed: true });
+          continue;
+        }
+        /* fail-closed：未批准就整条落 needs_review 停下。
+           不挂着等 —— 长期等待会占着 GUI 独占权，"等"比"停"更危险。 */
+        traceStep(ctx, { node: item.id, kind: "approval", approved: false, blocked: true });
+        ctx.pendingApproval = String(item.id);
+        return;
+      } else if (item.kind === "if") {
+        traceStep(ctx, { node: item.id, kind: "if", conditionMet: !!item.conditionMet, taken: !!item.taken });
+        if (item.taken) await runSteps(item.taken, ctx, 0);
+      }
+    }
+  };
+
+  let errorMsg = "";
+  try {
+    if (plan) await runPlan();
+    else if (resumeFrom > 0) {
+      /* 从断点往后跑：前面那些步已经由上一次运行做完了（并且收据在手），
+         再跑一遍等于把不可逆动作做第二次 —— 这正是续跑要避免的事。 */
+      log(`[wf] 断点续跑「${wf.name || name}」：跳过前 ${resumeFrom} 步，从第 ${resumeFrom + 1} 步开始（共 ${steps.length} 步）`);
+      traceStep(ctx, { no: ctx.step, resumeFrom, total: steps.length });
+      await runSteps(steps.slice(resumeFrom), ctx, 0);
+    } else await runSteps(steps, ctx, 0);
+  } catch (err) {
+    errorMsg = String(err?.message ?? err);
+  }
+
+  /* 结果判定：从执行者手里拿走"成没成"。探测只在这一刻做一次。 */
+  let effect = null;
+  let evidence = null;
+  if (needProbe && !errorMsg) {
+    try {
+      await sleep(150);                 // 让界面落定，否则比到的是"还没来得及变"的旧树
+      snapTreeCache.clear();
+      const afterText = await getSnapshotText(6000);
+      effect = { changed: verifyEffect({ beforeText, afterText, mutating: true }).changed };
+      /* 顺手把差异里的"新增文本行"留下来。它是 tree_state 判据唯一的证据来源 ——
+         没有它，用户想写「界面上得出现某某提示」只能靠回忆。 */
+      evidence = diffEvidenceLines(beforeText, afterText);
+    } catch { effect = null; evidence = null; }
+  }
+  const outcome = judge({
+    spec,
+    evidence: { effect, readbackCount: ctx.q.readbacks },
+    quality: ctx.q,
+    selfClaim: !!ctx.finished,
+    readonly: readonlyRun,
+  });
+  /* 人工节点没批：整条一律 needs_review，不管判据怎么说 —— 缺口在流程里，
+     不是"结果看起来没问题"能盖掉的。 */
+  const verdict = ctx.pendingApproval ? VERDICT.NEEDS_REVIEW : outcome.verdict;
+  const status = errorMsg ? "failed" : toRunStatus(verdict);
+
+  if (ctx.runId && !nested) {
+    try {
+      wfTrace.end(ctx.runId, {
+        status, verdict, evidenceLevel: outcome.evidenceLevel,
+        reasonCode: ctx.pendingApproval ? "approval_missing" : outcome.outcomeReasonCode,
+        error: errorMsg, steps: ctx.step, pendingApproval: ctx.pendingApproval || "",
+        /* 界面证据候选落轨迹：outcome-evidence 从这里读，面板据此给人勾选。
+           只存清洗后的可搜片段，不存原行 —— 原行里的 ref 编号下次就变了。 */
+        evidenceLines: evidence && evidence.ok ? evidence.lines.map((l) => l.text) : [],
+        evidenceReason: evidence ? evidence.reason : "",
+        ...ctx.q,
+      });
+    } catch { /* 轨迹失败不影响回放 */ }
+  }
+
+  /* 没报错地跑完 → 断点作废。
+     留着它会出事：下次点「从断点续跑」会跳过本次已经正常做完的步骤，
+     而界面上那些动作早就不在同一个状态了。 */
+  if (!errorMsg && resumeCapable) {
+    try { wfCps.clear(name); } catch { /* 清不掉也不影响本次结论 */ }
+  }
+
+  if (errorMsg) {
+    if (!nested) liveEnd(false, errorMsg);
+    CURRENT_SOURCE = prevSource;
+    return { ok: false, status, verdict, outcome, total: totalForLive, stoppedAt: -1,
+      resumedFrom: resumeFrom, error: errorMsg, vars: ctx.vars, escalate,
+      evidenceLines: evidence && evidence.ok ? evidence.lines.map((l) => l.text) : [],
+      ...ctx.q };
+  }
+
+  if (!nested) liveEnd(true);
+  CURRENT_SOURCE = prevSource;
+  return {
+    ok: true, status, verdict, outcome,
+    total: totalForLive, stoppedAt: null, results: [], vars: ctx.vars,
+    resumedFrom: resumeFrom,
+    evidenceLines: evidence && evidence.ok ? evidence.lines.map((l) => l.text) : [],
+    // finished：智能体在接管时判定「最终目标已达成」，整条流程提前收工（不是失败）
+    finished: !!ctx.finished,
+    pendingApproval: ctx.pendingApproval || "",
+    escalate, ...ctx.q,
+  };
 }
 
 (async () => { try { fsSync.mkdirSync(WORKFLOW_DIR, { recursive: true }); } catch {} })();
 
 /* ---------------- 触发器 ----------------
- * 让工作流"自己跑"，不必有人守着点。
+ * 让自动化"自己跑"，不必有人守着点。
  * 分工：定时 / 文件变化在 bridge（Node 能力）；**热键在 main.js**——
  * globalShortcut 是 Electron 的 API，bridge 进程里没有。
  * 落盘 <控制台>/triggers.json，重启后自动重新武装。
@@ -2748,12 +5235,215 @@ function disarmTriggers() {
   triggerHandles.clear();
 }
 
+/* ---------------- 唯一点火入口 ----------------
+ * 三层触发器（interval / file 在 bridge，hotkey 在 main.js）与人工回放都走这里。
+ * 之前热键直接 POST /api/wf play，绕过 fireTrigger —— 只改触发器会漏掉整整一层。
+ *
+ * 分层原则（对照 n8n / Node-RED / Temporal）：
+ *   · 账本只管「何时点火 / 归谁 / 是否重复 / 跑完没有」，绝不碰执行语义；
+ *   · wfPlay 原封不动保留：变量/条件/循环/scopes、锚定三道防线、verifyEffect、
+ *     escalate 四档、智能接管握手、agentBudget、skipRead、live SSE 全部照旧；
+ *   · 安全闸门（急停、能力清单、危险确认）在点火前裁决，被拦下也留收据；
+ *   · 归属复用 ticketStore / trajectory，不另起一套成本账。
+ */
+/* 判据只看「真正跑过」的运行：observe 拦下的是 skipped，不算样本。
+   人工回放算样本，否则 observe 不执行就永远攒不够数据、永远升不了 auto。 */
+function policyFor(name) {
+  const key = wfSafeName(name);
+  const runs = wfRuns.list({ limit: 500 }).filter((r) => wfSafeName(r.workflow) === key);
+  return evaluatePolicy(runs);
+}
+
+/** 自动升降级。缺省 mode=auto 以兼容既有配置；手动设过的 modeLocked 不被覆盖。 */
+function applyPolicies() {
+  const changed = [];
+  let dirty = false;
+  for (const t of triggers) {
+    if (!t || t.enabled === false) continue;
+    const cur = t.mode === "observe" ? "observe" : "auto";
+    const d = decideTransition(t, policyFor(t.workflow), cur);
+    if (!d.change) continue;
+    t.mode = d.mode;
+    changed.push({ id: t.id, workflow: t.workflow, from: cur, to: d.mode, reason: d.reason });
+    dirty = true;
+  }
+  if (dirty) { saveTriggers(); armTriggers(); }
+  return changed;
+}
+
+/**
+ * 这条配方现在能不能从断点续跑。只读，不改任何状态（面板拿它决定要不要显示按钮）。
+ *
+ * 「最后一步已结算」这条是整套机制的地基：断点记录的是 nextIndex（下标），
+ * 但下标本身只是一句自述 —— 真正证明「那一步确实做完了」的是 receipts 里那条
+ * 已结算的收据。收据丢了（被裁剪 / 换了机器）就一律拒绝，宁可从头跑。
+ */
+/* 谁把这条配方当子流程在调（含编排图里的 subflow 节点）。
+   删之前必须查：删掉 B，A 要到**运行时**才炸，而那时候 A 可能已经做到一半。
+   悬空引用里最难查的就是这种 —— 删的那一刻一切正常，报错在几天后的半夜。 */
+function subflowReferrersOf(name) {
+  const key = wfSafeName(name);
+  const out = [];
+  for (const w of wfList()) {
+    if (wfSafeName(w.name) === key) continue;
+    let body = null;
+    try { body = JSON.parse(fsSync.readFileSync(wfFile(w.name), "utf8")); } catch { continue; }
+    const hits = [];
+    const scan = (list, where, depth) => {
+      if (!Array.isArray(list) || depth > 8) return;
+      list.forEach((s, i) => {
+        if (!s || typeof s !== "object") return;
+        if (String(s.type || "") === "subflow" && wfSafeName(s.workflow) === key) {
+          hits.push(`${where}第 ${i + 1} 步`);
+        }
+        scan(s.body, where, depth + 1);
+        scan(s.then, where, depth + 1);
+        scan(s.else, where, depth + 1);
+      });
+    };
+    scan(body.steps, "", 1);
+    const nodes = Array.isArray(body.graph && body.graph.nodes) ? body.graph.nodes : [];
+    for (const n of nodes) {
+      if (n && String(n.kind || "") === "subflow" && wfSafeName(n.workflow) === key) {
+        hits.push(`编排图节点 ${String(n.id || "(无名)")}`);
+      }
+    }
+    if (hits.length) out.push({ name: w.name, where: hits.slice(0, 6) });
+  }
+  return out;
+}
+
+function resumeStatusOf(name) {
+  const nm = String(name || "");
+  if (!nm) return { ok: false, code: "no_workflow", reason: "缺少名称" };
+  let wf = null;
+  try { wf = JSON.parse(fsSync.readFileSync(wfFile(nm), "utf8")); }
+  catch { return { ok: false, code: "no_workflow", reason: "读不到自动化：" + nm }; }
+
+  const linear = isLinearRecipeWf(wf);
+  const cp = wfCps.get(nm);
+  if (!linear.ok) {
+    return { ok: true, resumable: false, code: linear.code, reason: linear.reason,
+      checkpoint: cp, linear: false, total: (wf.steps || []).length };
+  }
+  const rec = cp && cp.lastIdem ? wfReceipts.byKey(cp.lastIdem) : null;
+  const gate = canResume(wf, cp, { lastSettled: !!(rec && rec.settled) });
+  return {
+    ok: true, resumable: !!gate.ok, code: gate.code, reason: gate.reason,
+    nextIndex: gate.ok ? gate.nextIndex : null,
+    checkpoint: cp, linear: true, total: (wf.steps || []).length,
+    lastSettled: !!(rec && rec.settled),
+  };
+}
+
+async function fireWorkflow(o = {}) {
+  const t = o.trigger || null;
+  const name = String(o.name || (t && t.workflow) || "");
+  const triggerId = String(o.triggerId || (t && t.id) || "");
+  const layer = String(o.layer || "manual");
+  const eventId = `ev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  let wf = null;
+  try { wf = JSON.parse(fsSync.readFileSync(wfFile(name), "utf8")); } catch {}
+
+  let policyEpoch = 0;
+  try { policyEpoch = policyTransition.state().policyEpoch; } catch {}
+
+  const claim = wfRuns.begin({
+    triggerId, workflow: name, source: layer === "manual" ? "manual" : "trigger",
+    layer, eventId, dedupeKey: String(o.dedupeKey || ""),
+    /* 热键防连击、文件变化防抖；interval 由自身周期保证，不额外冷却。 */
+    cooldownMs: layer === "hotkey" ? 500 : (layer === "file" ? 1500 : 0),
+    epoch: STOP.epoch, escalate: String((wf && wf.escalate) || "off"), policyEpoch,
+    /* 闸门优先级：急停 > observe > 其它。被拦下也进账本留收据。 */
+    blockedBy: STOP.on ? "stopped" : String(o.blockedBy || ""),
+  });
+  if (!claim.ok) return { ok: false, code: claim.code, run: claim.run };
+
+  let ticketId = "";
+  try {
+    const tk = ticketStore.openTicket({
+      kind: "recipe", title: name, source: layer,
+      meta: { runId: claim.run.runId, triggerId, workflow: name, layer },
+    });
+    ticketId = tk.id;
+    trajectory.append(ticketId, { type: "step", name: "recipe.start", ok: true,
+      target: name, epoch: tk.epoch, runId: claim.run.runId });
+  } catch (err) {
+    console.log("[wf] 开工单失败（回放照跑，只是没账）：", err?.message ?? err);
+  }
+
+  let res;
+  try {
+    res = await wfPlay(name, {
+      gap: o.gap ?? (t && t.gap),
+      source: layer === "manual" ? "workflow" : "trigger",
+      skipRead: o.skipRead === true,
+      /* 步级轨迹挂在账本的 runId 上：出了事能回答「断在第几步」，而不只是"跑挂了"。 */
+      runId: claim.run.runId,
+      approved: o.approved,
+      /* 断点续跑：从第 N 个顶层步之后接着跑。安全门在 /api/wf resume 里已经过完，
+         这里原样透传 —— wfPlay 内部还会再校一次索引区间。 */
+      resumeFrom: o.resumeFrom,
+    });
+  } catch (err) {
+    res = { ok: false, status: "failed", total: 0, error: String(err?.message ?? err) };
+  }
+
+  /* status 由 OutcomeGate 给，不再「没抛异常 = ok」。
+     needs_review 单独一档：autoPolicy 的样本集只认 ok / failed，它自然被排除 ——
+     拿不到证据的运行既不能算成功样本，也不该算失败样本。 */
+  const runStatus = String(res.status || (res.ok ? "ok" : "failed"));
+  wfRuns.finish(claim.run.runId, {
+    ok: runStatus === "ok", status: runStatus,
+    reasonCode: runStatus === "ok" ? "" : String(res?.outcome?.outcomeReasonCode || (res.pendingApproval ? "approval_missing" : "play-failed")),
+    steps: res.total || 0, error: res.error || "",
+    takeovers: res.takeovers || 0, anchorFallbacks: res.anchorFallbacks || 0,
+    verifyFailed: res.verifyFailed || 0, skippedRead: res.skippedRead || 0,
+    retries: res.retries || 0,
+    finishedEarly: !!res.finished,
+    verdict: String(res.verdict || ""),
+    evidenceLevel: String(res?.outcome?.evidenceLevel || ""),
+  });
+  if (ticketId) {
+    try {
+      trajectory.append(ticketId, { type: "step", name: runStatus === "ok" ? "recipe.done" : "recipe.error",
+        ok: runStatus === "ok", message: String(res.error || res?.outcome?.outcomeReasonCode || "").slice(0, 200),
+        runId: claim.run.runId });
+      /* needs_review 在工单侧记 done：它确实跑完了，只是"没证据说它成了"。
+         真实状态以运行账本为准，工单只承担成本归属，不冒充验收结论。 */
+      ticketStore.transition(ticketId, runStatus === "failed" ? "failed" : "done",
+        { reason: String(res.error || (runStatus === "needs_review" ? `needs_review:${res?.outcome?.outcomeReasonCode || ""}` : "")).slice(0, 200) });
+    } catch {}
+  }
+  /* 每次跑完重算一次升降级：失败立即降回 observe，连续干净才升 auto。 */
+  let transitions = [];
+  try { transitions = applyPolicies(); } catch (err) {
+    console.log("[auto] 升降级评估失败（不影响本次运行）：", err?.message ?? err);
+  }
+  /* 步骤收据按 max 裁剪 + 落盘：一条 30 步自动化跑一次就 60 条，
+     不裁剪的话跑上一周就把内存和审计队列撑起来了。 */
+  try { wfReceipts.prune(); wfReceipts.flush(); } catch { /* 收据维护失败不影响运行结论 */ }
+  return { ok: !!res.ok, runId: claim.run.runId, ticketId, layer, transitions, ...res };
+}
+
 async function fireTrigger(t, reason) {
   try {
-    if (STOP.on) { console.log(`[trigger] ${t.id} 跳过：当前处于急停状态`); return; }
+    /* 幂等键取事件本身的稳定指纹，不用 runId（n8n 明确警告：execution.id 每次重试都变）。
+       定时按分钟桶合并；文件变化按 mtime 合并，防一次保存触发多次 watch 事件。 */
+    let dedupeKey = "";
+    if (t.type === "interval") {
+      dedupeKey = `${t.id}|interval|${Math.floor(Date.now() / 60000)}`;
+    } else if (t.type === "file") {
+      let mt = 0;
+      try { mt = fsSync.statSync(t.path).mtimeMs; } catch {}
+      dedupeKey = `${t.id}|file|${mt || Math.floor(Date.now() / 1000)}`;
+    }
     console.log(`[trigger] ${t.id} → ${t.workflow}（${reason}）`);
-    await wfPlay(t.workflow, { gap: t.gap, source: "trigger" });
-    console.log(`[trigger] ${t.id} 执行完成`);
+    /* observe = 只记录不执行（官方默认纪律）；收据进账本，人工回放仍可攒干净样本。 */
+    const r = await fireWorkflow({ trigger: t, layer: t.type, reason, dedupeKey,
+      blockedBy: t.mode === "observe" ? "observe" : "" });
+    if (!r.ok && r.code) console.log(`[trigger] ${t.id} 跳过：${r.code}`);
+    else console.log(`[trigger] ${t.id} 完成（${r.runId} / ${r.ticketId}）`);
   } catch (err) {
     console.log(`[trigger] ${t.id} 执行失败：${err?.message ?? err}`);
   }
@@ -2884,18 +5574,32 @@ async function getSession(key, retry = true) {
  *
  * 豁免的粒度是 (server, tool)，不是整个 server ——
  * 不能因为 orb 有 cursor_position 就把 orb 的 drag 也放行。
+ *
+ * 2026-11-05：名单本体已移至 ./capabilityRegistry.mjs，这里只做派生。
+ * 移走的理由不是洁癖：这份名单同时被文档表格和面板解释引用，
+ * 手抄三份必然漂移，而漂移的后果是「某个写操作悄悄对急停免疫」——
+ * 这种 bug 不会报错，只会在某次急停时默默把鼠标动了。
+ *
+ * 2026-11-03 移除 `workbuddy|workbuddy_execute` 的决定记在能力清单里
+ * （capabilityRegistry.mjs 的 toMarkdown() 会把它写进文档，单测锁着）。
  */
-const STOP_EXEMPT = new Set([
-  "orb|cursor_position",     // 只读：看鼠标在哪
-  "orb|ocr",                // 只读：截屏取词
-  "orb|subtitle",           // 只读：查实时字幕状态（启停仍受拦）
-  "windows|Screenshot",     // 只读：截屏
-  "windows|Snapshot",       // 只读：看屏幕
-  "windows|DisplayInventory", // 只读：显示器信息
-  "workbuddy|workbuddy_execute", // 后台派活：不操作本机鼠标键盘
-]);
+const STOP_EXEMPT = stopExemptSet();
 function stopExempt(key, tool) {
-  return STOP_EXEMPT.has(`${key}|${tool}`);
+  return isStopExempt(key, tool);
+}
+
+/* 方案 D：运行时配置（面板「安全」页实体开关可改，运行中即生效）。
+ * 与 process.env 的区别：这个是**可变**的，经 /api/runtime 读写并持久化到
+ * DATA_DIR/runtime-config.json，重启控制台后仍在。process.env 只作启动期强制覆盖。 */
+const RUNTIME_CONF_FILE = path.join(DATA_DIR, "runtime-config.json");
+let RUNTIME_CONF = { confirmWrites: false };
+try {
+  const j = JSON.parse(fsSync.readFileSync(RUNTIME_CONF_FILE, "utf8"));
+  if (j && typeof j === "object") RUNTIME_CONF.confirmWrites = !!j.confirmWrites;
+} catch { /* 首次没有文件 → 用默认值（关） */ }
+function saveRuntimeConf() {
+  try { fsSync.writeFileSync(RUNTIME_CONF_FILE, JSON.stringify(RUNTIME_CONF, null, 2)); }
+  catch (e) { log("[runtime] 保存失败:", e?.message ?? e); }
 }
 
 async function callToolRaw(key, tool, args, timeoutMs, sink = null) {
@@ -2903,12 +5607,38 @@ async function callToolRaw(key, tool, args, timeoutMs, sink = null) {
    *   回放（runSteps → callTool）、单次调用（/api/call → callTool）、
    *   后台任务（startJob → callTool）、危险确认（WaitFor → callTool）。
    *
-   * 之前 checkStop() 只在 runSteps 里调过一次，导致急停只拦得住"工作流回放"，
+   * 之前 checkStop() 只在 runSteps 里调过一次，导致急停只拦得住"自动化回放"，
    * 而面板上任何一个工具按钮、以及直接打 /api/call 都能绕过 —— 急停形同虚设。
    */
   if (STOP.on && !stopExempt(key, tool)) {
     throw new Error(`已被急停（${STOP.reason || "手动"}），${key}.${tool} 被拦下`);
   }
+  // 方案 D：写操作治理（可选开关 ORB_CONFIRM_WRITES=1）。
+  // 未登记/写操作默认需人工确认；确认令牌由调用方在 args.__confirmed 带入，
+  // 复用既有的 waitApproval 人机确认回路。默认关闭 —— 开启后写工具才会被拦下确认，
+  // 不影响只读工具（governWrite 对只读直接放行），也不影响当前未开此开关的运行实例。
+  if (RUNTIME_CONF.confirmWrites || process.env.ORB_CONFIRM_WRITES === "1") {
+    const confirmed = !!(args && typeof args === "object" && args.__confirmed);
+    const g = governWrite(key, tool, {
+      confirmed,
+      identity: process.env.ORB_IDENTITY || "",
+      device: process.env.ORB_DEVICE || "",
+    });
+    if (!g.ok) {
+      if (g.code === "CONFIRM_REQUIRED") {
+        const r = await waitApproval(key, tool, args);
+        if (!r.allow) throw new Error(`写操作需人工确认但被拒绝：${key}.${tool} —— ${r.reason}`);
+      } else {
+        throw new Error(`写操作被治理策略拒绝：${g.reason}`);
+      }
+    }
+    if (args && typeof args === "object") delete args.__confirmed;
+  }
+  /* 这次调用属于哪个世代。下面 getSession 可能冷启动一个 Python MCP server
+   * （windows-mcp 首次要好几秒），而急停恰恰可能落在这段"还没登记在途"的窗口里 ——
+   * 那时 inflightMcp 是空的，killInflightMcp 无事可杀，等会话起来后这次调用
+   * 会若无其事地继续跑完。所以在拿到会话之后再验一次世代。 */
+  const callEpoch = Number(jobScope.getStore()?.epoch ?? STOP.epoch);
 
   // 本地伪服务：不经过 MCP，直接调原生工具
   if (key === "orb") {
@@ -2936,6 +5666,12 @@ async function callToolRaw(key, tool, args, timeoutMs, sink = null) {
     session = await getSession(key);
   } catch (err) {
     throw new Error(`连接 ${SERVERS[key]?.label ?? key} 失败：${err?.message ?? err}`);
+  }
+  /* 会话刚建好，但世代已经变了（急停在冷启动窗口里按下）→ 这次调用作废。
+   * 用世代比而不是只看 STOP.on：恢复之后 STOP.on 又变回 false，可这次调用
+   * 依旧属于上一代，让它跑完就是把"已经停掉的东西"重新交付给用户。 */
+  if (!stopExempt(key, tool) && callEpoch < Number(STOP.epoch || 0)) {
+    throw new Error(`已被急停（第 ${callEpoch} 代发出，现在第 ${STOP.epoch} 代），${key}.${tool} 在建立连接期间被作废`);
   }
 
   let timer;
@@ -2985,6 +5721,13 @@ async function callTool(key, tool, args, timeoutMs, sink = null) {
   try {
     const r = await callToolRaw(key, tool, args, timeoutMs, sink);
     audit({ source: CURRENT_SOURCE, server: key, tool, args: auditArgs(args), ok: true, ms: Date.now() - t0 });
+    /* V-11：网页正文（Scrape / dom.get_text）是不可信输入。
+       只**加**一个 untrusted 字段，不改原 content —— 文字锚定等控制流照旧；
+       但要送进模型/记忆就必须用 untrusted.data，形状上堵住「拿原文提权」。 */
+    if (r && typeof r === "object" && !Array.isArray(r) &&
+        ((key === "windows" && tool === "Scrape") || tool === "dom.get_text")) {
+      return { ...r, untrusted: textGate.guard(toolTextOf(r), "webpage") };
+    }
     return r;
   } catch (err) {
     audit({
@@ -2997,6 +5740,10 @@ async function callTool(key, tool, args, timeoutMs, sink = null) {
 
 const jobs = new Map();
 let jobSeq = 0;
+/* 进程启动标签。jobSeq 每次重启都从 0 重数，而**工单是要落盘的**：
+ * 重启后第一个任务必然还是 job-1，与上次运行的 job-1 撞名，
+ * 于是历史被覆盖（轨迹/成本/结论一起没）。带上启动标签就永久唯一了。 */
+const BOOT_TAG = Math.random().toString(36).slice(2, 6);
 
 /* ---------------- 任务结果裁剪 ----------------
  * MCP 工具的返回值里常带整张屏幕截图（base64，单张 1~3MB），而 jobs 表最多留
@@ -3033,11 +5780,90 @@ function trimJobResult(r) {
   };
 }
 
-function startJob(key, tool, args, timeoutMs, sink = null) {
+/* 从工具返回值里取纯文本，供成本账本估算 token。
+ * 只取前 20000 字符：为了估算一个量级，没必要把整篇结果再复制一遍。 */
+function jobTextOf(r) {
+  const parts = (r && r.content) || [];
+  return parts
+    .filter((c) => c && c.type === "text" && typeof c.text === "string")
+    .map((c) => c.text)
+    .join("\n")
+    .slice(0, 20000);
+}
+
+/** 把工单推进到终态。带 rev 的 CAS：迟到的回调（旧 rev / 旧 epoch）会被拒，
+ *  而不是把已经 failed 的工单又写成 done。 */
+function settleJobTicket(job, status, reason) {
+  try {
+    const cur = ticketStore.get(job.ticketId);
+    if (!cur) return null;
+    /* allowStale 只给"往下收"的终态：被急停打断的工单**必须**能被标成 stopped，
+     * 否则它永远停在 running，summary().open 一直不为零（面板上就是"还在跑"）。
+     * done 不给：旧世代跑完的结果不许借结算这道门把自己写成成功。 */
+    const r = ticketStore.transition(job.ticketId, status, {
+      expectRev: cur.rev,
+      reason,
+      allowStale: status !== "done",
+    });
+    /* 轨迹落一条终态。**即使被拒也要落** —— "这次结果因为换代被丢弃了"
+     * 恰恰是排查时最需要看到的一行。 */
+    trajectory.append(job.ticketId, {
+      type: status === "failed" ? "error" : "step",
+      name: `job.${status}`,
+      ok: status !== "failed",
+      message: reason ? String(reason).slice(0, 200) : "",
+      accepted: !!(r && r.ok),
+      code: r && !r.ok ? r.code : "",
+      epoch: job.epoch,
+    });
+    return r;
+  } catch (err) {
+    console.log("[tickets] 结算失败：", err?.message ?? err);
+    return null;
+  }
+}
+
+function startJob(key, tool, args, timeoutMs, sink = null, o = {}) {
   const id = String(++jobSeq);
+  /* 每张工单在开工那一刻记下 epoch。急停之后它就成了"旧世代"，
+   * 后续任何写回都会被 ticketStore 拒收 —— 这是"停了就别再活过来"的唯一保险。 */
+  let ticket = null;
+  try {
+    ticket = ticketStore.openTicket({
+      id: `job-${id}-${BOOT_TAG}`,
+      kind: "job",
+      title: `${key}.${tool}`,
+      source: "api",
+      meta: { server: key, tool },
+    });
+  } catch (err) {
+    console.log("[tickets] 开工单失败（任务照跑，只是没有账）：", err?.message ?? err);
+  }
   // partial：后台任务把已生成的正文体不时写回这里，面板轮询时能看到"正在长出来"的答案。
-  const job = { id, server: key, tool, status: "running", startedAt: Date.now(), partial: "" };
+  const job = {
+    id, server: key, tool, status: "running", startedAt: Date.now(), partial: "",
+    ticketId: ticket ? ticket.id : "",
+    epoch: ticket ? ticket.epoch : STOP.epoch,
+    /* ---- 成本归因（I-09）----
+     * 这三项由调用方按"这次是怎么被派出去的"填进来，缺省也要有值：
+     *   route  最终通道；ruleId 命中的规则/专家（空 = 兜底单路）；
+     *   attempt 同一单第几次路由尝试（Fast Path 失败再降级时要能分开算）。 */
+    route: String(o.route || "").slice(0, 32),
+    ruleId: String(o.ruleId || "").slice(0, 64),
+    attempt: Math.max(1, Number(o.attempt) || 1),
+    /* 报告B 批次A：V-09 零 VLM 标记 / V-01 显式降级 / V-12 人类优先名额。
+       只记在 job 上，随成本账单一起导出；不进安全页、不改执行语义。 */
+    zeroVlm: o.zeroVlm === true,
+    vlmCalls: o.zeroVlm === true ? 0 : null,
+    degraded: o.degraded === true,
+    degradeReasonCode: String(o.degradeReasonCode || "").slice(0, 48),
+    priority: String(o.priority || "background").slice(0, 16),
+    guarded: o.guarded === true,
+  };
   jobs.set(id, job);
+  if (job.ticketId) {
+    trajectory.append(job.ticketId, { type: "step", name: "job.start", ok: true, target: `${key}.${tool}`, epoch: job.epoch });
+  }
   // 增量正文出口：节流写回 job.partial（最多 ~3 次/秒，不拖慢 CLI 主流程）。
   // 同时把 partial 推给 SSE 订阅者：面板不再 2s 轮询，做到"生成即到屏"。
   const jobSink = (s) => {
@@ -3058,7 +5884,9 @@ function startJob(key, tool, args, timeoutMs, sink = null) {
     if (!victim || victim === id) break;
     jobs.delete(victim);
   }
-  (async () => {
+  /* 用异步上下文包住整条链路：CLI 在这一层之下 spawn，trackProc 会自动把它
+   * 归到这张工单上，于是"只停这一单"成为可能。 */
+  const runBody = () => jobScope.run(job, () => (async () => {
     try {
       const raw = await callTool(key, tool, args, timeoutMs ?? JOB_TIMEOUT_MS, finalSink);
       const { result, truncated } = trimJobResult(raw);
@@ -3067,19 +5895,130 @@ function startJob(key, tool, args, timeoutMs, sink = null) {
         const next = { ...cur, status: "done", finishedAt: Date.now(), result, truncated };
         jobs.set(id, next);
         pushJobFinal(id, next);
+        const tr = settleJobTicket(next, "done");
+        /* 被急停判陈旧：任务其实跑完了，但结果不该被采纳。
+         * 判据以**世代**为准，不靠 CAS 的返回码 —— 急停时 bumpEpoch 已经改过工单
+         * rev，这里带进去的 expectRev 必然过期，回来的是 stale-rev 而不是
+         * stale-epoch；只认 stale-epoch 的话，"急停窗口里跑完的任务"会被当成
+         * 正常完成交付（这是最坑的一类错觉：面板说完成，实际桥早已作废）。
+         * 不把 stale-rev 也算进来，是因为它可能来自与急停无关的并发结算，
+         * 那种情况该报出来让人查，而不是悄悄标成"作废"。 */
+        const staleGen = Number(next.epoch || 0) < Number(STOP.epoch || 0)
+          || !!(tr && !tr.ok && tr.code === "stale-epoch");
+        if (staleGen) {
+          next.stale = true;
+          next.error = `结果属于第 ${next.epoch} 代，急停已换到第 ${STOP.epoch} 代，本次结果作废`;
+          jobs.set(id, next);
+        } else if (tr && !tr.ok) {
+          console.log(`[tickets] 任务 ${id} 结算被拒：${tr.code}`);
+        }
+        try {
+          costLedger.recordText(next.ticketId, next.partial || jobTextOf(result), {
+            note: `${next.guarded === true ? "[已过不可信文本闸门] " : ""}CLI 未回吐 usage，按文本长度估算（${key}.${tool}）`,
+            /* 归因三元组：没有它，"这次误派发花了多少钱"就只能靠猜。 */
+            route: next.route || "back",
+            ruleId: next.ruleId || "",
+            routeAttemptId: next.ticketId ? `${next.ticketId}#${next.attempt || 1}` : "",
+            /* 结构化单显式记 0 次 VLM，普通单留 null —— 「没记」不许被当成「0 次」。 */
+            zeroVlm: next.zeroVlm === true,
+            vlmCalls: next.zeroVlm === true ? 0 : undefined,
+            degraded: next.degraded === true,
+            degradeReasonCode: next.degradeReasonCode || "",
+          });
+        } catch {}
         broadcastStatus().catch(() => {});   // 任务状态变化 → 状态流也即时刷新
       }
     } catch (err) {
       const cur = jobs.get(id);
       if (cur) {
-        const next = { ...cur, status: "error", finishedAt: Date.now(), error: String(err?.message ?? err) };
+        /* 这条已经被 abortJob 结算过了（手动停单条）：那次结算给的是可读的
+         * "已手动停止"，这里再写一遍会把文案换成底层那句"Connection closed"，
+         * 工单也会被二次结算（aborted→stopped 属于终态互改，会被拒）。
+         * 直接返回，别用更差的信息覆盖更好的。 */
+        if (cur.aborted) return;
+        const msg = String(err?.message ?? err);
+        /* 被急停打断的任务在面板上不该是"失败"。判据有两条：
+         *   ① 报错文本本身就写明被急停拦下（runBody 入口的拦截）；
+         *   ② 任务开工于旧世代 / 此刻正处在急停中 —— 子进程是被
+         *      killActiveProcs 杀掉的，message 只是一句"退出码非零"，
+         *      单看文本认不出来。这条才是绝大多数情况。 */
+        const byStop = /已被急停/.test(msg) || !!cur.stale
+          || (STOP.on && Number(cur.epoch || 0) < Number(STOP.epoch || 0));
+        const next = { ...cur, status: "error", finishedAt: Date.now(), error: msg };
+        if (byStop) next.stopped = true;
         jobs.set(id, next);
         pushJobFinal(id, next);
+        // "已被急停拦下"不是任务失败，是**预期内的拒绝**：记 stopped，别污染失败率。
+        settleJobTicket(next, byStop ? "stopped" : "failed", msg.slice(0, 200));
         broadcastStatus().catch(() => {});
       }
     }
-  })();
+  })());
+
+  /* 池化执行：**默认关闭**。关着时与改造前完全一致 —— 派一个跑一个。
+   * 打开后（ORB_POOL_WORKERS>0）任务排队，人类请求优先且允许超出上限一个槽，
+   * GUI 任务必须持锁且硬串行。 */
+  if (poolEnabled) {
+    const sub = pool.submit({
+      id,
+      kind: o.kind || "job",
+      priority: o.priority ?? "background",
+      exclusive: o.exclusive === true,
+      run: runBody,
+      onAbort: () => abortJob(id, "worker 池中止"),
+      meta: { server: key, tool },
+    });
+    if (!sub.ok) {
+      // 池满 / 已停：不能留一个永远 running 的幽灵任务（面板会一直转圈）。
+      const next = { ...job, status: "error", finishedAt: Date.now(), error: `未能进入执行队列（${sub.code}）` };
+      jobs.set(id, next);
+      pushJobFinal(id, next);
+      settleJobTicket(next, "failed", `未入队：${sub.code}`);
+      broadcastStatus({ force: true }).catch(() => {});
+      return id;
+    }
+    return id;
+  }
+  runBody();
   return id;
+}
+
+/**
+ * 只停这一单：杀掉它的子进程树，把 job 与工单都标成 stopped。
+ * 急停是"全停"，这个是"停一个"—— 面板上每张任务卡都能单独刹车。
+ *
+ * ⚠️ 边界（别把这里当成"局部急停"）：能杀掉的只有**这一单自己 spawn 的子进程**
+ * （CLI、本地脚本）。如果这一步是在 MCP server 内部执行的（windows-mcp 的
+ * Wait/Click、PowerShell 之类），它跑在那个共享 server 进程里，杀不掉单条 ——
+ * 这里能做到的是"结果不再被采纳、任务立刻从面板上结束"，那个底层动作会把
+ * 剩余时间跑完（比如 Wait 5 秒会继续等完）。要立刻掐断只能用急停：它会
+ * dispose 整个会话（代价是所有在途调用一起断）。
+ * 所以文案统一说"结果未采纳"，不说"已终止"。
+ */
+function abortJob(id, reason) {
+  const job = jobs.get(id);
+  if (!job) return { ok: false, code: "not-found" };
+  if (job.status !== "running") return { ok: false, code: "not-running", status: job.status };
+  const set = jobProcs.get(id);
+  let killed = 0;
+  if (set) {
+    for (const p of set) {
+      try {
+        if (process.platform === "win32" && p.pid) execFile("taskkill", ["/PID", String(p.pid), "/T", "/F"], () => {});
+        else p.kill("SIGKILL");
+        killed++;
+      } catch {}
+    }
+    jobProcs.delete(id);
+  }
+  const next = { ...job, status: "error", finishedAt: Date.now(), error: `已手动停止（${reason || "用户操作"}）`, aborted: true };
+  jobs.set(id, next);
+  pushJobFinal(id, next);
+  /* 记 aborted 而不是 stopped：工单表要能区分"全停（急停）"和"单停（点了这一单的刹车）"，
+   * 否则事后查"这次事故到底是谁停的"时两者长得一样。 */
+  settleJobTicket(next, "aborted", reason || "手动停止单条任务");
+  broadcastStatus({ force: true }).catch(() => {});
+  return { ok: true, killed, job: next };
 }
 
 const CORS = {
@@ -3174,20 +6113,32 @@ function subscribeStatus(res) {
  *   ② lastStatusJson 会被较晚返回的旧快照覆盖 —— 下一次真变化与旧值相同就被
  *      判成"没变"而永久漏推，面板卡在过期状态上（很难查的那种）。 */
 let statusBuilding = false;
+/* 重入期间被"合并丢弃"的强制广播，在本次结束后补跑一次。
+ * 原实现是 `if (statusBuilding) return;` —— 上一帧没算完就直接丢掉这次变更，
+ * 只能等 1.5s 安全网，表现为"状态变了但面板没动"。
+ * 对普通帧无所谓（安全网会补），但对急停这种**必须即时**的帧就是真丢。 */
+let statusPending = false;
 
-async function broadcastStatus() {
+async function broadcastStatus(o = {}) {
   if (!statusSubs.size) return;
-  if (statusBuilding) return;
+  if (statusBuilding) {
+    if (o.force) statusPending = true;
+    return;
+  }
   statusBuilding = true;
   try {
     let snap;
     try { snap = await buildStatusSnapshot(); } catch { return; }
     const json = JSON.stringify(snap);
-    if (json === lastStatusJson) return;   // 无变化不重复推，省带宽
+    if (!o.force && json === lastStatusJson) return;   // 无变化不重复推，省带宽
     lastStatusJson = json;
     for (const res of statusSubs) sseSend(res, snap);
   } finally {
     statusBuilding = false;
+    if (statusPending) {
+      statusPending = false;
+      broadcastStatus({ force: true }).catch(() => {});
+    }
   }
 }
 
@@ -3308,7 +6259,7 @@ function parseOcrOut(raw) {
 
 /* ---------- 抗迁移：窗口锚定 / 文字锚定 / 落空兜底 ----------
  * 录制得到的点击都是「绝对屏幕坐标」。窗口一旦被拖动 / 缩放 / 重排，
- * 原来的按钮就不在那个点了 —— 这就是「按钮迁移」导致工作流失效的根因。
+ * 原来的按钮就不在那个点了 —— 这就是「按钮迁移」导致自动化失效的根因。
  *
  * 三道防线（统一在 resolveAnchor 里串行裁决）：
  *   1) 窗口相对坐标：录制时把「点落在哪个窗口、相对窗口左上角的偏移」记下来；
@@ -3542,27 +6493,59 @@ async function ocrWords(buf, lang = "zh-Hans-CN") {
   });
 }
 
-/** 单点工具集合：这些工具的坐标是「一个点」，可以用文字锚定直接覆盖。 */
-const ANCHORABLE = new Set([
-  "windows|Click", "windows|Move",
-  "orb|long_press", "orb|mouse_press", "orb|move_to", "orb|scroll_at", "orb|cursor_position",
-]);
+/** 控件树锚定（方案 A1，默认关闭）：重新抓一次 Snapshot，用结构化树匹配把录制点
+ *  重新定位到当前元素中心 —— 绕开 OCR 文字识别，抗改名/改版更稳。
+ *  仅当 ORB_ANCHOR_TREE=1 时才注入到 resolveAnchor；默认不启用，桥行为不变。
+ *  失败时返回 null，由 resolveAnchor 自动落到 OCR/坐标档。 */
+/* 控件树抓取的短时复用：同一窗口里连点/连填的 burst 内共享一次 Snapshot，
+ * 减少每步的 MCP 往返。纯时间窗（不按写操作失效）——陈旧树最坏只让 matchTreeNode
+ * 命中失败退回 OCR/坐标，绝不误点。详见 anchorResolver.createTreeCache。 */
+const snapTreeCache = createTreeCache(300);
 
-/** 取步骤的「主坐标点」（绝对坐标，未变换）。 */
-function primaryPoint(step) {
-  const a = step.args || {};
-  if (Array.isArray(a.loc)) return [Number(a.loc[0]) || 0, Number(a.loc[1]) || 0];
-  if (a.x !== undefined) return [Number(a.x) || 0, Number(a.y) || 0];
-  return null;
+/** 取控件树文本（带短时缓存）。失败返回 null（调用方自行兜底）。 */
+async function getSnapshotText(timeoutMs = 20000) {
+  const now = Date.now();
+  const cached = snapTreeCache.get(now);
+  if (cached != null) return cached;
+  const r = await callTool("windows", "Snapshot", {}, timeoutMs);
+  const txt = toolTextOf(r);
+  if (txt) snapTreeCache.set(txt, now);
+  return txt;
 }
 
-/** 把一个位移应用到 args 的所有坐标字段（loc / x,y / 含 x2,y2 的拖动）。 */
-function addDeltaToArgs(args, dx, dy) {
-  if (Array.isArray(args.loc)) args.loc = [args.loc[0] + dx, args.loc[1] + dy];
-  if (args.x !== undefined) args.x += dx;
-  if (args.y !== undefined) args.y += dy;
-  if (args.x2 !== undefined) args.x2 += dx;
-  if (args.y2 !== undefined) args.y2 += dy;
+async function anchorByTree(step) {
+  try {
+    const txt = await getSnapshotText(20000);
+    if (!txt) return null;
+    const root = pruneSnapshotTree(parseSnapshotTree(txt));
+    // 优先用录制期存下的 treeRef（结构化身份，不依赖回放坐标、不依赖 OCR）；
+    // 没有/没命中时再按录制坐标重定位。裁决见 anchorResolver.resolveTreeNode。
+    const hit = resolveTreeNode(root, step);
+    if (!hit) return null;
+    return { x: hit.x, y: hit.y, ref: hit.ref };
+  } catch {
+    return null;
+  }
+}
+
+/** 录制期：抓一次控件树，把「光标点落在哪个控件」的结构化身份（sig）存进 step.treeRef。
+ *  这样回放时直接按 sig 精确匹配，既不依赖录制坐标是否还准，也不依赖 OCR 文字识别。
+ *  纯加成：抓不到就算了，回放仍走坐标 / OCR 兜底，不阻断录制。 */
+async function captureTreeRef(step) {
+  try {
+    if (!step || !ANCHORABLE.has(`${step.server}|${step.tool}`)) return;
+    const pp = primaryPoint(step);
+    if (!pp) return;
+    const txt = await getSnapshotText(20000);
+    if (!txt) return;
+    const root = pruneSnapshotTree(parseSnapshotTree(txt));
+    const winName = step.win && step.win.title;
+    const sel = buildTreeSelector(root, pp[0], pp[1], winName);
+    if (sel && sel.sig) step.treeRef = sel.sig;
+  } catch { /* 录制期抓不到不影响录制 */ }
+  // 视觉档（C0 模板 / C1 CLIP）的录制期 crop：存一小块被点元素的图，回放时复用。
+  // 与 treeRef 互补——treeRef 失手（无树/改名）时，视觉档仍能按"长什么样"定位。
+  try { await captureVisualCrop(step, screenshotRegion); } catch { /* 不影响录制 */ }
 }
 
 /** 文字锚定：对目标窗口截图 OCR，找锚定文字中心。找不到返回 null。 */
@@ -3614,45 +6597,28 @@ async function anchorByText(step) {
  * absolute 与 none 必须分开：只有 absolute 才值得叫视觉模型。
  * 混成一个「兜底」的话，没配锚点的步骤每步都会触发升级，成本和延迟直接崩。
  */
-async function resolveAnchor(step) {
-  const a = step.args || {};
-  const args = JSON.parse(JSON.stringify(a));   // 克隆，避免回放多次后位移被反复叠加
-  const tool = `${step.server}|${step.tool}`;
-  const hadAnchor = !!(a.anchor && String(a.anchor).trim());
-
-  // ① 文字锚定（仅单点工具）
-  if (ANCHORABLE.has(tool) && args.anchor) {
-    const pt = await anchorByText(step);
-    if (pt) {
-      if (Array.isArray(args.loc)) args.loc = [pt.x, pt.y];
-      else { args.x = pt.x; args.y = pt.y; }
-      delete args.anchor;
-      return { args, conf: "text" };
-    }
-  }
-
-  // ② 窗口相对坐标
-  if (step.win && step.win.title && Array.isArray(step.win.off)) {
-    const r = await findWinRectByTitle(step.win.title);
-    if (r) {
-      const pp = primaryPoint(step);             // 用原始绝对点算位移
-      if (pp) {
-        const dx = r[0] + step.win.off[0] - pp[0];
-        const dy = r[1] + step.win.off[1] - pp[1];
-        addDeltaToArgs(args, dx, dy);
-        console.log(`[anchor] 窗口相对重定位（${step.win.title}）Δ=${dx},${dy}`);
-        delete args.anchor;
-        return { args, conf: "window" };
-      }
-    } else {
-      console.log(`[anchor] 窗口「${step.win.title}」未找到，退回绝对坐标（兜底）`);
-    }
-  }
-
-  // ③ 兜底：原样（即录制时的绝对坐标）
-  delete args.anchor;
-  return { args, conf: hadAnchor ? "absolute" : "none" };
-}
+/* 抗迁移策略裁决器（由 anchorResolver.mjs 的纯逻辑组装，这里只注入有副作用的解析器）。
+ * 顺序：① 控件树锚定（方案 A1，默认关闭）→ ② 文字锚定(OCR) → ③ 窗口相对坐标 → ④ 绝对坐标兜底。
+ * conf 记录「这次定位有多可信」，上层据此决定是否升级到视觉层：
+ *   tree     控件树匹配命中 —— 最可信（结构化匹配，抗改名/改版）
+ *   text     文字锚定命中 —— 可信，界面改版也常能活
+ *   window   窗口相对命中 —— 可信，窗口被拖动/换位置也跟得上
+ *   absolute 配了锚点却落到录制坐标 —— ⚠️ **真降级**，说明锚点没找到
+ *   none     本来就没配锚点，只有录制坐标 —— 正常路径，不算降级
+ * absolute 与 none 必须分开：只有 absolute 才值得叫视觉模型。
+ * tree/text/window 都视为高可信，不触发视觉升级（与 absolute 严格区分）。 */
+const resolveAnchor = createAnchorResolver({
+  anchorByText,
+  // 控件树锚定**默认常驻开启**（用户要求）：回放时优先按控件树结构化定位，
+  // 只有显式设 ORB_ANCHOR_TREE=0 才关闭（保留一个逃生口，便于排查/降级）。
+  // 开启后每个带锚点的单点步骤会额外抓一次 Snapshot；新录的自动化带 treeRef，
+  // 直接按 sig 匹配，不再依赖 OCR。
+  anchorByTree: process.env.ORB_ANCHOR_TREE === "0" ? null : anchorByTree,
+  // 视觉锚定（方案 C 的 C0/C1 两档）：不依赖控件树、不依赖文字，按"长什么样"定位。
+  // 录制期已抓 crop 存进 step.visualCrop；回放时 C0 模板命中即返回，未命中才上 C1 CLIP。
+  anchorByVisual: createVisualAnchor({ screenshotRegion }),
+  findWinRectByTitle,
+});
 
 /* ---------------- 回归探测 + 智能接管 ----------------
  * 这两块是「录制一遍，正常情况下纯回放，界面变了才请模型帮忙」的核心。
@@ -3930,7 +6896,7 @@ function sameRange(arr, a, b, len) {
  * 检测录制产物里有没有「同一段操作重复了 k 次」。
  *
  * 录制是平的：用户实际处理了 3 条数据，录下来就是 3 段一模一样的步骤，
- * 工作流里却看不出一丝「循环」的意思。这个函数把那段找出来，
+ * 自动化里却看不出一丝「循环」的意思。这个函数把那段找出来，
  * 让面板能问一句「要不要折叠成重复 3 次的循环」。
  *
  * 只认**完全相同**的重复。每轮输入内容不同（读第 1/2/3 行数据填进去）
@@ -4056,7 +7022,33 @@ function alignRound(res, ctx) {
  */
 async function takeover(steps, from, ctx) {
   const list = steps || [];
+  if (ctx.q) ctx.q.takeovers++;   // 智能接管 handshake 次数：确定性执行退化的直接指标
   const once = ctx.escalate === "once";
+
+  /* 命令短路：视觉接管之前，先看这个任务的最终目标能不能直接用命令通道完成
+     （"用 X 打开 Y" / "运行 X" / "把 … 写入 …"）。能就一步做完，省掉整轮视觉。
+     只做一次（ctx.cmdTried），且只在高置信时才动手；失败一律回落原视觉路径。 */
+  /* 急停期间绝不做命令短路：这条路径不走 callToolRaw，是原先唯一能绕过刹车的地方。 */
+  if (!ctx.cmdTried && ctx.goal && !STOP.on) {
+    ctx.cmdTried = true;
+    // 探测式：先查环境（which/exists）再决定；探测失败/不确定一律回落视觉
+    const c = await probeCommandable(ctx.goal, prober);
+    // 自动短路只放行「低风险」：排除 cli-explicit（git/npm…）与危险文件操作（move/rename/copy覆盖）——
+    // 这两类必须走 /api/act 的确认闸门，绝不能在视觉接管里"悄悄执行"。
+    const isDanger = !!(c.intent && c.intent.danger);
+    if (c.commandable && !String(c.rule).startsWith("cli-explicit") && !isDanger) {
+      try {
+        const r = await freeTier.route(c.intent);
+        ctx.finished = true;
+        log(`[agent] 目标可命令化（${c.rule}），已用命令通道完成（via=${r.via}），跳过视觉接管`);
+        return list.length;
+      } catch (e) {
+        log(`[agent] 命令短路失败（${c.rule}），回落视觉：${e?.message ?? e}`);
+      }
+    } else if (c.commandable) {
+      log(`[agent] 目标需确认（${c.rule}${isDanger ? "／危险文件操作" : "／显式 CLI"}），不自动短路，交视觉或手动`);
+    }
+  }
 
   /* 全局次数守卫：回归之后又在下游失守，会再一次进来。
      不设上限的话，一条到处都失守的流程会不停「接管→回归→再失守」，
@@ -4081,6 +7073,9 @@ async function takeover(steps, from, ctx) {
         batch,
         remain: summarizeSteps(list.slice(from)),
         conf: ctx.lastConf || "absolute",
+        // 方案 E：硬偏好——接管发生在「界面变了」时，控件树是最该先用的手段；
+        // 只有验证码/画布/图片类任务才让视觉模型上。面板侧据此决定先看树还是先截图。
+        prefer: preferSnapshotRef(String(ctx.goal || ""), { hasTree: true }).mode,
         // 嵌套结构里必须告诉它「你在哪一层、第几轮」，否则它会把这轮当成唯一的一轮
         scope: scopeInfo(ctx),
       });
@@ -4347,7 +7342,7 @@ function rtStart() {
   rtProc = spawn(asrPython(), [RT_SCRIPT], {
     env: cleanCliEnv({
       ORB_ASR_ENDPOINT: "http://127.0.0.1:19876/v1/audio/transcriptions",
-      /* 字幕落盘目录：跟会话历史/工作流一样进 DATA_DIR（开发态是项目根，
+      /* 字幕落盘目录：跟会话历史/自动化一样进 DATA_DIR（开发态是项目根，
          打包态由 main.js 用 ORB_DATA_DIR 传 %APPDATA%\ORB 控制台 下来）。
          ⚠️ subtitle_rt.py 里原来写死了开发机的私有路径 ——
          那是开发机的私有路径，开源后必须去掉；留 ORB_RT_SRT_DIR 环境变量作覆盖口。 */
@@ -4568,7 +7563,65 @@ async function buildStatusSnapshot() {
   /* tok 是「本次任务的合计用量」，含人格台词那一笔 —— 面板拿它画状态条。
      复制一份再挂，别把 LIVE 本身改成另一种形状：LIVE 还被审计/接管逻辑读写。 */
   out.live = Object.assign({}, LIVE, { tok: tokSnapshot() });
-  out.stop = { on: STOP.on, reason: STOP.reason };
+  out.stop = { on: STOP.on, reason: STOP.reason, at: STOP.at, epoch: STOP.epoch };
+  /* 阶段一：把新能力的健康摘要挂到原有状态接口，便于一条命令验收。 */
+  out.gov = {
+    epoch: STOP.epoch, stopped: STOP.on,
+    commandGate: commandGate.stats(), logBus: logBus.stats(),
+    artifacts: artifactStore.stats(), session: sessionMgr.stats(),
+    observe: observeRouter.stats(), baseline: baseline.coverage(),
+    launched: launchedProcs.size, writers: STATE_WRITERS.length,
+    layout: { root: layout.root(), day: layout.day(), dayDir: layout.dayDir(),
+              artifactsRoot: layout.artifactsRoot(), logsRoot: layout.logsRoot(),
+              govRoot: layout.govRoot(), logsDir: layout.logsDir(),
+              productKinds: layout.describe().productKinds, days: layout.listDays().length },
+    logForward: logForwardEnabled,
+  };
+  /* 专家团 / 门控 / 插件 / 语义路由四项摘要：全部是内存里的计数器，零 IO、零子进程，
+     挂在每 1.5s 一次的推送里没有成本。
+     ⚠️ 机器遥测**故意不在这里**：telemetry.snapshot() 要 spawn wmic/tasklist 这类命令，
+     放进状态流就是每 1.5 秒开一次子进程。它只在 /api/ops telemetry.snapshot 里按需算。 */
+  try {
+    out.gov.team = team.stats();
+    out.gov.affect = affectGate.stats();
+    out.gov.plugin = pluginHost.stats();
+    out.gov.router = semanticRouter.stats();
+    out.gov.expertTeam = expertTeam.stats();
+  } catch { /* 任一模块没起来不影响 status 本体 */ }
+  /* 急停豁免清单：**只放计数和键名，不放 effect 文案**。
+   * 面板要解释"为什么急停了这个按钮还能点"时走 /api/capabilities 拿整表，
+   * 状态流每 1.5s 推一遍长文案是白烧带宽。这里放个总数是为了让"名单突然变长"
+   * 这件事在面板上可见 —— 白名单无声无息多一项，正是这里最该报警的变更。 */
+  try {
+    out.gov.capabilities = { count: STOP_EXEMPT.size, keys: [...STOP_EXEMPT] };
+  } catch { out.gov.capabilities = { count: 0, keys: [] } }
+  /* 专家契约摘要：source=default 说明用户的覆盖文件没读到/没读懂，
+   * 这是"我明明配了为什么不生效"的第一现场，必须一眼可见。 */
+  try { out.gov.expertBook = expertBook.stats(); } catch {}
+  /* 换档统计：up/down + 被拒/过期次数。
+   * rejected 不为零说明有代码在发起非法转移（多半是档位名拼错），
+   * stale 不为零说明急停之后还有迟到的回调 —— 两个都该为 0。 */
+  try { out.gov.upgrade = upgrade.stats(); } catch {}
+  /* 语气槽：不只推统计，把当前档位与"为什么在这个档"一起推给面板 ——
+   * 面板据此调语速音高，也据此在设置页显示原因。 */
+  try { out.gov.personaSlot = personaSlots.stats(); } catch {}
+  /* 治理层的四项观测值。面板不需要额外轮询 —— 全都搭在这条已经每 1.5s 推送一次的
+   * 状态流上。只放"能一眼看出异常"的量，明细走 /api/tickets、/api/cost。 */
+  try { out.tickets = ticketStore.summary(); } catch { out.tickets = null; }
+  /* 注意别把 summary.open（数字）覆盖成数组：一度这么写，status 里 open 从计数
+   * 变成列表，面板的"在跑几个"直接算不出来。明细单独挂一个键。 */
+  try { out.ticketList = ticketStore.list({ open: true, limit: 20 }); } catch { out.ticketList = []; }
+  try { out.guiLock = guiLock.status(); } catch { out.guiLock = null; }
+  try { out.outbox = outbox.stats(); } catch { out.outbox = null; }
+  try {
+    const t = costLedger.totals();
+    out.cost = { calls: t.calls, tokens: t.totalTokens, usd: t.costUSD, estimatedCalls: t.estimatedCalls, allEstimated: t.allEstimated };
+  } catch { out.cost = null; }
+  out.notices = NOTICES.slice(-8);
+  try { out.expertCount = dispatcher.list().length; } catch { out.expertCount = 0; }
+  try { out.pool = { ...pool.status(), enabled: poolEnabled }; } catch { out.pool = null; }
+  try { out.watchdog = watchdog.status(); } catch { out.watchdog = null; }
+  try { out.trail = trajectory.stats(); } catch { out.trail = null; }
   out.pending = listPending();
   out.dangerous = [...DANGER_TOOLS];
   out.dangerRules = { tools: [...DANGER.tools], args: DANGER.args };
@@ -4687,7 +7740,20 @@ async function handle(req, res) {
   if (req.method === "POST" && url.pathname === "/api/call") {
     const body = await readBody(req);
     const ck = body.server + "|" + body.tool;
+    /* isRead 只决定"能不能走读缓存"，语义与原来完全一致 ——
+     * 别把它和能力清单的只读合成一个：截图/取词在清单里是只读，
+     * 但缓存它们会给用户看到上一帧的画面。仲裁另用一个更宽的判据。 */
     const isRead = READ_ONLY_TOOLS.has(ck);
+    const readForArb = isRead || isReadOnly(body.server, body.tool);
+    /* 专家契约仲裁（2026-11-05）：带 expertId 的调用必须服从该专家的 actionScope。
+     * 这是"只读专家"唯一真正靠得住的地方 —— 靠自觉的只读等于没有只读：
+     * 一个自己动手改过的评审视角，说"没问题"是没意义的。
+     * 拒的时候回 403 + 固定 code，日志里能 grep 到原因。 */
+    const arb = arbitrateExpert(body.expertId, { server: body.server, tool: body.tool, readOnly: readForArb, nestedDepth: body.nestedDepth });
+    if (!arb.ok) {
+      send(res, 403, { ok: false, code: arb.reason, error: arb.detail, expertId: String(body.expertId || "") });
+      return;
+    }
     try {
       if (isRead) {
         const hit = READ_CACHE.get(ck);
@@ -4708,7 +7774,1768 @@ async function handle(req, res) {
     return;
   }
 
-  /* 工作流：录制 / 停止 / 状态 / 列表 / 回放 */
+  /* ── 命令通道：写文件 + 用指定程序打开（不碰 GUI 全局态，不占 GUI 令牌）──
+   * POST /api/cmd
+   *   body: { write?: {filePath, content, encoding},
+   *           openWith?: {app, filePath},
+   *           launch?: {command, args} }
+   * 复用既有 DANGER 规则：danger-tools.json 里加了 "CommandChannel" 或配了
+   * DANGER.args.CommandChannel，则启动前走 /api/confirm 确认（与 PowerShell 同机制）。
+   * 安全硬边界在 cmdchan.mjs：绝不进 shell、强制 UTF-8、spawn 数组形式。 */
+  /* ============ 阶段一：日志唯一写者（主进程 log() 经 POST /api/log 转发） ============ */
+  if (url.pathname === "/api/log" && req.method === "POST") {
+    const body = await readBody(req);
+    /* 「主进程日志接入」关掉时桥侧直接拒收：主进程仍会写 orb.log 与 spool，
+       只是不再进入结构化日志流。急停带外写 stopSafe 不经此闸，永远留痕。 */
+    if (!logForwardEnabled) {
+      send(res, 200, { ok: false, written: 0, rejected: 0, reasons: ["forward-disabled"] });
+      return;
+    }
+    /* 主进程是批量 flush，一次 POST 一批；单条也兼容。 */
+    const list = Array.isArray(body?.batch) ? body.batch
+      : (Array.isArray(body) ? body : [body || {}]);
+    let written = 0;
+    const reasons = [];
+    for (const rec of list.slice(0, 256)) {
+      const r = logBus.write(rec || {});
+      if (r.ok) written++;
+      else reasons.push(String(r.reason || "rejected"));
+    }
+    send(res, 200, { ok: written > 0, written, rejected: list.length - written, reasons: reasons.slice(0, 5) });
+    return;
+  }
+  if (url.pathname === "/api/log" && req.method === "GET") {
+    send(res, 200, {
+      ok: true, categories: CATEGORIES, levels: LEVELS, stats: logBus.stats(),
+      rows: logBus.query({
+        category: url.searchParams.get("category") || "",
+        level: url.searchParams.get("level") || "",
+        since: Number(url.searchParams.get("since") || 0),
+        limit: Number(url.searchParams.get("limit") || 200),
+      }),
+    });
+    return;
+  }
+
+  /* ============ 阶段一：统一导出入口 ============
+   * bridge 跑在 ELECTRON_RUN_AS_NODE=1 下，拿不到 Electron API，
+   * 所以 pdf 只返回渲染计划（plan.channel = artifact-render-pdf），
+   * 由面板转交主进程 printToPDF 落地 —— 落地成功才算真的导出成功。
+   *
+   * 两种入参形状：
+   *   ① body.source  已结构化的源（segments / rows / files / {title,body}），给程序用；
+   *   ② body.text    一段纯文本，按 format 自动解释（buildSource），给人用。
+   * 两者都给时以 source 为准。 */
+  if (url.pathname === "/api/export" && req.method === "POST") {
+    const body = await readBody(req);
+    const gate = commandGate.check(body);
+    if (!gate.ok) { send(res, gate.httpStatus, gate.body); return; }
+    try {
+      const epoch = Number(body.epoch ?? STOP.epoch);
+      const fmt = String(body.format || "md");
+      const title = String(body.title || "").trim();
+
+      /* ---- 源解析：纯文本走 buildSource，规则只在 exporter 里有一份 ---- */
+      let source = body.source;
+      if (source == null || source === "") {
+        const text = typeof body.text === "string" ? body.text : "";
+        if (!text.trim()) {
+          send(res, 200, { ok: false, error: "需要 source 或非空 text", format: fmt, epoch });
+          return;
+        }
+        /* 4MB 上限：再大就不是「导出一段内容」而是「搬一个文件」，走归档更合适。 */
+        if (Buffer.byteLength(text, "utf8") > 4 * 1024 * 1024) {
+          send(res, 200, { ok: false, error: "内容超过 4MB，请改用 source 直接给结构化数据", format: fmt, epoch });
+          return;
+        }
+        const built = buildSource(text, { format: fmt, title });
+        if (!built.ok) {
+          send(res, 200, { ok: false, error: built.error, format: fmt, epoch, stage: "build-source" });
+          return;
+        }
+        source = built.source;
+      }
+
+      /* 没指定 outPath 时不再平铺在 artifacts 根下，而是落到「当天 / 当前会话 / exports」。 */
+      const outPath = String(body.outPath || "").trim() || (() => {
+        const c = sessionMgr.current();
+        const dir = layout.kindDir("exports", c?.conversationId || "local", layout.day());
+        try { fsSync.mkdirSync(dir, { recursive: true }); } catch {}
+        return path.join(dir, `export-${Date.now()}.${fmt}`);
+      })();
+      const r = await exporter.run({ format: fmt, source, outPath, epoch });
+      const cur = sessionMgr.current();
+      if (r && r.ok && r.path && !r.delegated) {
+        registerArtifact({
+          conversationId: String(body.conversationId || cur?.conversationId || ""),
+          epoch, ticketId: String(body.ticketId || ""), kind: "exports",
+          fileName: path.basename(r.path), ext: fmt, size: r.bytes || 0, sha: r.sha || "",
+        });
+        logBus.write({ category: "artifact", level: "info", epoch,
+          message: `导出 ${fmt}：${path.basename(r.path)}（${r.bytes || 0} 字节）` });
+      }
+      send(res, 200, { ok: !!(r && r.ok), ...r, epoch, profile,
+        /* 面板据此判断「还需不需要再走一趟主进程」，不必自己认 delegated 的字符串 */
+        needsRenderer: !!r?.pending,
+        note: r?.pending ? "PDF 已生成渲染计划，需主进程 printToPDF 落地后才算导出完成" : "" });
+    } catch (e) {
+      send(res, 200, { ok: false, error: String(e?.message ?? e) });
+    }
+    return;
+  }
+
+  /* ============ 阶段一：产物登记表（栏目 UI 本轮不做，只交付数据层） ============ */
+  if (url.pathname === "/api/artifacts" && req.method === "GET") {
+    send(res, 200, {
+      ok: true, allowedExt: ALLOWED_EXT, stats: artifactStore.stats(),
+      rows: artifactStore.list({
+        conversationId: url.searchParams.get("conversationId") || "",
+        limit: Number(url.searchParams.get("limit") || 200),
+      }),
+    });
+    return;
+  }
+  if (url.pathname === "/api/artifacts" && req.method === "POST") {
+    const b = await readBody(req);
+    /* 外部调用方仍可能直接 POST 登记表条目；统一走 registerArtifact 补齐 rel，
+       否则浮层里会出现一条永远定位不到的裸文件名记录。 */
+    send(res, 200, b && (b.rel || b.fileName) ? registerArtifact({ ...b, fileName: b.rel || b.fileName }) : artifactStore.register(b || {}));
+    return;
+  }
+
+  /* ============ 看视频产物 → 「内容提要 + 关键截图」MD 合成（修复 I-17 浮层漏登） ========
+   * 旧的「做成.md文件交付」走后台 Agent，Agent 缺 AskUserQuestion 工具会整体崩掉，
+   * 导致既没 MD 也没浮层卡片。这里用本地可靠路径替代：直接读任务目录里的
+   * meta/index/frames，挑关键帧、组装 MD、写进 exports 并登记，前端按钮触发后 artSync 即可见。 */
+  if (url.pathname === "/api/synthesize-vidx-md" && req.method === "POST") {
+    try {
+      const b = await readBody(req);
+      const vidKey = String(b.vidKey || "").trim();
+      if (!/^[A-Za-z0-9._:-]{1,64}$/.test(vidKey)) {
+        send(res, 200, { ok: false, error: "vidKey 非法" });
+        return;
+      }
+      const cid = String(b.conversationId || sessionMgr.current()?.conversationId || "local");
+      /* 对话框里 LLM 生成的叙事提要只存在于会话记录，从没落盘。前端把它带上来，
+         vidxSynth 才会用它当「内容提要」；否则 MD 里那节会退回 index.md 的技术元数据，
+         和用户刚在对话框看到的内容完全对不上。这里只作正文，绝不参与任何路径拼接。 */
+      const summary = String(b.summary ?? "").slice(0, 20000);
+      const syn = synthesizeVidxMd({
+        layout, vidKey, cid, summary,
+        day: /^\d{4}-\d{2}-\d{2}$/.test(String(b.day || "")) ? String(b.day) : undefined,
+        count: Number(b.count) || 12,
+      });
+      if (!syn.ok) { send(res, 200, syn); return; }
+      const reg = registerArtifact({
+        conversationId: syn.cid, epoch: epochOf(), ticketId: String(b.ticketId || ""),
+        kind: "exports", fileName: `${syn.mdName}.md`, ext: "md", size: syn.size, sha: "",
+        day: syn.day,
+      });
+      send(res, 200, {
+        ok: reg.ok, artifactId: reg.ok ? reg.id : null,
+        ...syn, note: reg.ok ? "" : (reg.reason || "登记失败"),
+      });
+    } catch (e) {
+      send(res, 200, { ok: false, error: String(e?.message ?? e) });
+    }
+    return;
+  }
+
+  /* ============ I-17 产物浮层：卡片列表（WorkBuddy 风格，跟在对应回答下面） ========
+   * 只读、不扫目录：全部条目来自登记表，文件存在与否只做一次 existsSync。
+   * since 用来把「这一轮回答之后新产生的产物」挂到那一轮消息下面；面板不自己判状态，
+   * 四类失效态一律由 artifactView.statusOf 给出，避免两端算出不同结论。 */
+  if (url.pathname === "/api/artifacts/view" && req.method === "GET") {
+    const cid = String(url.searchParams.get("conversationId") || currentArtifactCtx().cid);
+    const since = Number(url.searchParams.get("since") || 0) || 0;
+    const limRaw = Number(url.searchParams.get("limit") || 200);
+    const limit = Number.isFinite(limRaw) ? Math.max(0, Math.min(limRaw, 1000)) : 200;
+    const all = artifactStore.list({ conversationId: cid, limit: 10000 });
+    const byId = new Map(all.map((e) => [e.id, e]));
+    const rows = viewRows(all, artifactViewCtx({ since })).map((r) => {
+      const e = byId.get(r.id);
+      const abs = artifactAbs(e);
+      return viewRow(e, artifactViewCtx({ exists: !!(abs && fsSync.existsSync(abs)) }));
+    }).slice(-limit);
+    send(res, 200, {
+      ok: true, conversationId: cid, since, rows,
+      revision: artifactStore.stats().rows,
+      rootKey: rootKeyOf(layout.root()),
+      statuses: STATUSES, statusMeta: STATUS_META,
+    });
+    return;
+  }
+
+  /* 点开卡片才读内容：artifactId 查表 → 安全解析 → 只读前 96KB → 截断到 24000 字。
+   * 二进制格式一律不读；客户端传任意路径在这里没有任何入口。 */
+  if (url.pathname === "/api/artifacts/item" && req.method === "GET") {
+    const id = String(url.searchParams.get("id") || "");
+    if (!/^a_[0-9a-f]{20}$/.test(id)) { send(res, 200, { ok: false, error: "artifactId 格式不对" }); return; }
+    const entry = artifactStore.list({ limit: 10000 }).find((e) => e.id === id);
+    if (!entry) { send(res, 200, { ok: false, error: "产物表里没有这条登记" }); return; }
+    const rel = artifactSafeRel(entry);
+    const abs = rel ? layout.resolveSafe(rel) : null;
+    if (!abs) {
+      send(res, 200, { ok: false, error: "路径不安全，拒绝读取", entry: viewRow(entry, artifactViewCtx({ exists: false })) });
+      return;
+    }
+    const exists = fsSync.existsSync(abs);
+    const row = viewRow(entry, artifactViewCtx({ exists }));
+    if (!exists) { send(res, 200, { ok: false, error: "文件已不存在", entry: row, rel }); return; }
+    let preview = null;
+    if (isPreviewable(entry.ext)) {
+      const CAP = 96 * 1024;
+      try {
+        const size = fsSync.statSync(abs).size;
+        const fd = fsSync.openSync(abs, "r");
+        let buf;
+        try {
+          buf = Buffer.alloc(Math.max(0, Math.min(size, CAP)));
+          if (buf.length) fsSync.readSync(fd, buf, 0, buf.length, 0);
+        } finally { try { fsSync.closeSync(fd); } catch {} }
+        preview = { ...truncatePreview(buf.toString("utf8"), 24000), ext: entry.ext, bytes: size, overBytes: size > CAP };
+      } catch (e) {
+        preview = { text: "", truncated: false, chars: 0, error: String(e?.message ?? e) };
+      }
+    }
+    send(res, 200, { ok: true, entry: row, rel, preview });
+    return;
+  }
+
+  /* ============ 专家团模式 = 任务分配（orchestrator-workers）====================
+   * 与上面只读复核的 team.* 刻意分开：那里是「验活」，这里是「派活」。
+   * 硬约束（参考 Anthropic orchestrator-workers 自动化与 2025-26 生产实践）：
+   *   · 用户唯一对话对象是分配者，worker 没有对话入口；
+   *   · worker 上下文隔离，只拿自己的 brief + 成功判据，不拿兄弟结果；
+   *   · worker 只回传压缩结果，分配者单独汇总，不做字符串拼接；
+   *   · 每个 worker 绑一个**真实**后台 jobId，状态从 jobs 表回读，卡片不是摆设。 */
+  function syncTeamJobs() {
+    const snap = expertTeam.status();
+    if (!snap) return null;
+    for (const w of snap.workers) {
+      if (!w.jobId) continue;
+      const job = jobs.get(w.jobId);
+      if (!job) continue;
+      if (job.status === "running") {
+        const p = String(job.partial || "");
+        if (p) expertTeam.step(w.id, { title: "执行中", note: p.slice(-80), state: "running" });
+        continue;
+      }
+      if (w.status === "running") {
+        const raw = String(job.result || job.error || "");
+        /* 只回传压缩结果：不要把整段轨迹灌回分配者上下文。 */
+        const compact = raw.length > 800 ? raw.slice(0, 800) + " …（已压缩）" : raw;
+        expertTeam.complete(w.id, {
+          ok: job.status === "done",
+          result: job.status === "done" ? compact : "",
+          error: job.status === "done" ? "" : (compact || "后台任务未成功"),
+        });
+      }
+    }
+    /* 所有工作者都回传后，分配者必须收口。少了这一步，phase 永远停在 running：
+       面板一直轮询、卡片一直"进行中"、用户拿不到答案，整轮等于空跑。
+       汇总只吃 aggregate() 产出的压缩结果 / 缺口 / 冲突，不拼完整轨迹；
+       也不额外起一次模型调用，免得给首字延迟再叠一跳。 */
+    if (snap.phase === "running" || snap.phase === "planning") {
+      const allTerminal = snap.workers.length > 0
+        && snap.workers.every((w) => w.status === "done" || w.status === "failed");
+      if (allTerminal) {
+        const agg = expertTeam.aggregate();
+        expertTeam.finish(leadDigest(snap, agg));
+      }
+    }
+    return expertTeam.status();
+  }
+
+  /* 分配者的最终答复 = 对工作者压缩结果的结构化汇总 + 如实列出缺口和冲突。
+     不编造结论、不假装推理过：worker 失败就写失败，结论打架就写要裁定。 */
+  function leadDigest(snap, agg) {
+    const lines = [`任务：${snap.subject || "未命名任务"}`];
+    for (const r of agg?.results || []) {
+      const one = String(r.result || "无结果").replace(/\s+/g, " ").slice(0, 300);
+      lines.push(`· ${r.name}：${one}`);
+    }
+    if (agg?.gaps?.length) lines.push(`缺口：${agg.gaps.join("；")}`);
+    if (agg?.conflicts?.length) lines.push(`冲突：${agg.conflicts.join("；")}`);
+    lines.push("以上是分配者对各方结果的汇总；要调整直接对我说，点名工作者即可。");
+    return lines.join("\n");
+  }
+
+  if (url.pathname === "/api/team/mode" && req.method === "POST") {
+    const b = await readBody(req);
+    if (STOP.on && b.on === true) {
+      send(res, 409, { ok: false, error: "急停期间不开启专家团模式" });
+      return;
+    }
+    const r = expertTeam.enable(b.on === true);
+    /* 关掉开关就得真停：否则 worker 的后台 job 还在跑，面板却不显示，
+       变成「关了但还在烧钱」的隐形任务。只停本轮专家团派出去的那些单。 */
+    let aborted = 0;
+    if (b.on !== true) {
+      const snap = expertTeam.status();
+      for (const w of snap?.workers || []) {
+        if (!w.jobId) continue;
+        const job = jobs.get(w.jobId);
+        if (job && job.status === "running" && abortJob(w.jobId, "专家团模式已关闭").ok !== false) aborted++;
+      }
+    }
+    send(res, 200, { ok: true, enabled: r.enabled, aborted, stats: expertTeam.stats() });
+    return;
+  }
+
+  if (url.pathname === "/api/team/status" && req.method === "GET") {
+    const run = syncTeamJobs();
+    /* 工单只读投影：面板已没有独立「工单」子菜单，本轮各工作者的工单信息改为
+       跟在分配者那条回答下面的折叠卡片。随这次状态轮询一并返回，不新增轮询；
+       只带摘要字段，成本 / 轨迹 / 插手记录等点开卡片时再按 id 单取下钻，
+       否则 2s 一次的轮询会平白读四份内存账本。 */
+    const tickets = ((run && run.workers) || []).map((w) => {
+      const job = w.jobId ? jobs.get(w.jobId) : null;
+      const tid = job && job.ticketId ? String(job.ticketId) : "";
+      const t = tid ? ticketStore.get(tid) : null;
+      return {
+        workerId: w.id,
+        name: w.name,
+        brief: w.brief,
+        workerStatus: w.status,
+        jobId: w.jobId || "",
+        ticketId: tid,
+        status: t ? t.status : "",
+        title: t ? t.title : "",
+        createdAt: t ? t.createdAt : 0,
+        endedAt: t ? t.endedAt : 0,
+        route: job ? job.route : "",
+        ruleId: job ? job.ruleId : "",
+      };
+    });
+    send(res, 200, {
+      ok: true, enabled: expertTeam.enabled(),
+      lead: { id: TEAM_LEAD.id, name: TEAM_LEAD.name, role: TEAM_LEAD.role },
+      run, tickets, stats: expertTeam.stats(),
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/team/start" && req.method === "POST") {
+    const b = await readBody(req);
+    const r = expertTeam.start({ text: b.text || b.subject || "" });
+    if (!r.ok) { send(res, 200, r); return; }
+    let dispatched = 0;
+    for (const w of r.plan.workers) {
+      try {
+        const jid = startJob("workbuddy", "workbuddy_execute", {
+          task: `【子任务 · ${w.name}】${w.brief}\n成功判据：${w.criterion}`,
+        }, JOB_TIMEOUT_MS, null, { route: "expert-team", ruleId: w.roleId });
+        expertTeam.attachJob(w.id, jid);
+        dispatched++;
+      } catch (e) {
+        /* 派不出去就如实标失败，绝不假装在跑。 */
+        expertTeam.step(w.id, { title: "派发失败", note: String(e?.message ?? e), state: "failed" });
+        expertTeam.complete(w.id, { ok: false, error: "子任务没能派出去" });
+      }
+    }
+    send(res, 200, {
+      ok: true, run: expertTeam.status(), dispatched,
+      lead: { id: TEAM_LEAD.id, name: TEAM_LEAD.name },
+    });
+    return;
+  }
+
+  /* 用户开口的唯一入口：话只交给分配者。分配者决定自己调整计划，还是转一条
+     结构化指令给某个 worker；worker 永远收不到「和用户的一段对话」。 */
+  if (url.pathname === "/api/team/steer" && req.method === "POST") {
+    const b = await readBody(req);
+    const r = expertTeam.steer({ text: b.text || "", workerId: b.workerId || "" });
+    if (!r.ok) { send(res, 200, r); return; }
+    let injected = false;
+    if (r.workerId) {
+      const snap = expertTeam.status();
+      const w = (snap?.workers || []).find((x) => x.id === r.workerId);
+      const job = w && w.jobId ? jobs.get(w.jobId) : null;
+      if (job && job.ticketId) {
+        /* 真生效：把纠偏写进该工单，执行层在 step 边界会注入。 */
+        try { injected = !!(ticketCtl.control(job.ticketId, "correct", { text: String(b.text || "") }) || {}).ok; }
+        catch { injected = false; }
+      }
+    }
+    send(res, 200, { ok: true, targets: r.targets, workerId: r.workerId, leadNoted: r.leadNoted, injected, run: expertTeam.status() });
+    return;
+  }
+
+  if (url.pathname === "/api/team/worker" && req.method === "GET") {
+    send(res, 200, expertTeam.workerDetail(url.searchParams.get("id") || ""));
+    return;
+  }
+
+  if (url.pathname === "/api/team/stop" && req.method === "POST") {
+    send(res, 200, { ok: true, ...expertTeam.stop(), run: expertTeam.status() });
+    return;
+  }
+
+  /* 分配者汇总：不拼接全文，如实列出缺口与冲突，最终答案由分配者继续生成。 */
+  if (url.pathname === "/api/team/aggregate" && req.method === "POST") {
+    send(res, 200, expertTeam.aggregate());
+    return;
+  }
+
+  /* ---------------- 外部检索（只读、降级、绝不回落视觉） ----------------
+   * 凭证只在模块初始化时从环境变量注入，这里绝不接收任何 apiKey / 开关。
+   * 业务失败一律 200 + degraded/reasonCode，绝不 5xx、绝不静默吞掉、绝不调用 runVision。 */
+  if (url.pathname === "/api/search" && req.method === "POST") {
+    const b = await readBody(req);
+    /* 报告B V-10：带 url 的定向检索必须落在显式授权白名单内，否则不擅自访问外部域名。
+       白名单只从 ORB_SEARCH_HOSTS 注入，默认空 = 一律 requires_user_authorization。
+       只带 query 的普通检索不涉及域名，无需这一步。 */
+    if (typeof b.url === "string" && b.url.trim()) {
+      const auth = authorizeDomain(b.url, SEARCH_ALLOWED_HOSTS);
+      if (!auth.ok) {
+        /* V-10 授权失败也走 L4：业务失败一律 200 + degraded + 固定 reasonCode。 */
+        send(res, 200, normalizeL4({
+          ok: false, results: [], degraded: true,
+          reasonCode: "requires_user_authorization", detail: auth.why || "", elapsedMs: 0,
+        }));
+        return;
+      }
+    }
+    const query = typeof b.query === "string" ? b.query.trim() : "";
+    if (query.length < 1 || query.length > 128) {
+      /* 业务失败不回 4xx：L4 契约要求统一 200 + degraded + reasonCode，
+         调用方只看返回体就能判定，不必再分叉处理 HTTP 状态。 */
+      send(res, 200, normalizeL4({ ok: false, results: [], degraded: true, reasonCode: "bad-query", elapsedMs: 0 }));
+      return;
+    }
+    if (STOP.on) {
+      send(res, 200, normalizeL4({ ok: false, results: [], degraded: true, reasonCode: "stopped", elapsedMs: 0 }));
+      return;
+    }
+    const ctx = { epoch: epochOf() };
+    const r = await searchProvider.search(query, ctx);
+    /* provider 内部是 schema v1（含细粒度拒因），对外统一规范化成 L4 v2：
+       默认关闭 / 无凭据 → not_available；绝不回落截图或视觉循环。 */
+    send(res, 200, normalizeL4(r));
+    return;
+  }
+
+  /* L4 契约自检：只读字段清单与原因码，不暴露配置、端点或凭据。 */
+  if (url.pathname === "/api/search/schema" && req.method === "GET") {
+    send(res, 200, { ok: true, ...l4Schema() });
+    return;
+  }
+
+  if (url.pathname === "/api/search/status" && req.method === "GET") {
+    send(res, 200, {
+      ok: true,
+      config: searchProvider.config(),
+      stats: searchProvider.stats(),
+      /* 批次C：凭据来源可插拔且默认 inert；这两个布尔是可证伪的判据。 */
+      credentials: searchCredentials.describe(),
+      acceptedCredentialSources: [...CREDENTIAL_SOURCES],
+      /* 厂商形状可查，但绝不回显 key；verified 如实标注「官方文档已核对 ≠ 真实调用已实测」。 */
+      provider: searchAdapter.id,
+      availableProviders: [...ADAPTER_IDS],
+      adapters: listAdapters(),
+      orchestrator: orchestratorSchema(),
+      offlineFixtureEnabled: SEARCH_OFFLINE_FIXTURE,
+    });
+    return;
+  }
+
+  /* 编排层只读自检：句型数 / 降级码 / 零视觉契约，不暴露配置或凭据。 */
+  if (url.pathname === "/api/search/to-doc/schema" && req.method === "GET") {
+    send(res, 200, { ok: true, ...orchestratorSchema() });
+    return;
+  }
+
+  /* ---------------- 意图未命中只读视图（2026-11-07） ----------------
+   * 「该往词表里加什么」应该是查出来的，不是猜出来的：这里把没认出来的原句按同形聚合列出。
+   * 纯内存、有上限、不落盘、不外发；POST {clear:true} 只清本进程这一份。
+   */
+  if (url.pathname === "/api/search/misses" && (req.method === "GET" || req.method === "POST")) {
+    if (req.method === "POST") {
+      const b = await readBody(req);
+      if (b && b.clear === true) missLog.clear();
+    }
+    const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit")) || 50));
+    send(res, 200, { ok: true, ...missLog.stats(), items: missLog.list({ limit }) });
+    return;
+  }
+
+  /* ---------------- 意图只解析、不执行（2026-11-06） ----------------
+   * 面板拿到一句话后先问这里：走哪条动作、落到哪（doc / clipboard）、要几条。
+   * 分流的依据只有这一份（parseProduceIntent），面板不再复刻第二套判定 ——
+   * 复刻过的东西早晚漂移，历史上 RE_SEARCH 与 INTENT_PATTERNS 就是两份。
+   * 纯解析：不发请求、不写盘、不动剪贴板，未命中就如实回 reasonCode。
+   */
+  if (url.pathname === "/api/search/plan" && (req.method === "POST" || req.method === "GET")) {
+    const b = req.method === "POST" ? await readBody(req) : {};
+    const text = req.method === "GET"
+      ? String(url.searchParams.get("text") || "")
+      : String(b.text || "");
+    const r = await parseForSink(text, null);
+    /* 未命中才记，且只记「像这类任务」的句子：普通闲聊也含「找」「生成」这类单字，
+       不设这道闸，日志三天就会被聊天噪声淹没，等于没记。 */
+    if (!r.ok) recordIntentMiss(text, r.reasonCode);
+    send(res, 200, {
+      ok: r.ok === true,
+      reasonCode: r.reasonCode || "",
+      action: r.action || "",
+      sink: r.sink || "",
+      format: r.format || "",
+      query: r.query || "",
+      count: r.count || 0,
+      note: r.note || "",
+      /* 低置信：不改变执行，只把「按哪个理解做的」交出去，面板可以补一句说明。 */
+      confidence: r.confidence || "high",
+      clarify: r.clarify || null,
+      via: r.via || "grammar",
+      zeroVlm: true, vlmCalls: 0, noVisionFallback: true,
+    });
+    return;
+  }
+
+  /* ---------------- 批次C：结果回填编排（搜一下 X 然后记到文档） ----------------
+   * 报告 §7 第10项：只做 /api/search 而没人消费 results[] 就是空头功能。
+   * 这里把 L4 结果真正落成一份产物并登记；能力不可用时如实降级，
+   * 绝不编造三条、绝不回落视觉循环、不播报、不调用 /api/vlm、不抓屏。
+   * 离线 fixture 只用于验收编排层，文档里会显式写「非真实检索」。
+   */
+  if (url.pathname === "/api/search/to-doc" && req.method === "POST") {
+    const b = await readBody(req);
+    const intentText = typeof b.text === "string" ? b.text : "";
+    const intent = intentText ? await parseForSink(intentText, "doc") : null;
+    if (intent && !intent.ok) {
+      recordIntentMiss(intentText, intent.reasonCode);
+      send(res, 200, { ok: false, degraded: true, reasonCode: intent.reasonCode,
+        artifactId: null, zeroVlm: true, vlmCalls: 0 });
+      return;
+    }
+    const query = String(b.query || (intent && intent.query) || "").trim();
+    if (!query || query.length > 128) {
+      send(res, 200, { ok: false, degraded: true, reasonCode: "bad-query",
+        artifactId: null, zeroVlm: true, vlmCalls: 0 });
+      return;
+    }
+    /* V-10：带 url 的定向检索必须落在显式授权白名单内。 */
+    if (typeof b.url === "string" && b.url.trim()) {
+      const auth = authorizeDomain(b.url, SEARCH_ALLOWED_HOSTS);
+      if (!auth.ok) {
+        send(res, 200, { ok: false, degraded: true, reasonCode: "requires_user_authorization",
+          artifactId: null, zeroVlm: true, vlmCalls: 0 });
+        return;
+      }
+    }
+    /* V-10：检索类一律不进急停豁免。 */
+    if (STOP.on) {
+      send(res, 200, { ok: false, degraded: true, reasonCode: "stopped",
+        artifactId: null, zeroVlm: true, vlmCalls: 0 });
+      return;
+    }
+
+    let l4;
+    let fixture = false;
+    if (SEARCH_OFFLINE_FIXTURE && Array.isArray(b.fixtureResults)) {
+      /* 验收专用：注入的是 fixture，不是检索结果；产物会写明「非真实检索」。 */
+      l4 = normalizeL4({ ok: true, results: b.fixtureResults, provider: "offline-fixture", elapsedMs: 0 });
+      fixture = true;
+    } else {
+      l4 = normalizeL4(await searchProvider.search(query, { epoch: epochOf() }));
+    }
+
+    /* 用户说「前 5 条」时按 5 条写；没说就用默认 3 条（parser 里已夹到上限）。 */
+    const doc = buildSearchDoc(query, l4, {
+      fixture,
+      maxEntries: Number(intent && intent.count) || Number(b.count) || undefined,
+    });
+    if (!doc.ok) {
+      send(res, 200, { ...doc, artifactId: null, realResults: false });
+      return;
+    }
+
+    /* 落盘 + 登记：文件名由代码生成，绝不接受请求体里的路径。 */
+    const cur = sessionMgr.current();
+    const cid = String(b.conversationId || cur?.conversationId || "local");
+    const fileName = `search-${Date.now()}.md`;
+    let artifactId = null;
+    let outPath = "";
+    try {
+      const dir = layout.kindDir("exports", cid, layout.day());
+      fsSync.mkdirSync(dir, { recursive: true });
+      outPath = path.join(dir, fileName);
+      fsSync.writeFileSync(outPath, doc.markdown, "utf8");
+      const reg = registerArtifact({
+        conversationId: cid, epoch: epochOf(), ticketId: String(b.ticketId || ""),
+        kind: "exports", fileName, ext: "md",
+        size: Buffer.byteLength(doc.markdown, "utf8"), sha: "",
+      });
+      artifactId = reg.ok ? reg.id : null;
+      logBus.write({ category: "artifact", level: "info", epoch: epochOf(),
+        message: `检索回填 ${fileName}（${doc.entries.length} 条${fixture ? "，离线 fixture" : ""}）` });
+    } catch (e) {
+      send(res, 200, { ...doc, ok: false, degraded: true, reasonCode: "write-failed",
+        artifactId: null, note: String(e?.message ?? e) });
+      return;
+    }
+    /* realResults:false 明确告诉调用方「这是 fixture」，不许拿它冒充检索能力可用。
+       带上 conversationId，产物表按会话过滤时就能直接查到这份文件。 */
+    send(res, 200, {
+      ...doc, artifactId, fileName, path: outPath,
+      conversationId: cid, realResults: !fixture,
+    });
+    return;
+  }
+
+  /* ---------------- 检索 → 剪贴板（第二个确定性落点） ----------------
+   * 和 to-doc 共用同一条闸门（provider → textGate → URL 协议闸），区别只在落点：
+   * 不落盘、不登记产物，只把已过闸的纯文本回给调用方，由主进程写剪贴板。
+   * 桥自己碰不到剪贴板，也不该碰 —— 一个 HTTP 服务不该有系统副作用。
+   */
+  if (url.pathname === "/api/search/to-clipboard" && req.method === "POST") {
+    const b = await readBody(req);
+    const intentText = typeof b.text === "string" ? b.text : "";
+    const intent = intentText ? await parseForSink(intentText, "clipboard") : null;
+    if (intent && !intent.ok) {
+      recordIntentMiss(intentText, intent.reasonCode);
+      send(res, 200, { ok: false, degraded: true, reasonCode: intent.reasonCode,
+        text: "", count: 0, zeroVlm: true, vlmCalls: 0 });
+      return;
+    }
+    const query = String(b.query || (intent && intent.query) || "").trim();
+    if (!query || query.length > 128) {
+      send(res, 200, { ok: false, degraded: true, reasonCode: "bad-query",
+        text: "", count: 0, zeroVlm: true, vlmCalls: 0 });
+      return;
+    }
+    if (STOP.on) {
+      send(res, 200, { ok: false, degraded: true, reasonCode: "stopped",
+        text: "", count: 0, zeroVlm: true, vlmCalls: 0 });
+      return;
+    }
+    let l4;
+    let fixture = false;
+    if (SEARCH_OFFLINE_FIXTURE && Array.isArray(b.fixtureResults)) {
+      l4 = normalizeL4({ ok: true, results: b.fixtureResults, provider: "offline-fixture", elapsedMs: 0 });
+      fixture = true;
+    } else {
+      l4 = normalizeL4(await searchProvider.search(query, { epoch: epochOf() }));
+    }
+    /* 复用 buildSearchDoc 的闸门结果：再过一遍 textGate / URL 闸就等于有两份判定，
+       这里只取已过闸的 entries 拼纯文本，不写盘、不登记产物。 */
+    const doc = buildSearchDoc(query, l4, {
+      fixture,
+      maxEntries: Number(intent && intent.count) || Number(b.count) || undefined,
+    });
+    if (!doc.ok) {
+      send(res, 200, { ok: false, degraded: true, reasonCode: doc.reasonCode, note: doc.note,
+        text: "", count: 0, realResults: false, zeroVlm: true, vlmCalls: 0 });
+      return;
+    }
+    const text = doc.entries
+      .map((e, i) => `${i + 1}. ${e.title || "(无标题)"}\n${e.url}`)
+      .join("\n\n");
+    send(res, 200, {
+      ok: true, action: "search-to-clipboard", query, text,
+      count: doc.entries.length, entries: doc.entries,
+      realResults: !fixture, fixture: fixture,
+      zeroVlm: true, vlmCalls: 0, noVisionFallback: true,
+    });
+    return;
+  }
+
+  /* ---------------- 浏览器扩展通道（Native Messaging 宿主转发） ----------------
+   * 所有 /api/* 已统一走 X-Orb-Token 鉴权，这里不重复也不放进 PUBLIC_PATHS。
+   * 网页正文一律当作不可信输入交给 provider 状态机；不打印消息正文 / token，
+   * 不调用 runVision、不回落截图 / 视觉循环。 */
+  if (url.pathname === "/api/browser/relay" && req.method === "POST") {
+    const b = await readBody(req);
+    const m = b && b.message;
+    if (!m || typeof m !== "object" || Array.isArray(m)) {
+      send(res, 400, { ok: false, error: "bad-message" });
+      return;
+    }
+    /* command_done：扩展执行完桥下发（或自发）的命令后回执，本身不是给 provider 的状态机消息，
+       而是桥侧结果关联表的输入。带的是扩展重派发时的 command_id，据此映射回 corrId。 */
+    if (m.type === "command_done") {
+      const corrId = (m.command_id && extToCorr.get(m.command_id)) || m.command_id || null;
+      const slot = corrId ? browserCmdResults.get(corrId) : null;
+      if (slot) {
+        clearTimeout(slot.timer);
+        browserCmdResults.delete(corrId);
+        if (m.command_id) extToCorr.delete(m.command_id);
+        slot.resolve({
+          ok: true,
+          result: m.ok ? (m.result || {}) : null,
+          error: m.ok ? null : (m.error || { code: "exec-failed", message: "扩展执行未成功" }),
+        });
+      }
+      send(res, 200, { ok: true, reply: null });
+      return;
+    }
+    /* 急停期间也照常交给 provider：它自己会回 stopped / channel_close。
+       closeAll 已在 doStop 里统一做过，这里不再追加任何带外动作。 */
+    /* 带上传这个的宿主实例：provider 用它给 channel 记归属，
+       后续 /api/browser/pending 才能只把命令交给开这条通道的那个浏览器。
+       老宿主不带 instance → meta.instance 为空 → 退回老的全量投递行为。 */
+    const relayInstance = url.searchParams.get("instance") || "";
+    const reply = await browserProvider.handle(m, { instance: relayInstance });
+    send(res, 200, { ok: true, reply: reply || null });
+    return;
+  }
+
+  if (url.pathname === "/api/browser/pending" && req.method === "GET") {
+    /* instance：宿主进程的实例标识。多个浏览器都装了扩展时会各起一个宿主，
+       它们共享同一个 pending 队列 —— 不按归属分发就会被对方抢走，扩展侧静默丢弃。
+       老宿主不带这个参数，drain 退回全量取走的老行为。 */
+    const instance = url.searchParams.get("instance") || "";
+    send(res, 200, { ok: true, messages: browserProvider.drain(instance) });
+    return;
+  }
+
+  if (url.pathname === "/api/browser/status" && req.method === "GET") {
+    /* config / stats 均为 provider 内脱敏后的固定字段。 */
+    send(res, 200, {
+      ok: true,
+      enabled: !STOP.on,
+      provider: browserProvider.stats(),
+      config: browserProvider.config(),
+      /* 用户级开关：面板据此显示，避免"界面上是开、执行时按关"的分裂。 */
+      api_channel: apiChannel.status(),
+      protocol: BROWSER_PROTOCOL_VERSION,
+      reasonCode: STOP.on ? "stopped" : "",
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/browser/stop" && req.method === "POST") {
+    browserProvider.closeAll("manual-stop");
+    send(res, 200, { ok: true, closed: true });
+    return;
+  }
+
+  if (url.pathname === "/api/browser/own-tab" && req.method === "POST") {
+    const b = await readBody(req);
+    const ce = (typeof b.channel_epoch === "string" || typeof b.channel_epoch === "number")
+      ? String(b.channel_epoch) : "";
+    if (!ce || b.tabId === undefined || b.tabId === null) {
+      send(res, 400, { ok: false, error: "bad-params" });
+      return;
+    }
+    const owned = browserProvider.ownTab(ce, b.tabId);
+    send(res, 200, { ok: true, owned: !!owned });
+    return;
+  }
+
+  /* 桥主动下发命令到浏览器扩展（2026-11-08）：
+   * 面板 / 自动化在「浏览器通道在线」时调用，由扩展在装了它的那个浏览器里真正执行
+   * （夸克 / Chrome / Edge，取决于扩展装在哪）。写操作强制 confirm:true —— 这是
+   * 第二道安全闸，和 provider 内的确认校验互为冗余。回传 command_id 供结果查询。 */
+  if (url.pathname === "/api/browser/command" && req.method === "POST") {
+    const b = await readBody(req);
+    const method = typeof b.method === "string" ? b.method.trim() : "";
+    const params = (b && b.params && typeof b.params === "object" && !Array.isArray(b.params)) ? b.params : {};
+    if (b && b.confirm === true) params.confirm = true;
+    let kind = "denied";
+    if (browserReadMethods.has(method)) kind = "read";
+    else if (browserWriteMethods.has(method)) kind = "write";
+    if (kind === "denied") {
+      send(res, 400, { ok: false, error: "method-denied", message: "方法不在浏览器通道白名单内" });
+      return;
+    }
+    if (kind === "write" && params.confirm !== true) {
+      send(res, 400, { ok: false, error: "confirmation-required", message: "写操作需要 confirm:true" });
+      return;
+    }
+    const corrId = "br-" + randomUUID();
+    /* _orbCmd 是桥侧关联标签，随 params 透传到扩展重派发的命令上，
+       再随 command_done 前的 onCommand 回调映射回 corrId；它不含任何敏感字段，
+       扩展侧 command_done 的 scrub 也不会把它当凭据滤掉。 */
+    params._orbCmd = corrId;
+    const slot = registerBrowserCommand(corrId);
+    const r = browserProvider.command(method, params, { commandId: corrId });
+    if (!r.ok) {
+      clearTimeout(browserCmdResults.get(corrId)?.timer);
+      browserCmdResults.delete(corrId);
+      const msg = BROWSER_CMD_ERR[r.code] || r.code || "command-enqueue-failed";
+      send(res, 409, { ok: false, error: r.code, message: msg });
+      return;
+    }
+    /* slot.promise 在 command_done 到达或超时前不会 settle；
+       但不在此 await —— 端点立刻返回 command_id，面板用 /command-result 另起轮询。 */
+    void slot;
+    send(res, 200, { ok: true, command_id: corrId, channel_epoch: r.channel_epoch });
+    return;
+  }
+
+  /* 查询一条桥下发命令的执行结果（长轮询，桥侧最多等 BROWSER_CMD_TIMEOUT_MS）。
+   * 成功返回 { ok:true, result:{...} }；扩展拒绝/执行失败返回 { ok:true, error:{...} }；
+   * 已结算或不存在返回 404。面板据此把失败原因如实回显，而不是假装成功。 */
+  if (url.pathname === "/api/browser/command-result" && req.method === "GET") {
+    const id = url.searchParams.get("id");
+    const slot = id ? browserCmdResults.get(id) : null;
+    if (!slot) {
+      send(res, 404, { ok: false, error: "not-found", message: "没有这条命令或已结算" });
+      return;
+    }
+    const out = await slot.promise;
+    send(res, 200, { ok: true, ...out });
+    return;
+  }
+
+  /* ---------------- 浏览器扩展：安装 / 卸载 / 体检 ----------------
+   * 只做三件事：调本仓自带的注册脚本、打开扩展目录、读状态。
+   * 不写注册表以外的系统位置；不提权（全 HKCU）；不接受任何路径/参数透传
+   * （扩展 ID 由脚本从 manifest.key 自行计算，避免被诱导写入任意 allowed_origins）。 */
+  /* 开发态：HERE = orb/，脚本与扩展就在同级子目录。
+     发布态：bridge.mjs 在 resources/，而 app 文件都在 resources/app/ 下。
+     两处都试，取第一个存在的 —— 写死任一种都会在另一态静默失效。 */
+  function firstExisting(cands) {
+    for (const p of cands) { try { if (fsSync.existsSync(p)) return p; } catch {} }
+    return cands[0];
+  }
+  const browserSetupScript = firstExisting([
+    path.join(HERE, "tools", "register-browser-host.mjs"),
+    path.join(HERE, "app", "tools", "register-browser-host.mjs"),
+  ]);
+  const browserExtDir = firstExisting([
+    path.join(HERE, "browser-extension"),
+    path.join(HERE, "app", "browser-extension"),
+  ]);
+  /* 宿主运行时：bridge 自己可能就跑在「Electron 当 Node」下（打包版没有独立 node.exe），
+     这种情况下 process.execPath 是 ORB 控制台.exe，直接拿它当 electron 运行时最准确。 */
+  const selfExeIsNode = /^node(\.exe)?$/i.test(path.basename(process.execPath));
+
+  function runBrowserSetup(action, done) {
+    if (!fsSync.existsSync(browserSetupScript)) {
+      done({ ok: false, error: "setup-script-missing", path: browserSetupScript });
+      return;
+    }
+    const flag = action === "install" ? "--install" : action === "remove" ? "--remove" : "--status";
+    const args = [browserSetupScript, flag];
+    if (action === "install") {
+      if (selfExeIsNode) args.push("--node", process.execPath);
+      else args.push("--electron", process.execPath);
+    }
+    execFile(process.execPath, args, {
+      timeout: 30_000,
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+      /* ELECTRON_RUN_AS_NODE=1 才能让 ORB 控制台.exe 当 node 解释器跑这个脚本；
+         bridge 由 node 拉起时该变量无害（node 会忽略）。 */
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    }, (err, stdout, stderr) => {
+      const text = String(stdout || "");
+      const errText = String(stderr || "");
+      /* 从脚本输出里取扩展 ID，纯展示用，不回写任何东西。 */
+      const m = /扩展 ID\s*:\s*([a-p]{32})/.exec(text);
+      done({
+        ok: !err,
+        action,
+        extensionId: m ? m[1] : "",
+        extensionDir: browserExtDir,
+        output: text.split(/\r?\n/).filter(Boolean).slice(-40),
+        error: err ? (errText || err.message || "setup-failed") : "",
+      });
+    });
+  }
+
+  if (url.pathname === "/api/browser/setup" && req.method === "POST") {
+    const b = await readBody(req);
+    const action = String((b && b.action) || "install");
+    if (!["install", "remove", "status"].includes(action)) {
+      send(res, 400, { ok: false, error: "bad-action" });
+      return;
+    }
+    await new Promise((resolve) => {
+      runBrowserSetup(action, (out) => {
+        send(res, 200, out);
+        resolve();
+      });
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/browser/open-dir" && req.method === "POST") {
+    if (!fsSync.existsSync(browserExtDir)) {
+      send(res, 404, { ok: false, error: "extension-dir-missing" });
+      return;
+    }
+    /* 只允许打开固定目录，不接受请求参数里的路径。 */
+    try {
+      execFile("explorer.exe", [browserExtDir], { windowsHide: false }, () => {});
+      send(res, 200, { ok: true, opened: browserExtDir });
+    } catch (e) {
+      send(res, 500, { ok: false, error: String(e && e.message || e) });
+    }
+    return;
+  }
+
+  /* ============ 阶段一：新增能力的聚合操作入口 ============
+   * 面板不做，先给带令牌的 HTTP API；所有动作都是纯逻辑或本地文件，零模型调用。 */
+  if (url.pathname === "/api/ops" && req.method === "POST") {
+    const b = await readBody(req);
+    const a = String(b.action || "");
+    let out = { ok: true, action: a };
+    try {
+      /* 带外急停期间：任何可能发网络 / 写盘 / 签发收据的动作一律拒。
+         纯查询动作（stats / capabilities / gate）仍允许，排查急停时不能把仪表盘也关了。 */
+      const guardStop = () => {
+        if (!STOP.on) return false;
+        out = { ok: false, action: a, error: "stopped" };
+        return true;
+      };
+      switch (a) {
+        case "status":
+          out.data = {
+            epoch: epochOf(), stopped: STOP.on, writers: STATE_WRITERS,
+            commandGate: commandGate.stats(), stateWriter: stateWriter.stats(),
+            logBus: logBus.stats(), artifacts: artifactStore.stats(),
+            span: spanCollector.stats(), observe: observeRouter.stats(),
+            textGate: textGate.stats(), fastPath: fastPath.stats(),
+            baseline: baseline.coverage(), events: eventRecorder.stats(),
+            receipts: receipts.stats(), ticketControl: ticketCtl.stats(),
+            visualTiers: visualTiers.stats(), session: sessionMgr.stats(),
+            archiver: archiver.stats(), profile, formats: exporter.formats,
+            /* 本批新增的五个只读能力，摘要一律走各自的 stats()/snapshot()：
+               拿不到的指标在各模块内部就是 null + reason，这里不补零、不猜。 */
+            team: team.stats(), affect: affectGate.stats(), plugin: pluginHost.stats(),
+            router: semanticRouter.stats(), telemetry: (() => {
+              try { return telemetry.snapshot(); } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+            })(),
+            metrics: METRICS, tiers: TIERS, launched: [...launchedProcs.values()],
+            layout: layout.describe(), logForward: logForwardEnabled,
+            logChain: logBus.chainStats?.() || null,
+            /* 11-07 新增：全是纯内存摘要，不读盘、不 spawn。状态流每 1.5s 推一次，
+               明细一律走 /api/ops 的 gov.status / policy.state / dream.stats。 */
+            gov: { tiers: govCore.TIERS, sites: SITE_STATS.total, host: hostApi.getStats() },
+            policy: { epoch: policyTransition.state().policyEpoch, stopEpoch: STOP.epoch, stopLike: policyTransition.isStopLike() },
+            dream: dream.stats(), memoryBudget: memoryBudget.stats(), artifactGate: artifactGate.stats(),
+          };
+          break;
+        /* 外部检索状态（只读）：脱敏 config + stats。不提供任何设 key / 开关的动作。 */
+        case "search.status": out.data = { config: searchProvider.config(), stats: searchProvider.stats() }; break;
+        /* 浏览器通道（只读）：脱敏 stats/config + drain。不提供设 key / 绕过白名单的动作。 */
+        case "browser.status": out.data = { provider: browserProvider.stats(), config: browserProvider.config() }; break;
+        case "browser.pending": out.data = { messages: browserProvider.drain() }; break;
+        case "log.write": out.data = logBus.write(b.rec || {}); break;
+        case "log.query": out.data = logBus.query(b.query || {}); break;
+        case "log.flush": logBus.flush(); out.data = logBus.stats(); break;
+        /* ============ 产物布局 / 日志配置（面板「产物与日志」区块用） ============ */
+        case "layout.describe": out.data = layout.describe(); break;
+        case "layout.products": out.data = layout.listProducts(b.day || undefined); break;
+        case "layout.context": {
+          /* 主进程录屏/截屏/看视频前会来取一次，保证两边用同一个 day + conversationId。 */
+          let cur = sessionMgr.current();
+          if (!cur) { sessionMgr.start({ reason: "layout-context" }); cur = sessionMgr.current(); }
+          const cid = String(cur?.conversationId || "local");
+          const day = layout.day();
+          /* 一次把六类产物目录建全：主进程/面板拿到上下文的那一刻，
+             产物树形状就是完整的（不含日志/治理，它们各自在别的树里）。 */
+          try { layout.ensureDay(day); layout.ensureSession(cid, day); } catch {}
+          /* 把这一天的**全部固定路径**一次给全 —— 主进程不再自己拼任何一层目录名。
+             改目录形状只需要改 artifactLayout.cjs 一处。 */
+          out.data = {
+            day, conversationId: cid,
+            ...layout.paths(cid, day),
+          };
+          break;
+        }
+        case "layout.paths": {
+          /* 面板 / 自检用：不传 cid 就取当前会话，不传 day 就取当天。 */
+          let cur = sessionMgr.current();
+          const cid = String(b.conversationId || cur?.conversationId || "local");
+          out.data = layout.paths(cid, b.day || undefined);
+          break;
+        }
+        case "layout.setRoot": {
+          const r = String(b.root || "").trim();
+          if (r) layout.setRoot(r);
+          try { layout.ensureDay(); } catch {}
+          out.data = { root: layout.root(), day: layout.day() };
+          break;
+        }
+        case "layout.openDay": {
+          const d = /^\d{4}-\d{2}-\d{2}$/.test(String(b.day || "")) ? String(b.day) : layout.day();
+          const dir = layout.dayDir(d);
+          fsSync.mkdirSync(dir, { recursive: true });
+          /* 走 spawn 数组参数，绝不拼 shell 命令；explorer 是查看目录，不是脚本宿主。 */
+          try {
+            const ch = spawn("explorer.exe", [dir], { stdio: "ignore", windowsHide: true, detached: true });
+            ch.on("error", () => {});
+            if (typeof ch.unref === "function") ch.unref();
+            out.data = { path: dir, opened: true };
+          } catch (e) { out.data = { path: dir, opened: false, error: String(e?.message ?? e) }; }
+          break;
+        }
+        case "log.level": {
+          const l = String(b.level || "");
+          if (!LEVELS.includes(l)) { out = { ok: false, action: a, error: "invalid level" }; break; }
+          logBus.setMinLevel?.(l);
+          out.data = { minLevel: l };
+          break;
+        }
+        case "log.redact": {
+          /* 兼容两种字段名：redactPaths=是否遮路径；enabled（旧约定）=路径脱敏开关。 */
+          const rp = b.redactPaths != null ? !!b.redactPaths : (b.enabled !== false);
+          logBus.setRedactPaths?.(rp);
+          out.data = { redactPaths: rp };
+          break;
+        }
+        case "log.forward": {
+          logForwardEnabled = b.enabled !== false;
+          out.data = { enabled: logForwardEnabled };
+          break;
+        }
+        case "log.retention": out.data = logBus.cleanup?.(Date.now(), { days: Number(b.days) || 0 }) || { ok: false, reason: "cleanup unavailable" }; break;
+        case "log.spool.replay": out.data = logBus.replaySpool?.() || { ok: false, reason: "replay unavailable" }; break;
+        case "log.stats": {
+          const lb = logBus.stats();
+          out.data = {
+            ...lb,
+            /* 面板读的是 data.logBus.written/rejected —— 同时保留顶层扁平字段，
+               两种读法都成立，避免面板与接口各写一套。 */
+            logBus: { ...lb, forward: logForwardEnabled },
+            chain: logBus.chainStats?.() || null,
+            forward: logForwardEnabled, categories: CATEGORIES, levels: LEVELS,
+            layout: { root: layout.root(), day: layout.day(), logsDir: layout.logsDir() },
+          };
+          break;
+        }
+        case "log.export": {
+          const fmt = String(b.format || "jsonl");
+          if (!["jsonl", "csv", "txt"].includes(fmt)) { out = { ok: false, action: a, error: "unsupported format" }; break; }
+          /* 面板的分类多选是用逗号拼起来传的（未全选时只传选中的几类）。
+             逐类查完再合并去重，最后统一按 ts 排序并截到 limit。 */
+          const limit = Math.max(1, Math.min(Number(b.limit || 2000), 10000));
+          const cats = String(b.category || "").split(",").map((s) => s.trim()).filter(Boolean);
+          let rows;
+          if (cats.length) {
+            const seen = new Set();
+            rows = [];
+            for (const c of cats) {
+              for (const r of logBus.query({ category: c, level: String(b.level || ""), since: Number(b.since || 0), limit: 10000 })) {
+                const k = `${r.ts}|${r.category}|${r.message}`;
+                if (seen.has(k)) continue;
+                seen.add(k);
+                rows.push(r);
+              }
+            }
+            rows.sort((x, y) => (x.ts || 0) - (y.ts || 0));
+            rows = rows.slice(-limit);
+          } else {
+            rows = logBus.query({ level: String(b.level || ""), since: Number(b.since || 0), limit });
+          }
+          let text;
+          if (fmt === "csv") {
+            const esc = (v) => '"' + String(v ?? "").replace(/"/g, '""') + '"';
+            text = ["ts,category,level,epoch,message"]
+              .concat(rows.map((r) => [r.ts, r.category, r.level, r.epoch, r.message].map(esc).join(","))).join("\n");
+          } else if (fmt === "txt") {
+            text = rows.map((r) => `${new Date(r.ts || 0).toISOString()} [${r.level}] [${r.category}] ${r.message}`).join("\n");
+          } else {
+            text = rows.map((r) => JSON.stringify(r)).join("\n");
+          }
+          const c = sessionMgr.current();
+          const dir = layout.kindDir("exports", c?.conversationId || "local", layout.day());
+          fsSync.mkdirSync(dir, { recursive: true });
+          const outFile = path.join(dir, `logs-${Date.now()}.${fmt}`);
+          const part = outFile + ".part";
+          fsSync.writeFileSync(part, text + (text ? "\n" : ""), "utf8");
+          fsSync.renameSync(part, outFile);   // 原子落盘，不留半个文件
+          const bytes = fsSync.statSync(outFile).size;
+          registerArtifact({
+            conversationId: String(c?.conversationId || ""), epoch: epochOf(),
+            kind: "exports", fileName: path.basename(outFile), ext: fmt, size: bytes, sha: "",
+          });
+          logBus.write({ category: "artifact", level: "info", epoch: epochOf(),
+            message: `日志导出 ${fmt}：${path.basename(outFile)}（${rows.length} 行）` });
+          out.data = { path: outFile, bytes, format: fmt, rows: rows.length };
+          break;
+        }
+        /* 面板 artifacts.register 仍传裸文件名（PDF 两跳落地后登记），这里补齐
+           <day>/sessions/<cid>/exports/<name>，让它在浮层里也能被定位。 */
+        case "artifacts.register": {
+          const e = b.entry && typeof b.entry === "object" ? b.entry : {};
+          out.data = registerArtifact({ ...e, fileName: e.rel || e.fileName || "" });
+          break;
+        }
+        case "artifacts.resolve": out.data = artifactStore.resolve(b.root || ARTIFACTS_DIR, b.kind || "artifacts", b.rel || ""); break;
+        case "observe.assess": out.data = observeRouter.assess(b.event || {}); break;
+        case "observe.recordHuman": out.data = observeRouter.recordHuman(b.record || {}); break;
+        case "observe.stats": out.data = { stats: observeRouter.stats(), canAuto: observeRouter.canEnableAuto() }; break;
+        case "observe.flush": out.data = observeRouter.flush(); break;
+        case "span.start": out.data = spanCollector.start(b.meta || {}); break;
+        case "span.mark": out.data = spanCollector.mark(b.spanId, b.name, b.at); break;
+        case "span.finish": out.data = spanCollector.finish(b.spanId, b.info || {}); break;
+        case "span.percentiles": out.data = spanCollector.percentiles(b.name || ""); break;
+        case "span.six": out.data = spanCollector.sixMetrics(); break;
+        case "span.flush": out.data = spanCollector.flush(); break;
+        case "baseline.plan": out.data = baseline.plan(b.tasks || []); break;
+        case "baseline.record": out.data = baseline.record(b.record || {}); break;
+        case "baseline.report": out.data = baseline.report(); break;
+        case "fastpath.screen": out.data = fastPath.screen(b.data || {}); break;
+        case "fastpath.charge": out.data = fastPath.charge(b.key || "default", Number(b.tokens || 0)); break;
+        case "textgate.check": out.data = textGate.check(String(b.text || ""), b.meta || {}); break;
+        case "textgate.asData": out.data = textGate.asData(String(b.text || "")); break;
+        /* V-11 统一入口：transcript / ocr / webpage 三个来源都走 guard，
+           来源不合法直接拒，不猜一个默认值蒙混过关。 */
+        case "textgate.guard": {
+          const src = String(b.source || "");
+          out.data = isUntrustedSource(src)
+            ? textGate.guard(String(b.text || ""), src)
+            : { ok: false, reasonCode: "unknown-source", source: src, data: "" };
+          break;
+        }
+        case "textgate.markTemp": out.data = textGate.markTemp(String(b.text || "")); break;
+        case "textgate.disposition": out.data = textGate.disposition(b.record || {}); break;
+        case "textgate.scorePrompt": out.data = textGate.scorePrompt(String(b.text || "")); break;
+        /* V-01 回落：显式可审计降级（§10.2），四类架构原因码由 batchA 统一映射。 */
+        case "v01.degrade": out.data = noteV01Degrade(b); break;
+        case "v01.degrades": out.data = { rows: v01Degrades.slice(-50), count: v01Degrades.length, codes: Object.keys(DEGRADE_CODES) }; break;
+        case "batchA.audit": out.data = { searchExempt: searchExemptAudit(), allowedHosts: SEARCH_ALLOWED_HOSTS.length, v12: V12_CONTRACT }; break;
+        case "session.start": out.data = sessionMgr.start(b.meta || {}); break;
+        case "session.current": out.data = sessionMgr.current(); break;
+        case "session.touch": sessionMgr.touch(); out.data = sessionMgr.current(); break;
+        case "session.finalize": out.data = sessionMgr.finalize(b.reason || "explicit"); break;
+        case "session.startNew": out.data = sessionMgr.startNew(b.meta || {}); break;
+        case "session.idleCheck": out.data = sessionMgr.idleCheck(); break;
+        case "archive.run": {
+          const sess = b.session || (() => { const f = sessionMgr.finalize(b.reason || "explicit"); return f && f.ok ? f : null; })();
+          /* 扁平化：归档产物落 <root>/archive/<day>/<cid>/，与录屏/截屏/看视频同一棵树、
+           * 同一层语义（都是 <root>/<kind>/<day>/...），由 listProducts("archive") 统一枚举。
+           * 旧约定 `<day>/sessions/<cid>/archive` 不再使用。 */
+          const aligned = sess ? {
+            ...sess,
+            dir: `archive/${sess.day}/${String(sess.conversationId || "local").replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 64)}`,
+          } : null;
+          out.data = aligned
+            ? archiver.archive({ session: aligned, entries: b.entries || [], logs: b.logs || [] })
+            : { ok: false, error: "no active session" };
+          break;
+        }
+        case "archive.manifest": out.data = archiver.readManifest(b.dir || ""); break;
+        /* ---------------- 专家团（只读） ----------------
+         * 只读是硬约束：这里不提供"派给它执行"的入口。真正执行只有 /api/dispatch
+         * 与 /api/call 两条通道，都过 commandGate 与 STOP.epoch。 */
+        case "team.list": {
+          const l = team.list();
+          /* 把最近一次评审的每条视角贡献数挂上去，面板卡片可以直接显示"发现 N"。 */
+          const per = {};
+          if (teamLastReview && Array.isArray(teamLastReview.perspectives)) {
+            for (const p of teamLastReview.perspectives) per[p.id] = p.findings;
+          }
+          out.data = {
+            ok: true,
+            experts: (l.experts || []).map((e) => ({ ...e, findings: per[e.id] || 0 })),
+            teams: l.teams || [],
+            stats: l.stats || {},
+            lastReview: teamLastReview,
+          };
+          break;
+        }
+        case "team.detail": {
+          const r = team.detail(String(b.id || ""));
+          if (!r.ok) { out = { ok: false, action: a, error: r.error || "unknown-expert" }; break; }
+          /* 下钻的"最近发现"从最近一次评审里筛，不额外读盘 —— 只读视图要快且可复现。 */
+          let recent = Array.isArray(r.recent) ? r.recent : [];
+          if (teamLastReview && Array.isArray(teamLastReview.ranked)) {
+            recent = teamLastReview.ranked
+              .filter((f) => f.expertId === String(b.id || ""))
+              .map((f) => ({ claim: f.claim, severity: f.severity, confidence: f.confidence, evidence: f.evidence }));
+          }
+          out.data = { ok: true, expert: r.expert, recent, evidence: r.evidence || [] };
+          break;
+        }
+        case "team.setEnabled": {
+          const id = String(b.id || "");
+          const on = b.enabled !== false;
+          out.data = { ok: team.setEnabled(id, on), id, enabled: on };
+          break;
+        }
+        case "team.review": {
+          const rev = team.review({
+            subject: String(b.subject || "手动评审"),
+            findings: Array.isArray(b.findings) ? b.findings : [],
+            epoch: epochOf(),
+          });
+          teamLastReview = rev;
+          out.data = { ok: true, review: rev };
+          break;
+        }
+        case "team.collectReview": {
+          /* 面板「任务后自动复核」开关经 review.auto 同步过来。这里必须真拦：
+             否则安全页显示「关闭」，后台却还在每单跑一轮，就是空头状态。
+             手动发起的评审不带 auto，仍然可用（排查时需要）。 */
+          if (b.auto === true && !reviewAutoEnabled) {
+            out = { ok: false, action: a, error: "自动复核已关闭" };
+            break;
+          }
+          /* light 默认开：这条会被面板在**每条任务收尾**自动调用，
+             不能为了自检去 spawn 遥测命令。要深档请显式传 light:false。 */
+          const light = b.light !== false;
+          const t0 = Date.now();
+          const rev = team.review({
+            subject: String(b.subject || ("运行状态自检 " + layout.day())),
+            findings: teamCollectFindings({ light }),
+            epoch: epochOf(),
+          });
+          teamLastReview = rev;
+          /* 四段式报告落产物树 misc/：报告是"产物"，不是日志，所以进 artifacts。
+             自动档只在**有发现**时落盘 —— 每单写三个文件（report/skill/evidence）
+             是纯噪音，磁盘和 mtime 都受不了。需要留档请传 report:true。 */
+          let report = null;
+          const wantReport = b.report === true
+            || (!light && rev.verdict !== "pass")
+            || (light && rev.verdict !== "pass" && b.report !== false);
+          if (wantReport) {
+            try {
+              const c = sessionMgr.current();
+              const cid = String(c?.conversationId || "local");
+              const base = layout.kindDir("misc", cid, layout.day()) || layout.dayMiscDir(layout.day());
+              report = team.writeReport(rev, { dir: path.join(base, "team-review-" + Date.now()) });
+            } catch (e) {
+              report = { ok: false, error: String(e?.message || e) };
+            }
+          }
+          try {
+            logBus.write({
+              category: "task", level: "info", epoch: epochOf(),
+              message: "专家团自检评审：" + String(rev.verdict) + "（" + ((rev.counts && rev.counts.kept) || 0) + " 条发现）",
+            });
+          } catch {}
+          /* elapsedMs 一起回去：面板要靠它判断"自动复核是不是拖慢了响应"，
+             连续几次超阈值就自己降级并在界面上说明，而不是硬扛。 */
+          out.data = { ok: true, review: rev, report, light, elapsedMs: Date.now() - t0 };
+          break;
+        }
+        case "team.paths": {
+          /* 让面板/自检能问一句"报告会落在哪"，不必自己拼路径。 */
+          const c = sessionMgr.current();
+          const cid = String(b.conversationId || c?.conversationId || "local");
+          out.data = { ok: true, miscDir: layout.kindDir("misc", cid, layout.day()) };
+          break;
+        }
+
+        /* ---------------- 开口门控（六项） ---------------- */
+        case "affect.status": {
+          out.data = {
+            ok: true,
+            options: affectGate.options(),
+            stats: affectGate.stats(),
+            tier: affectGate.tier(),
+            tiers: Object.fromEntries(Object.entries(SPEAK_TIERS).map(([k, v]) => [k, { id: v.id, name: v.name, hint: v.hint }])),
+            records: affectGate.records({ limit: Number(b.limit) || 20 }),
+            gates: AFFECT_GATES.map((g) => ({ ...g })),
+          };
+          break;
+        }
+        /* 用户能碰的只有「安静 / 标准 / 及时」三档，不给任何数值参数入口。
+           旧的 affect.set 允许直接改冷却/阈值/熔断次数，已按用户要求收口：
+           现在只认 tier，传 options 一律拒绝，护栏无法被调没了。 */
+        case "affect.setTier": {
+          const r = affectGate.setTier(String(b.tier || ""));
+          if (r.ok === false) { out = { ok: false, action: a, error: r.error }; break; }
+          out.data = { ok: true, tier: r.tier, name: r.name };
+          break;
+        }
+        case "affect.infer": out.data = { ok: true, inferred: inferTierFromText(String(b.text || "")) }; break;
+        case "affect.set": {
+          out = { ok: false, action: a, error: "门控参数不开放调整，请用 affect.setTier 选「安静 / 标准 / 及时」" };
+          break;
+        }
+        /* 安全子菜单只读概览：全部是状态词，一个数值都不给界面。 */
+        case "safety.overview": {
+          out.data = {
+            ok: true,
+            overview: safetyOverview({
+              reviewAuto: reviewAutoEnabled,
+              team: team.stats(),
+              affect: affectGate.stats(),
+              lastReview: teamLastReview,
+              plugins: (pluginHost.list().plugins || []).map((p) => ({ name: p.name, enabled: p.enabled !== false })),
+              tier: affectGate.tier(),
+              tiers: SPEAK_TIERS,
+            }),
+          };
+          break;
+        }
+        case "review.auto": {
+          if (typeof b.on === "boolean") reviewAutoEnabled = b.on;
+          out.data = { ok: true, enabled: reviewAutoEnabled };
+          break;
+        }
+        /* 门控判定（热路径）。面板每次要主动开口前调一次。
+         * stopped 由桥自己补：面板不该猜急停状态 —— 它看到的可能是一秒前的快照，
+         * 而"该不该说话"必须在**当下**判定。ctx 显式给了 stopped 才以它为准（自检用）。 */
+        case "affect.evaluate": {
+          const ctx = Object.assign({}, (b.ctx && typeof b.ctx === "object") ? b.ctx : {});
+          if (ctx.stopped === undefined) ctx.stopped = STOP.on;
+          out.data = affectGate.evaluate(ctx);
+          break;
+        }
+        case "affect.reset": affectGate.reset(); out.data = { ok: true, stats: affectGate.stats() }; break;
+
+        /* ---------------- 插件底座 ---------------- */
+        case "plugin.list": {
+          const hostPlugins = (pluginHost.list().plugins || []);
+          const ledById = {};
+          (ledgerRead().entries || []).forEach((e) => { if (e.id) ledById[e.id] = e; });
+          const plugins = hostPlugins.map((p) => {
+            const rec = ledById[p.id];
+            return rec ? Object.assign({}, p, { via: rec.via || "", sourceHash: rec.sourceHash || "" }) : p;
+          });
+          out.data = { ok: true, plugins, stats: pluginHost.stats(), restore: pluginRestore };
+          break;
+        }
+        case "plugin.run": out.data = await pluginHost.run(String(b.id || ""), b.args || {}); break;
+        case "plugin.register": {
+          const r = pluginHost.register(b.plugin || {});
+          /* 只接受纯函数插件：桥不会把 run 序列化给别的进程，也不落盘。 */
+          out.data = r;
+          break;
+        }
+        case "plugin.unregister": out.data = pluginHost.unregister(String(b.id || "")); break;
+        /* 用户级卸载：注销注册表 + 忘台账 + 删本地落盘目录。
+         * 市场装的 dir 指向外部 WorkBuddy 目录，不在 PACK_STORE 下，绝不删。 */
+        case "plugin.uninstall": {
+          if (guardStop()) break;
+          const id = String(b.id || "");
+          if (!id) { out = { ok: false, action: a, error: "id-required" }; break; }
+          const ur = pluginHost.unregister(id);
+          let forgot = false, deletedDir = null;
+          try {
+            const rec = (ledgerRead().entries || []).find((e) => String(e.id) === id);
+            if (rec) {
+              ledgerForget(rec.sourceHash || rec.dir || rec.name);
+              forgot = true;
+              const dir = String(rec.dir || "");
+              if (dir && dir.indexOf(PACK_STORE + path.sep) === 0) {
+                try { fsSync.rmSync(dir, { recursive: true, force: true }); deletedDir = dir; } catch { /* 删不动也不挡注销 */ }
+              }
+            }
+          } catch { /* 台账异常不阻断注销本身 */ }
+          out.data = { ok: true, id, unregister: ur, forgot, deletedDir };
+          break;
+        }
+
+        /* ---------------- 导入区：先校验、再安装（同一条摄入路径） ---------------- */
+        case "plugin.dryrun": {
+          const raw = b.manifest && typeof b.manifest === "object" ? b.manifest : null;
+          if (!raw) { out = { ok: false, action: a, error: "manifest-required" }; break; }
+          const hash = b.sourceHash
+            ? String(b.sourceHash)
+            : "sha256:" + createHash("sha256").update(JSON.stringify(raw)).digest("hex").slice(0, 32);
+          out.data = dryRunManifest(artifactGate, { manifest: raw }, {
+            sourceHash: hash, epoch: epochOf(), approvedBy: String(b.approvedBy || ""),
+          });
+          break;
+        }
+        case "plugin.install": {
+          if (guardStop()) break;
+          const raw = b.manifest && typeof b.manifest === "object" ? b.manifest : null;
+          if (!raw) { out = { ok: false, action: a, error: "manifest-required" }; break; }
+          const hash = b.sourceHash
+            ? String(b.sourceHash)
+            : "sha256:" + createHash("sha256").update(JSON.stringify(raw)).digest("hex").slice(0, 32);
+          out.data = installManifest(pluginHost, { manifest: raw }, {
+            sourceHash: hash, epoch: epochOf(), approvedBy: String(b.approvedBy || ""),
+          });
+          break;
+        }
+
+        /* ---------------- 本机插件市场（只读索引 + 一键安装） ---------------- */
+        case "plugin.market.list": {
+          const idx = marketIndex(Boolean(b.refresh));
+          const r = searchMarket(idx.plugins, {
+            q: String(b.q || ""),
+            marketplace: String(b.marketplace || ""),
+            limit: Number(b.limit) || 60,
+          });
+          /* 已装标记按名字比：注册表里的 name 与市场条目名同源（适配器会保留原名）。
+             名字可能重名，所以这只是一个"看起来装过"的提示，不作为安装判据。 */
+          const regNames = new Set(
+            (pluginHost.list().plugins || []).map((p) => String(p.name || "").toLowerCase()),
+          );
+          out.data = {
+            ok: idx.ok,
+            root: idx.root,
+            scannedAt: idx.scannedAt,
+            marketplaces: idx.marketplaces,
+            warnings: idx.warnings,
+            allTotal: (idx.plugins || []).length,   // 全量收录：页签徽标用这个，不是搜索结果数
+            total: r.total,                          // 当前筛选命中数
+            items: r.items.map((it) => ({ ...it, installed: regNames.has(String(it.name).toLowerCase()) })),
+          };
+          break;
+        }
+        case "plugin.market.install": {
+          if (guardStop()) break;
+          out.data = installFromMarket(b);
+          break;
+        }
+        case "plugin.market.open": {
+          const idx = marketIndex();
+          const want = String(b.marketplace || "");
+          const hit = want ? (idx.marketplaces || []).find((m) => m.name === want) : null;
+          const target = (hit && hit.dir) || idx.root || "";
+          if (!target) { out = { ok: false, action: a, error: "market-root-unknown" }; break; }
+          try {
+            execFile("explorer.exe", [target], { windowsHide: false }, () => {});
+            out.data = { ok: true, opened: target };
+          } catch (e) {
+            out.data = { ok: false, error: String((e && e.message) || e) };
+          }
+          break;
+        }
+
+        /* ---------------- 本地插件包（拖进来 / 选文件） ----------------
+         * 拖进来的字节先落 DATA_DIR/plugin-store，再走 readSource → 摄入 → 真实闸门。
+         * 校验与安装用的是同一份落盘结果，所以界面上"校验通过"就等于"装得上"。 */
+        case "plugin.pack.inspect": out.data = installFromPack(b, { dry: true }); break;
+        case "plugin.pack.install": {
+          if (guardStop()) break;
+          out.data = installFromPack(b, { dry: false });
+          break;
+        }
+
+        /* ---------------- 安装台账（重启后装回来的依据） ---------------- */
+        case "plugin.ledger.list": out.data = { ok: true, file: PLUGIN_LEDGER_FILE, ...ledgerRead(), restore: pluginRestore }; break;
+        case "plugin.ledger.forget": {
+          if (guardStop()) break;
+          const key = String(b.sourceHash || b.dir || b.name || "");
+          if (!key) { out = { ok: false, action: a, error: "key-required" }; break; }
+          ledgerForget(key);
+          out.data = { ok: true, forgot: key };
+          break;
+        }
+
+        /* ---------------- 语义路由（只观察） ---------------- */
+        case "router.classify": out.data = semanticRouter.classify(String(b.text || "")); break;
+        case "router.setMode": out.data = semanticRouter.setMode(String(b.mode || "")); break;
+        case "router.stats": out.data = { ok: true, ...semanticRouter.stats(), samples: semanticRouter.samples({ limit: Number(b.limit) || 10 }) }; break;
+
+        /* ---------------- 机器遥测（只读快照） ---------------- */
+        case "telemetry.snapshot": out.data = telemetry.snapshot(); break;
+        case "events.start": out.data = eventRecorder.start(b.sessionId || ""); break;
+        case "events.record": out.data = eventRecorder.record(b.event || {}); break;
+        case "events.read": out.data = eventRecorder.read(b.query || {}); break;
+        case "events.flush": out.data = eventRecorder.flush(); break;
+        case "receipts.issue": out.data = receipts.issue(b.data || {}); break;
+        case "receipts.settle": out.data = receipts.settle(b.receiptId, b.info || {}); break;
+        case "receipts.memoryOwnership": out.data = receipts.memoryOwnership(b.data || {}); break;
+        /* 按幂等键查上次结果：调用方重试时先问这一句，比自己记状态可靠。 */
+        case "receipts.byKey": out.data = { ok: true, receipt: receipts.byKey(String(b.key || "")) }; break;
+
+        /* ---------------- 专家契约（只读边界） ---------------- */
+        case "expert.list": out.data = { ok: true, ...expertBook.stats(), rows: expertBook.list() }; break;
+        /* 改完 expertBook.json 不必重启桥：重读一次即可，读不懂会把 warning 带回去。 */
+        case "expert.reload": out.data = { ok: true, ...expertBook.load(), stats: expertBook.stats() }; break;
+        case "expert.get": out.data = { ok: expertBook.has(b.expertId), expertId: String(b.expertId || ""), contract: expertBook.get(b.expertId) }; break;
+
+        /* ---------------- 换档账本（视觉档 / 路由 / 通道 / 模式） ---------------- */
+        case "upgrade.stats": out.data = { ok: true, ...upgrade.stats(), ladders: LADDERS, last: Object.keys(LADDERS).map((k) => ({ ladder: k, rec: upgrade.last(k) })) }; break;
+        case "upgrade.history": out.data = { ok: true, rows: upgrade.history({ ladder: b.ladder, limit: Number(b.limit) || 30 }) }; break;
+        /* 手动记一次换档：面板切 Max 模式时用，这样"什么时候进的 Max"也有账。 */
+        case "upgrade.track": {
+          const r = upgrade.transition(String(b.ladder || ""), String(b.from || ""), String(b.to || ""), { cause: String(b.cause || ""), epoch: b.epoch });
+          out.ok = r.ok;
+          out.data = r;
+          break;
+        }
+
+        /* ---------------- 语气三槽（暖/中/冷） ----------------
+         * 面板只在上下文变化时问一次（任务完成/失败、切 Max、启动），
+         * 不是每句台词都问 —— 主动开口本来就不该多一次往返。 */
+        case "persona.slot": out.data = personaSlots.update(b.ctx || {}); break;
+        case "persona.stats": out.data = { ok: true, ...personaSlots.stats(), slots: PERSONA_SLOTS }; break;
+        case "persona.reset": out.data = personaSlots.reset(); break;
+        case "ticket.pause": out.data = ticketCtl.pause(b.scope || "global"); break;
+        case "ticket.resume": out.data = ticketCtl.resume(b.scope || "global"); break;
+        case "ticket.isBlocked": out.data = ticketCtl.isBlocked(b.scope || "global", { isNew: b.isNew !== false }); break;
+        case "ticket.steer": out.data = ticketCtl.steer(b.ticketId || "", String(b.text || "")); break;
+        case "ticket.applyStep": out.data = ticketCtl.applyStep(b.ticketId || "", Number(b.stepIdx || 0)); break;
+        case "ticket.humanCorrection": out.data = ticketCtl.humanCorrection(b.ticketId || "", String(b.text || "")); break;
+        case "ticket.alert": out.data = ticketCtl.alert(b.ticketId || "", b.reason || "", b.epoch ?? epochOf()); break;
+        case "visual.pick": out.data = visualTiers.pick(b.data || {}); break;
+        case "visual.preload": out.data = visualTiers.preload({ kind: b.kind || "default", read: () => b.value, epoch: b.epoch ?? epochOf() }); break;
+        case "visual.cancel": out.data = visualTiers.cancel(b.kind || "default"); break;
+        case "visual.invalidate": out.data = visualTiers.invalidate(b.epoch ?? epochOf()); break;
+        case "state.commit": out.data = stateWriter.commit(b.id || "ops", b.to || "running", b.info || {}); break;
+        case "state.stats": out.data = stateWriter.stats(); break;
+        case "profile.get": out.data = profile; break;
+        case "profile.set": {
+          const v = validateProfile(b.profile || {});
+          if (v.ok) { profile = normalizeProfile(b.profile); exporter = createExporter({ profile, epoch: epochOf() }); }
+          out.data = { ok: v.ok, errors: v.errors, profile };
+          break;
+        }
+        case "epoch.stats": out.data = { epoch: epochOf(), gate: commandGate.stats(), clock: commandGate.clock.stats() }; break;
+        case "launched.list": out.data = [...launchedProcs.values()]; break;
+
+        /* ===== 11-07 增量简报落地 + 专家团治理纪律层 =====
+         * 三段前缀：gov.*（治理层）/ policy.*（策略优雅收敛）/ dream.*（离线整理）
+         * / memory.*（动态预算）/ artifact.*（生成物闸门）/ site.*（规模化能力表）。
+         * 只读动作不拦急停；有副作用的先过 guardStop()。 */
+
+        /* --- 治理层：四档矩阵 / 代价路由 / 证据 / 红线 --- */
+        case "gov.status": out.data = {
+          modes: govCore.MODES, tiers: govCore.TIERS,
+          stages: govVerify.STAGES, channels: govP2.CHANNELS,
+          sites: SITE_STATS, endpoints: Object.keys(govHost.API_ENDPOINTS),
+          host: hostApi.getStats(), channelRev: govChannel.readAll().rev,
+          apiChannel: apiChannel.status(),
+          policyEpoch: policyTransition.state().policyEpoch,
+          stopEpoch: STOP.epoch, stopLike: policyTransition.isStopLike(),
+        }; break;
+        case "gov.resolve": {
+          const mode = govCore.resolveMode({ teamMode: b.teamMode === true, maxMode: b.maxMode === true });
+          out.data = { mode, description: govCore.describeMode(mode),
+            enabled: govCore.enabledGovernance(mode),
+            tierA: govCore.isTierAEnabled(mode), tierB: govCore.isTierBEnabled(mode) };
+          break;
+        }
+        case "gov.route": out.data = govP0.routeByCost(b.task || {}); break;
+        case "gov.evidence.tag": out.data = govP0.tagEvidence(b.claim, b.meta || {}); break;
+        case "gov.evidence.admit": out.data = govP0.admissibleForSeal(b.items || []); break;
+        case "gov.redline": out.data = govP0.checkRedLine(b.action || {}); break;
+        case "gov.house": out.data = govP0.checkHouseRule(b.roster || {}, b.ctx || {}); break;
+        case "gov.rules": out.data = { sections: govRules.SECTIONS.length, markdown: govRules.render() }; break;
+
+        /* --- 站点能力表：226 站真实域名，未核实条目绝不生成选择器 --- */
+        case "gov.site.capabilities": out.data = { stats: SITE_STATS, table: govP2.SITE_CAPABILITIES }; break;
+        case "gov.site.gate": out.data = govP2.actionGate(b.req || {}); break;
+        case "gov.site.vision": out.data = govP2.assertVisionDecisionOnly(b.decision || {}); break;
+        case "site.stats": out.data = SITE_STATS; break;
+        case "site.table": out.data = buildCapabilityTable(); break;
+        case "site.lookup": out.data = lookupSite(b.domain || ""); break;
+        case "site.audit": out.data = assertNoInventedSelectors(buildCapabilityTable()); break;
+
+        /* --- 执行桥接 / 宿主取数 / 封驳 / 五段验收 / 文件信道 --- */
+        case "gov.plan": out.data = govExec.planExecution(b.req || {}); break;
+        case "gov.plan.run": {
+          if (guardStop()) break;
+          const plan = b.plan || govExec.planExecution(b.req || {});
+          /* api 通道的计划先过用户开关：关着就不执行，也不把请求发出去。 */
+          if (!apiChannel.isEnabled() && plan && plan.browser && plan.browser.channel === "host_data_api") {
+            out.data = { ok: false, code: USER_DISABLED, reason: "用户在扩展面板关闭了 API 通道", results: [] };
+            break;
+          }
+          /* 开关是唯一决定权：开着才给 hostApi 一个 enabled 实例；
+             关着沿用常驻的 enabled:false 实例（runPlan 会拿到 disabled）。 */
+          const planHostApi = apiChannel.isEnabled() ? govHost.createHostDataApi({ enabled: true }) : hostApi;
+          out.data = await govExec.runPlan(plan, { hostApi: planHostApi });
+          break;
+        }
+        case "gov.host.fetch": {
+          if (guardStop()) break;
+          /* 用户开关是**硬上限**：关着的时候，调用方传 enabled:true 也不放行。
+             `enabled` 参数保留（老调用方还在传），但已不具备开启能力。 */
+          if (!apiChannel.isEnabled()) {
+            out.data = {
+              ok: false, code: USER_DISABLED, data: null, evidence: null, elapsedMs: 0,
+              reason: "用户在扩展面板关闭了 API 通道；可在扩展图标 → API 通道开关中开启",
+            };
+            break;
+          }
+          const api = govHost.createHostDataApi({ enabled: true });
+          out.data = await api.fetchSiteData(b.req || {});
+          break;
+        }
+        case "gov.host.stats": out.data = hostApi.getStats(); break;
+
+        /* --- API 通道用户开关（与控制台面板/扩展弹窗共用同一份状态） --- */
+        case "api.channel.status": out.data = apiChannel.status(); break;
+        case "api.channel.set": {
+          /* 只读动作不拦急停，写开关也不拦：急停管"不再执行"，用户此刻更需要能关掉对外取数。 */
+          const r = apiChannel.setEnabled(b.enabled === true, { by: "panel" });
+          try { log(`[api-channel] 控制台开关 → ${r.enabled ? "开" : "关"}（persisted=${r.persisted}）`); } catch {}
+          out.data = r;
+          break;
+        }
+        case "gov.seal.review": out.data = await sealReview.reviewPlan(b.plan || {}, b.findings || []); break;
+        case "gov.seal.context": out.data = govSeal.buildContextBag(b.req || {}); break;
+        case "gov.verify.stage": out.data = govVerify.checkStage(b.stage, b.observed || []); break;
+        case "gov.verify.lite": out.data = govVerify.verifyLite(b.evidence || {}); break;
+        case "gov.verify.claim": out.data = govVerify.claimDone(b.req || {}); break;
+        case "gov.channel.read": out.data = govChannel.readAll(); break;
+        case "gov.channel.commit": { if (guardStop()) break; out.data = govChannel.commit(b.patch || {}, b.expectedRev); break; }
+        case "gov.channel.dispatch": { if (guardStop()) break; out.data = govChannel.writeDispatch(b.packet || {}, b.expectedRev); break; }
+        case "gov.channel.repair": { if (guardStop()) break; out.data = govChannel.appendRepair(b.entry || {}, b.expectedRev); break; }
+        case "gov.channel.cost": out.data = govChannel.broadcastCost(b.messages || [], b.members || []); break;
+
+        /* --- 策略变更优雅收敛：与带外急停分路，绝不 bumpEpoch --- */
+        case "policy.kinds": out.data = POLICY_CHANGE_KINDS; break;
+        case "policy.phases": out.data = POLICY_PHASES; break;
+        case "policy.state": out.data = { ...policyTransition.state(), stopEpoch: STOP.epoch, stopLike: policyTransition.isStopLike() }; break;
+        case "policy.propose": out.data = policyTransition.propose(b.change || {}); break;
+        case "policy.notice": out.data = drainPlan(b.change || {}); break;
+        case "policy.guard": out.data = assertSeparateFromStop(b.change || {}); break;
+        case "policy.checkpoint": { if (guardStop()) break; out.data = policyTransition.checkpoint(b.ticketId, b.snapshot ?? null); break; }
+        case "policy.quiesce": { if (guardStop()) break; out.data = policyTransition.quiesce(b.ticketId, b.outcome || "clean"); break; }
+        case "policy.commit": { if (guardStop()) break; out.data = policyTransition.commit(); break; }
+        case "policy.rollback": out.data = policyTransition.rollback(b.reason || ""); break;
+        case "policy.reject": out.data = policyTransition.reject(b.reason || ""); break;
+        case "policy.stats": out.data = policyTransition.stats(); break;
+
+        /* --- 离线记忆整理层（Dreaming）：只在空闲时跑，不可信输入不进记忆 --- */
+        case "dream.consolidate": out.data = dream.consolidate(b.entries || [], b.ctx || {}); break;
+        case "dream.verify": out.data = dream.verify(b.id, b.evidence || ""); break;
+        case "dream.index": out.data = dream.rebuildIndex(); break;
+        case "dream.preload": out.data = dream.preloadFor(b.topic || ""); break;
+        case "dream.stats": out.data = { ...dream.stats(), prefix: UNVERIFIED_PREFIX, quota: DEFAULT_QUOTA }; break;
+        case "dream.snapshot": out.data = dream.snapshot(); break;
+
+        /* --- 动态记忆预算（仅 Max 模式；普通模式零开销） --- */
+        case "budget.modes": out.data = BUDGET_MODES; break;
+        case "memory.budget": out.data = budgetFor(b.mode || "normal", b.opts || {}); break;
+        case "memory.setMode": out.data = memoryBudget.setMode(b.mode || "normal"); break;
+        case "memory.allocate": out.data = memoryBudget.allocate(b.entries || [], b.ctx || {}); break;
+        case "memory.observe": out.data = memoryBudget.observe(b.usage); break;
+        case "memory.stats": out.data = memoryBudget.stats(); break;
+        case "memory.snapshot": out.data = memoryBudget.snapshot(); break;
+
+        /* --- 插件生成物闸门：三段式声明式验收 + restart-required 不算成功 --- */
+        case "artifact.codes": out.data = GATE_CODES; break;
+        case "artifact.validate": out.data = artifactGate.validate(b.artifact || {}, b.ctx || {}); break;
+        case "artifact.accept": { if (guardStop()) break; out.data = await artifactGate.accept(b.artifact || {}, b.ctx || {}); break; }
+        case "artifact.reverify": { if (guardStop()) break; out.data = await artifactGate.reverify(b.artifact || {}, b.ctx || {}); break; }
+        case "artifact.stats": out.data = artifactGate.stats(); break;
+
+        default: out = { ok: false, action: a, error: "unknown action" };
+      }
+    } catch (e) {
+      out = { ok: false, action: a, error: String(e?.message ?? e) };
+    }
+    send(res, 200, out);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/cmd") {
+    const body = await readBody(req);
+    /* 止血：命令通道原先绕过了 callToolRaw 的急停检查点，急停期间照样能写盘/起进程。 */
+    const gate = commandGate.check(body);
+    if (!gate.ok) { send(res, gate.httpStatus, gate.body); return; }
+    try {
+      if (!body.write && !body.launch && !body.openWith && !body.copy && !body.move && !body.rename) {
+        send(res, 400, { ok: false, error: "命令通道需要 write / openWith / launch / copy / move / rename 至少一项" });
+        return;
+      }
+      /* 危险闸门：硬闸（move/rename/copy+overwrite）+ 可配置 DANGER，统一走 commandChannelDanger。
+         注意：move/rename 的 args 无 command/path，白名单匹配不到 —— 永远会问，正是要的"难拦截"。 */
+      const d = commandChannelDanger(body);
+      if (d.danger && !isWhitelisted("CommandChannel", d.args)) {
+        const a = await waitApproval("windows", "CommandChannel", d.args);
+        if (!a.allow) {
+          send(res, 200, { ok: false, needConfirm: true, approved: false,
+            error: "命令通道操作已被拒绝：" + (a.reason || "用户未确认") + (d.reason ? `（${d.reason}）` : "") });
+          return;
+        }
+      }
+      if (!commandGate.verify(gate.cap)) {
+        send(res, 409, { ok: false, stopped: true, epoch: STOP.epoch, error: "签发后急停，命令未执行" });
+        return;
+      }
+      const result = await runCommandOp(body);
+      const stale = !commandGate.verify(gate.cap);
+      if (stale) {
+        /* 副作用已经发生（文件/进程不可回滚），所以只拒绝采纳结果并如实上报，
+           不假装"没执行"。这就是为什么入口 409 才是最关键的一道闸。 */
+        send(res, 409, { ok: false, stopped: true, epoch: STOP.epoch,
+          error: "执行期间急停：副作用可能已产生，结果不采纳" });
+        return;
+      }
+      noteLaunched(result);
+      logBus.write({ category: "tool", level: "info", epoch: STOP.epoch,
+        message: `命令通道：${Object.keys(body).filter((k) => ["write", "launch", "openWith", "copy", "move", "rename"].includes(k)).join(",")}` });
+      send(res, 200, {
+        ok: true, written: result.written, launched: result.launched,
+        copied: result.copied, moved: result.moved, renamed: result.renamed,
+      });
+    } catch (err) {
+      send(res, 200, { ok: false, error: String(err?.message ?? err) });
+    }
+    return;
+  }
+
+  /* 任务规划：判断一段任务描述该走「命令通道」还是「视觉循环」。
+   * 只做决策、不执行 —— 面板/上层可先问一嘴，再决定调 /api/act 还是跑视觉。
+   * 返回 { via:'command'|'vision', confidence, intent, reason, rule }。 */
+  if (req.method === "POST" && url.pathname === "/api/plan") {
+    const body = await readBody(req);
+    try {
+      const text = String(body.text || body.task || "");
+      if (!text.trim()) {
+        send(res, 400, { ok: false, error: "需要 text/task" });
+        return;
+      }
+      send(res, 200, await planTaskProbed(text, prober));
+    } catch (err) {
+      send(res, 200, { ok: false, error: String(err?.message ?? err) });
+    }
+    return;
+  }
+
+  /* 自由路由：桌面动作「优先命令通道，失败回落 GUI 模拟」。
+   * body.intent 可以是：
+   *   · 结构化对象 { op:'open'|'launch'|'write', app?, command?, filePath?, content?, args? }
+   *   · 或一句文本（"用 notepad 打开 a.txt"），由 freeTier.parseOpenIntent 解析
+   * 危险操作闸门复用 /api/cmd 的同款机制（DANGER_TOOLS / waitApproval）。 */
+  if (req.method === "POST" && url.pathname === "/api/act") {
+    const body = await readBody(req);
+    const gate = commandGate.check(body);
+    if (!gate.ok) { send(res, gate.httpStatus, gate.body); return; }
+    try {
+      /* mode:"auto"：先分类再决定。能给命令通道做就做；做不了就明确回 via:'vision'，
+         让调用方去跑视觉循环，而不是在这里瞎猜一个命令。 */
+      const autoText = (body.mode === "auto" || body.auto === true)
+        ? String(body.text || body.task || (typeof body.intent === "string" ? body.intent : "")).trim()
+        : "";
+      if (autoText) {
+        const plan = await planTaskProbed(autoText, prober);
+        if (plan.via !== "command") {
+          send(res, 200, { ok: true, via: "vision", plan });
+          return;
+        }
+        body.intent = plan.intent;   // 命中高置信命令化，落到下面命令通道执行
+      }
+      const intent = typeof body.intent === "string"
+        ? freeTier.parseOpenIntent(body.intent)
+        : (body.intent || null);
+      if (!intent) {
+        send(res, 400, { ok: false, error: "需要 intent（结构化对象，或 '用 X 打开 Y' 文本）" });
+        return;
+      }
+      // 先算命令通道的操作体，做危险操作闸门（与 /api/cmd 同机制，含硬闸）
+      const cmdOp = freeTier.intentToCmdOp(intent);
+      const d = commandChannelDanger(cmdOp);
+      if (d.danger && !isWhitelisted("CommandChannel", d.args)) {
+        const a = await waitApproval("windows", "CommandChannel", d.args);
+        if (!a.allow) {
+          send(res, 200, { ok: false, needConfirm: true, approved: false,
+            error: "命令通道操作已被拒绝：" + (a.reason || "用户未确认") + (d.reason ? `（${d.reason}）` : "") });
+          return;
+        }
+      }
+      if (!commandGate.verify(gate.cap)) {
+        send(res, 409, { ok: false, stopped: true, epoch: STOP.epoch, error: "签发后急停，未执行" });
+        return;
+      }
+      const r = await freeTier.route(intent);
+      if (!commandGate.verify(gate.cap)) {
+        send(res, 409, { ok: false, stopped: true, epoch: STOP.epoch,
+          error: "执行期间急停：副作用可能已产生，结果不采纳" });
+        return;
+      }
+      noteLaunched(r.result);
+      send(res, 200, {
+        ok: true, via: r.via, intent: r.intent, result: r.result,
+        commandError: r.commandError || null,
+      });
+    } catch (err) {
+      send(res, 200, { ok: false, error: String(err?.message ?? err) });
+    }
+    return;
+  }
+
+  /* 自动化：录制 / 停止 / 状态 / 列表 / 回放 */
   if (req.method === "POST" && url.pathname === "/api/wf") {
     const body = await readBody(req);
     try {
@@ -4745,6 +9572,7 @@ async function handle(req, res) {
                   if (pp) {
                     const p = captureWinAt(pp[0], pp[1])
                       .then((anchor) => { if (anchor) step.win = anchor; })
+                      .then(() => captureTreeRef(step))
                       .catch(() => {});
                     REC.pendingWinCaps.push(p);
                   }
@@ -4774,6 +9602,7 @@ async function handle(req, res) {
           if (pp) {
             const p = captureWinAt(pp[0], pp[1])
               .then((anchor) => { if (anchor) step.win = anchor; })
+              .then(() => captureTreeRef(step))
               .catch(() => {});
             REC.pendingWinCaps.push(p);
           }
@@ -4796,7 +9625,10 @@ async function handle(req, res) {
             break;
           }
           /* 与 /api/wf 的 save 一致走原子写：录制产物正是最容易被强杀打断的
-             那类写入，写坏一半 = 用户录了半天的工作流打不开。 */
+             那类写入，写坏一半 = 用户录了半天的自动化打不开。 */
+          /* 录制会**静默覆盖**同名配方 —— 这正是「改坏没有回头路」最常发生的地方，
+             所以覆盖前留一版。 */
+          try { snapshotRecipeVersion(name, { note: "录制覆盖前自动留档", source: "rec-stop" }); } catch {}
           writeJsonAtomic(wfFile(name), { name, savedAt: Date.now(), gap: 700, steps });
           REC.steps = [];
           /* 顺带看一眼录制里有没有「同一段操作重复了 k 次」。
@@ -4829,25 +9661,330 @@ async function handle(req, res) {
         case "save": {
           const wf = Object.assign({}, body.workflow || {});
           wf.name = wf.name || body.name;
-          if (!wf.name) { send(res, 200, { ok: false, error: "缺少工作流名称" }); break; }
+          if (!wf.name) { send(res, 200, { ok: false, error: "缺少自动化名称" }); break; }
           try {
             fsSync.mkdirSync(WORKFLOW_DIR, { recursive: true });
+            /* 先留旧版本，再覆盖 —— 顺序不能反，反了就是把新内容存成快照。 */
+            let rev = null;
+            try {
+              const next = JSON.stringify(wf, null, 2) + "\n";   // 与 writeJsonAtomic 完全同款
+              const v = snapshotRecipeVersion(wf.name, { note: String(body.note || "保存前自动留档"), source: "save", next });
+              rev = v.ok && !v.skipped ? v.rev : null;
+            } catch { /* 留档失败不阻断保存：能存下来优先 */ }
             writeJsonAtomic(wfFile(wf.name), wf);
-            send(res, 200, { ok: true, name: wf.name, steps: (wf.steps || []).length });
+            send(res, 200, { ok: true, name: wf.name, steps: (wf.steps || []).length, rev });
           } catch (e) {
             send(res, 200, { ok: false, error: "保存失败：" + (e?.message ?? e) });
           }
           break;
         }
 
+        /* 人工回放也走唯一点火入口，只是 layer=manual（不去重、不冷却）。
+           返回契约保持 { ok, result }，面板 playWorkflow 不用改。 */
         case "play":
-          send(res, 200, { ok: true, result: await wfPlay(body.name, body) });
+          send(res, 200, { ok: true, result: await fireWorkflow({
+            name: body.name, layer: "manual", gap: body.gap, skipRead: body.skipRead === true,
+            /* approved：人工节点 id 列表。不传 = 全部未批准（fail-closed）。 */
+            approved: body.approved,
+          }) });
           break;
 
-        case "delete":
-          try { fsSync.unlinkSync(wfFile(body.name)); send(res, 200, { ok: true }); }
-          catch (e) { send(res, 200, { ok: false, error: "删除失败：" + (e?.message ?? e) }); }
+        /* 自动点火：热键（main.js）、扩展、外部脚本统一从这里进。 */
+        case "fire": {
+          const r = await fireWorkflow({
+            name: body.name, triggerId: body.triggerId || "",
+            layer: body.layer || "trigger", dedupeKey: body.dedupeKey || "",
+            gap: body.gap, skipRead: body.skipRead === true,
+            approved: body.approved,
+          });
+          if (!r.ok) { send(res, 200, { ok: false, code: r.code || "play-failed", run: r.run || null }); break; }
+          send(res, 200, { ok: true, runId: r.runId, ticketId: r.ticketId, result: r });
           break;
+        }
+
+        /* 执行历史：可观测性是账本的另一半，供面板/排障直接查。 */
+        case "runs":
+          send(res, 200, { ok: true,
+            runs: wfRuns.list({ limit: body.limit || 50, triggerId: body.triggerId || "",
+              status: body.status || "", reviewState: body.reviewState || "" }),
+            stats: wfRuns.stats() });
+          break;
+
+        /* 待复核队列：needs_review 的出口。没有它，用户永远不知道还剩几条没看。 */
+        case "review-queue":
+          send(res, 200, Object.assign({ ok: true },
+            wfRuns.reviewQueue({ scope: body.scope || "pending", limit: body.limit || 50 })));
+          break;
+
+        /* 标记已复核。注意它**不改判** —— status / verdict 原样保留，
+           只记"谁在什么时候看过、看完怎么认"。理由见 wfRunLedger 里那段注释：
+           一旦用人的判断覆盖 verdict，autoPolicy 就又拿主观结论当零退化样本了。 */
+        case "review": {
+          const r = wfRuns.markReviewed(String(body.runId || ""), {
+            by: body.by || "user", verdict: body.reviewVerdict || body.verdict || "accepted",
+            note: body.note || "",
+          });
+          send(res, 200, r.ok ? { ok: true, run: r.run } : { ok: false, error: r.error });
+          break;
+        }
+
+        case "unreview": {
+          const r = wfRuns.unreview(String(body.runId || ""));
+          send(res, 200, r.ok ? { ok: true, run: r.run } : { ok: false, error: r.error });
+          break;
+        }
+
+        /* 步级轨迹：运行级账本回答「跑完没有」，这里回答「断在第几步、为什么」。
+           一个运行一个 jsonl，按 runId 直接读，不扫全表。 */
+        case "trace":
+          send(res, 200, { ok: true, runId: String(body.runId || ""),
+            entries: wfTrace.read(String(body.runId || ""), body.limit || 500) });
+          break;
+
+        case "trace-runs":
+          send(res, 200, { ok: true, runs: wfTrace.listRuns(), stats: wfTrace.stats() });
+          break;
+
+        /* 配方版本：列出 / 取某一版 / 比对 / 回滚。
+           回滚本身也会先给"当前内容"留一版 —— 回滚必须是可再回滚的，
+           否则按错一次就彻底回不去，等于把一个坑换成另一个坑。 */
+        case "versions":
+          send(res, 200, { ok: true, name: String(body.name || ""),
+            items: wfRevs.list(wfSafeName(body.name)) });
+          break;
+
+        case "version-get": {
+          const v = wfRevs.get(wfSafeName(body.name), body.rev);
+          send(res, 200, v ? { ok: true, version: v, parsed: safeParse(v.body) }
+            : { ok: false, error: "版本不存在" });
+          break;
+        }
+
+        case "version-diff":
+          send(res, 200, wfRevs.diff(wfSafeName(body.name), body.from, body.to));
+          break;
+
+        case "version-rollback": {
+          const nm = String(body.name || "");
+          if (!nm) { send(res, 200, { ok: false, error: "缺少名称" }); break; }
+          const r = wfRevs.rollback(wfSafeName(nm), body.rev);
+          if (!r.ok) { send(res, 200, { ok: false, error: r.error }); break; }
+          try {
+            snapshotRecipeVersion(nm, {
+              note: `回滚到 rev ${r.rev} 前的自动留档`, source: "rollback",
+              next: JSON.stringify(r.parsed, null, 2) + "\n",
+            });
+            writeJsonAtomic(wfFile(nm), r.parsed);
+            send(res, 200, { ok: true, name: nm, rev: r.rev, steps: (r.parsed.steps || []).length });
+          } catch (e) {
+            send(res, 200, { ok: false, error: "回滚写入失败：" + (e?.message ?? e) });
+          }
+          break;
+        }
+
+        /* 编排图校验：存之前先照一遍结构，把环 / 悬空边 / 缺字段挡在保存口，
+           而不是等点到「运行」才炸。只校验，不执行。 */
+        case "graph-validate":
+          send(res, 200, validateGraph(body.graph));
+          break;
+
+        /* 判据建议：只读，不改配方。让人看见「这条为什么会需复核」，
+           并给一份能直接用的判据候选。 */
+        case "outcome-suggest": {
+          const nm = String(body.name || "");
+          let wf2 = null;
+          try { wf2 = JSON.parse(fsSync.readFileSync(wfFile(nm), "utf8")); }
+          catch { send(res, 200, { ok: false, error: "读不到自动化：" + nm }); break; }
+          const s = suggestOutcomes(wf2, { isReadOnly });
+          send(res, 200, { ok: true, name: nm, ...s });
+          break;
+        }
+
+        /* 界面证据候选：上次运行前后控件树新增了哪些行。
+           机器只负责取证 —— 哪一行算"成功提示"只有人知道，所以这里列候选、不写判据。 */
+        case "outcome-evidence": {
+          const nm = String(body.name || "");
+          if (!nm) { send(res, 200, { ok: false, error: "缺少名称" }); break; }
+          let runId = String(body.runId || "");
+          if (!runId) {
+            const lastRun = wfRuns.list({ limit: 300 }).find((r) => r.workflow === nm && r.status !== "running");
+            runId = lastRun ? lastRun.runId : "";
+          }
+          if (!runId) {
+            send(res, 200, { ok: false, error: "这条自动化还没有跑完过 —— 先跑一次，才谈得上「界面上多出了什么」" });
+            break;
+          }
+          let endEntry = null;
+          for (const e of wfTrace.read(runId, 2000)) if (e.t === "end") endEntry = e;
+          if (!endEntry) {
+            send(res, 200, { ok: false, error: "这次运行没有结束记录（还在跑，或轨迹已按 TTL 清理）" });
+            break;
+          }
+          const lines = Array.isArray(endEntry.evidenceLines) ? endEntry.evidenceLines : [];
+          send(res, 200, { ok: true, name: nm, runId, lines,
+            reason: String(endEntry.evidenceReason || (lines.length ? "" : "这次运行没有留下界面证据（可能没做探测）")) });
+          break;
+        }
+
+        /* 把选中的判据写进配方。和手动保存走同一条路：
+           先留版本快照再原子写，所以"写坏了"照样能回滚。 */
+        case "outcome-apply": {
+          const nm = String(body.name || "");
+          if (!nm) { send(res, 200, { ok: false, error: "缺少名称" }); break; }
+          let wf3 = null;
+          try { wf3 = JSON.parse(fsSync.readFileSync(wfFile(nm), "utf8")); }
+          catch { send(res, 200, { ok: false, error: "读不到自动化：" + nm }); break; }
+          const built = buildOutcome(
+            (Array.isArray(body.postconditions) ? body.postconditions : []).map((p) => ({ postcondition: p })),
+            { max: body.max },
+          );
+          if (!built.postconditions.length) {
+            send(res, 200, { ok: false, error: "没有可写入的有效判据（kind 必须是 tree_state / window_state / data_readback / effect_evidence）" });
+            break;
+          }
+          wf3.outcome = Object.assign({}, wf3.outcome || {}, { postconditions: built.postconditions });
+          try {
+            fsSync.mkdirSync(WORKFLOW_DIR, { recursive: true });
+            const next = JSON.stringify(wf3, null, 2) + "\n";
+            snapshotRecipeVersion(nm, { note: "写入判据前自动留档", source: "outcome-apply", next });
+            writeJsonAtomic(wfFile(nm), wf3);
+            send(res, 200, { ok: true, name: nm, postconditions: built.postconditions });
+          } catch (e) {
+            send(res, 200, { ok: false, error: "写入失败：" + (e?.message ?? e) });
+          }
+          break;
+        }
+
+        /* 断点查询：只读。面板据此决定「从断点续跑」这个按钮出不出。 */
+        case "checkpoint":
+          send(res, 200, Object.assign({ name: String(body.name || "") }, resumeStatusOf(body.name)));
+          break;
+
+        /* 回放前预检：动手之前先对着当前界面把锚点核一遍，别等跑废前四步才发现第 5 步没了。
+           返回里 ok 一律是「接口调用成功」，预检结论在 passed / summary / findings 里 ——
+           两个 ok 混用的话，面板会把"预检不通过"当成"请求失败"。 */
+        case "preflight": {
+          const nm = String(body.name || "");
+          if (!nm) { send(res, 200, { ok: false, error: "缺少名称" }); break; }
+          let wfp = null;
+          try { wfp = JSON.parse(fsSync.readFileSync(wfFile(nm), "utf8")); }
+          catch { send(res, 200, { ok: false, error: "读不到自动化：" + nm }); break; }
+          let snapText = null;
+          if (body.noSnapshot !== true) {
+            try { snapText = await getSnapshotText(8000); } catch { snapText = null; }
+          }
+          let rp = null;
+          try {
+            rp = preflightWf(wfp, snapText, {
+              fromIndex: Number(body.fromIndex) || 0,
+              workflows: wfList().map((x) => x.name),
+            });
+          } catch (e) {
+            send(res, 200, { ok: false, error: "预检执行失败：" + (e?.message ?? e) });
+            break;
+          }
+          const { ok: passed, ...rest } = rp;
+          send(res, 200, Object.assign(
+            { ok: true, name: nm, passed, summary: summarizePreflight(rp) }, rest));
+          break;
+        }
+
+        /* 断点续跑。安全门不过就明确拒绝并说明原因 ——
+           拒绝时绝不"退化成从头跑"：那会把做过的不可逆动作再做一遍，
+           正是这个功能存在的理由。 */
+        case "resume": {
+          const st = resumeStatusOf(body.name);
+          if (!st.ok || !st.resumable) {
+            send(res, 200, { ok: false, code: st.code || "not_resumable",
+              error: st.reason || "这条配方当前不能从断点续跑", checkpoint: st.checkpoint || null });
+            break;
+          }
+          const r = await fireWorkflow({
+            name: body.name, layer: "manual", gap: body.gap,
+            approved: body.approved, resumeFrom: st.nextIndex,
+          });
+          send(res, 200, { ok: !!r.ok, result: r,
+            resumedFrom: st.nextIndex, checkpoint: st.checkpoint || null });
+          break;
+        }
+
+        /* 升降级判据：每条自动化的样本数、退化计数、建议模式与理由。 */
+        case "policy":
+          send(res, 200, { ok: true,
+            items: wfList().map((w) => ({ name: w.name, ...policyFor(w.name) })),
+            triggers: triggers.map((t) => ({ id: t.id, workflow: t.workflow,
+              mode: t.mode === "observe" ? "observe" : "auto", locked: !!t.modeLocked, enabled: t.enabled !== false })) });
+          break;
+
+        case "policy-apply":
+          send(res, 200, { ok: true, transitions: applyPolicies() });
+          break;
+
+        /* 自动化 › 回收站：列表与手动清理（不在启动时偷偷删用户数据）。 */
+        case "trash":
+          send(res, 200, { ok: true, items: wfTrash.list() });
+          break;
+
+        case "purge":
+          send(res, 200, { ok: true, ...wfTrash.sweep({ ttlMs: body.ttlMs, max: body.max }) });
+          break;
+
+        /* 删除 = 移入回收站 + 停用引用它的触发器。
+         * 「输入删除两字」是通用词确认：只加摩擦不加信息，用户会背成肌肉记忆；
+         * 改成两个按钮的前提是把操作真正做成可逆的（撤销窗口 + 回收站）。
+         * 触发器必须一起停用：留着 enabled 的触发器指向已删的菜谱，
+         * 只会在半夜点火时抛「读不到自动化」，是最难查的一类悬空引用。 */
+        case "delete": {
+          /* 先查子流程引用：删掉被引用的配方，引用方要到运行时才炸。
+             不直接拒绝死 —— 两条一起删是合理需求，所以给 force 一条路，
+             但第一次必须先让人看清楚是谁在引用、在哪一步引用。 */
+          const referrers = subflowReferrersOf(body.name);
+          if (referrers.length && body.force !== true) {
+            send(res, 200, {
+              ok: false, code: "referenced", referrers,
+              error: "有配方还在调用它，删掉之后那些配方回放时会当场报错："
+                + referrers.map((x) => `「${x.name}」(${x.where.join("、")})`).join("；"),
+            });
+            break;
+          }
+          const key = wfSafeName(body.name);
+          const r = wfTrash.remove(key);
+          if (!r.ok) { send(res, 200, { ok: false, error: "删除失败：" + r.error }); break; }
+          let disabledTriggers = 0;
+          try {
+            for (const t of triggers) {
+              if (t && wfSafeName(t.workflow) === key && t.enabled !== false) {
+                t.enabled = false;
+                t.disabledBy = "wf-delete";   // 撤销只恢复这类，不误开用户手动关掉的
+                disabledTriggers++;
+              }
+            }
+            if (disabledTriggers) { saveTriggers(); armTriggers(); }
+          } catch (e) { console.log("[wf] 停用关联触发器失败：", e?.message ?? e); }
+          send(res, 200, { ok: true, name: r.name, trashId: r.trashId,
+            steps: r.steps, disabledTriggers, undoable: true });
+          break;
+        }
+
+        /* 撤销：从回收站移回，并把因这次删除而停用的触发器重新武装。 */
+        case "restore": {
+          const r = wfTrash.restore(body.trashId);
+          if (!r.ok) { send(res, 200, { ok: false, error: "撤销失败：" + r.error }); break; }
+          let enabledTriggers = 0;
+          try {
+            const key = wfSafeName(r.name);
+            for (const t of triggers) {
+              if (t && t.disabledBy === "wf-delete" && wfSafeName(t.workflow) === key) {
+                t.enabled = true;
+                delete t.disabledBy;
+                enabledTriggers++;
+              }
+            }
+            if (enabledTriggers) { saveTriggers(); armTriggers(); }
+          } catch (e) { console.log("[wf] 恢复关联触发器失败：", e?.message ?? e); }
+          send(res, 200, { ok: true, name: r.name, enabledTriggers });
+          break;
+        }
 
         default:
           send(res, 200, { ok: false, error: "未知 action：" + body.action });
@@ -4872,6 +10009,8 @@ async function handle(req, res) {
           if (!t.workflow) { send(res, 200, { ok: false, error: "缺少 workflow" }); break; }
           t.id = t.id || ("t" + Date.now().toString(36));
           t.enabled = t.enabled !== false;
+          /* 新触发器默认 observe（只记录不执行），攒够干净样本才由判据升 auto。 */
+          t.mode = t.mode === "auto" ? "auto" : "observe";
           triggers.push(t);
           saveTriggers();
           armTriggers();
@@ -4885,6 +10024,18 @@ async function handle(req, res) {
           armTriggers();
           send(res, 200, { ok: true });
           break;
+
+        /* 手动设定 observe / auto：默认加 modeLocked，系统不再自动改人的决定。 */
+        case "mode": {
+          const t = triggers.find((x) => x.id === body.id);
+          if (!t) { send(res, 200, { ok: false, error: "触发器不存在" }); break; }
+          t.mode = body.mode === "auto" ? "auto" : "observe";
+          t.modeLocked = body.locked !== false;
+          saveTriggers();
+          armTriggers();
+          send(res, 200, { ok: true, trigger: t });
+          break;
+        }
 
         case "toggle": {
           const t = triggers.find((x) => x.id === body.id);
@@ -4909,20 +10060,62 @@ async function handle(req, res) {
   }
 
   /* 急停开关：自动化跑飞时救命用。GET 也支持，方便热键/外部脚本直接打。 */
+  /* 急停收场清单（只读）：把 doStop 已经算好的四个数字 + 受影响工单 + 可续跑候选
+     一次性给面板。不新造数据、不编数，全部来自现有账本。 */
+  if (req.method === "GET" && url.pathname === "/api/stop/report") {
+    const all = ticketStore.list({ limit: 200 });
+    const open = ticketStore.list({ limit: 200, open: true });
+    const affected = all.filter((t) => t.stale || t.status === "aborted" || t.status === "stopped");
+    send(res, 200, {
+      ok: true,
+      stop: { on: STOP.on, epoch: STOP.epoch, at: STOP.at, reason: STOP.reason },
+      last: LAST_STOP_REPORT,
+      openTickets: open.length,
+      affected: affected.slice(0, 20).map((t) => ({
+        id: t.id, title: t.title, status: t.status, stale: !!t.stale,
+        reason: t.reason, endedAt: t.endedAt, epoch: t.epoch,
+      })),
+      /* 可续跑：被急停判陈旧但还没进终态的，resumeTicket 会认。 */
+      resumable: all.filter((t) => t.stale && !["done", "failed", "dropped", "aborted", "stopped"].includes(t.status))
+        .slice(0, 20).map((t) => ({ id: t.id, title: t.title, epoch: t.epoch })),
+    });
+    return;
+  }
   if (url.pathname === "/api/stop") {
     try {
-      let action = "status", reason = "";
+      let action = "status", reason = "", body = {};
       if (req.method === "POST") {
-        const body = await readBody(req);
-        action = body.action || "status";
-        reason = body.reason || "";
+        body = await readBody(req);
+        /* 兼容 query：`POST /api/stop?action=stop` 是很自然的手工调用方式，
+         * 原来只有 GET 认 query，POST 一律回 status ——
+         * 排查时按了没反应，会误以为"急停坏了"。 */
+        action = body.action || url.searchParams.get("action") || "status";
+        reason = body.reason || url.searchParams.get("reason") || "";
       } else {
         const q = url.searchParams.get("action");
         if (q) action = q;
       }
       if (action === "stop") send(res, 200, { ok: true, stop: doStop(reason) });
       else if (action === "resume") send(res, 200, { ok: true, stop: doResume() });
-      else send(res, 200, { ok: true, stop: { on: STOP.on, at: STOP.at, reason: STOP.reason } });
+      /* 11-07 简报 §3.4：策略变更与带外急停必须是两条不同路径。
+       * 这个分支只投递收敛通知，绝不调用 doStop / bumpEpoch，也不杀任何在途进程；
+       * 在途 ticket 由 /api/ops 的 policy.checkpoint → policy.quiesce → policy.commit 收尾。 */
+      else if (action === "policy-change" || action === "policy-propose") {
+        const change = {
+          id: String(body.id || body.policyId || url.searchParams.get("id") || ("policy-" + Date.now())),
+          kind: String(body.kind || url.searchParams.get("kind") || "rule"),
+          tickets: Array.isArray(body.tickets) ? body.tickets : String(url.searchParams.get("tickets") || "").split(",").filter(Boolean),
+          summary: String(body.summary || reason || ""),
+        };
+        const r = policyTransition.propose(change);
+        send(res, 200, { ok: r.ok, policy: r, stopEpoch: STOP.epoch,
+          stopLike: policyTransition.isStopLike(), note: "策略变更未触发急停；STOP.epoch 保持不变" });
+      }
+      else if (action === "policy-status") {
+        send(res, 200, { ok: true, policy: policyTransition.state(), stopEpoch: STOP.epoch,
+          stopLike: policyTransition.isStopLike() });
+      }
+      else send(res, 200, { ok: true, stop: { on: STOP.on, at: STOP.at, reason: STOP.reason, epoch: STOP.epoch } });
     } catch (err) {
       send(res, 200, { ok: false, error: String(err?.message ?? err) });
     }
@@ -4934,7 +10127,9 @@ async function handle(req, res) {
     try {
       if (req.method === "POST") {
         const body = await readBody(req);
-        const done = resolveApproval(body.id, !!body.allow, body.reason, body.remember);
+        const done = resolveApproval(body.id, !!body.allow, body.reason, body.remember, {
+          correction: body.correction, ticketId: body.ticketId, replan: !!body.replan,
+        });
         send(res, 200, { ok: done, error: done ? undefined : "确认项不存在或已超时" });
       } else {
         send(res, 200, {
@@ -4981,6 +10176,22 @@ async function handle(req, res) {
   }
 
   /* 危险清单管理：读 / 写 danger-tools.json */
+  /* 方案 D：运行时配置（面板「安全」页的「写操作人工确认」实体开关读写这里） */
+  if (url.pathname === "/api/runtime") {
+    try {
+      if (req.method === "POST") {
+        const body = await readBody(req);
+        if (typeof body.confirmWrites === "boolean") RUNTIME_CONF.confirmWrites = body.confirmWrites;
+        saveRuntimeConf();
+        console.log("[runtime] 写操作人工确认 =", RUNTIME_CONF.confirmWrites ? "开" : "关");
+      }
+      send(res, 200, { ok: true, confirmWrites: !!RUNTIME_CONF.confirmWrites });
+    } catch (err) {
+      send(res, 200, { ok: false, error: String(err?.message ?? err) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/danger") {
     try {
       if (req.method === "POST") {
@@ -5151,14 +10362,434 @@ async function handle(req, res) {
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/api/dispatch") {    const body = await readBody(req);
-    const id = startJob(
-      body.server ?? "workbuddy",
-      body.tool ?? "workbuddy_execute",
-      body.args ?? {},
-      body.timeoutMs ?? JOB_TIMEOUT_MS
-    );
-    send(res, 200, { ok: true, jobId: id });
+  if (req.method === "POST" && url.pathname === "/api/dispatch") {
+    const body = await readBody(req);
+    const server = body.server ?? "workbuddy";
+    const tool = body.tool ?? "workbuddy_execute";
+    /* 急停期间不再新建后台任务（STOP_EXEMPT 已移除 workbuddy_execute）。
+     * 这里**提前**拦并给出 409：否则会先返回一个 jobId、几十毫秒后才在流里报错，
+     * 面板上表现为"任务创建成功然后立刻失败"，比直接拒绝更难理解。 */
+    if (STOP.on && !stopExempt(server, tool)) {
+      /* stopped:true 是给面板的判别位：急停拒单**不是任务失败**，
+       * 面板据此跳过失败统计与人格失败台词，只提示"先恢复再发"。 */
+      send(res, 409, { ok: false, stopped: true, error: `已被急停（${STOP.reason || "手动"}，第 ${STOP.epoch} 代），不再新建任务`, epoch: STOP.epoch });
+      return;
+    }
+    /* 幂等（2026-11-05）：派新任务是最贵的一类副作用，重复派发等于账单翻倍。
+     * 调用方带 idempotencyKey 时：
+     *   · 这个 key 上次已经结算过 → 直接把它上次的 jobId 还回去，**不再新建**；
+     *   · 上次还没跑完（重复点击/超时重发）→ 409，让调用方等那一次，而不是并行再开一份；
+     *   · 没带 key → 保持原行为（不惩罚不传的人，但也就没有这层保护）。
+     * 这个 key 必须是"一次用户意图一个"，不能由服务端按参数哈希生成 ——
+     * 哈希会把"用户确实想再发一次同样的话"误判成重复。 */
+    /* 专家契约：派发口是最经济的一道闸 —— 在这里拒，比让一个只读专家
+     * 跑到工具层再被拒要好：省一次冷启动、省一次计费、日志里也只有一条。 */
+    const arbD = arbitrateExpert(body.expertId, {
+      server, tool,
+      readOnly: READ_ONLY_TOOLS.has(`${server}|${tool}`) || isReadOnly(server, tool),
+      nestedDepth: body.nestedDepth,
+    });
+    if (!arbD.ok) {
+      send(res, 403, { ok: false, code: arbD.reason, error: arbD.detail, expertId: String(body.expertId || "") });
+      return;
+    }
+    let receipt = null;
+    const ikey = String(body.idempotencyKey || "").trim();    if (ikey) {
+      const r = receipts.issue({ idempotencyKey: ikey, ticketId: String(body.ticketId || ""), effect: { server, tool } });
+      if (r.duplicate) {
+        const ex = r.existing || {};
+        if (ex.settled && ex.ok && ex.result && ex.result.jobId) {
+          send(res, 200, { ok: true, jobId: ex.result.jobId, epoch: STOP.epoch, duplicate: true, receiptId: r.receiptId });
+          return;
+        }
+        send(res, 409, {
+          ok: false, duplicate: true, inFlight: !ex.settled, receiptId: r.receiptId,
+          error: ex.settled ? "这次派发之前失败过，需要换个说法重发" : "同一件事已经在派发中，别重复点",
+          epoch: STOP.epoch,
+        });
+        return;
+      }
+      receipt = r;
+    }
+    /* 归因随单走：面板/调用方可以在派发时说明"这一单是谁路由出来的"，
+       记录到成本账上以后就能回答"哪条规则最贵"。不传也有兜底值。 */
+    const id = startJob(server, tool, body.args ?? {}, body.timeoutMs ?? JOB_TIMEOUT_MS, null, {
+      route: body.route,
+      ruleId: body.ruleId,
+      attempt: body.attempt,
+      /* 报告B 批次A：V-09 零 VLM / V-01 显式降级 / V-12 人类优先名额。
+         只认结构化标记与显式 'human'，其余值一律不透传（避免伪造优先级）。 */
+      zeroVlm: body.zeroVlm === true,
+      degraded: body.degraded === true,
+      degradeReasonCode: String(body.reasonCode || "").slice(0, 48),
+      priority: body.priority === "human" ? "human" : undefined,
+      guarded: body.guarded === true,
+    });
+    if (receipt) {
+      try { receipts.settle(receipt.receiptId, { ok: true, result: { jobId: id } }); } catch {}
+    }
+    send(res, 200, { ok: true, jobId: id, epoch: STOP.epoch, receiptId: receipt ? receipt.receiptId : "" });
+    return;
+  }
+
+  /* ================= 治理层接口（2026-11-03 新增） =================
+   * 这一组接口全是**只读优先 + 显式动作**：GET 拿状态，POST 必须带 action。
+   * 不做 REST 风格的隐式语义（PATCH 一张工单就顺手改了状态），
+   * 因为这里的每一条都会影响"停不停得下来"，显式比优雅重要。
+   */
+
+  // 只停这一单：面板每张任务卡上的单独刹车
+  if (req.method === "POST" && /^\/api\/job\/[^/]+\/abort$/.test(url.pathname)) {
+    const id = url.pathname.split("/")[3];
+    const body = await readBody(req).catch(() => ({}));
+    const r = abortJob(id, body?.reason);
+    send(res, r.ok ? 200 : 404, r);
+    return;
+  }
+
+  // 工单：列表 / 单品 / 动作（resume|stop）
+  if (req.method === "GET" && url.pathname === "/api/tickets") {
+    const limit = Number(url.searchParams.get("limit")) || 50;
+    send(res, 200, {
+      ok: true,
+      epoch: STOP.epoch,
+      summary: ticketStore.summary(),
+      items: ticketStore.list({ limit, open: url.searchParams.get("open") === "1" }),
+    });
+    return;
+  }
+  if (url.pathname.startsWith("/api/tickets/")) {
+    const rest = url.pathname.slice("/api/tickets/".length);
+    const tid = decodeURIComponent(rest.split("/")[0]);
+    const sub = rest.split("/")[1] || "";
+    if (sub === "trail" && req.method === "GET") {
+      const limit = Number(url.searchParams.get("limit")) || 200;
+      send(res, 200, { ok: true, ticketId: tid, trail: trajectory.read(tid, limit), checkpoint: trajectory.checkpoint(tid) });
+      return;
+    }
+    if (req.method === "GET") {
+      const t = ticketStore.get(tid);
+      if (!t) { send(res, 404, { ok: false, error: "工单不存在或已过保留期" }); return; }
+      /* 下钻一次给全：面板点开一张单，不该再打三四个请求才凑齐一屏。
+       * 四块内容都是内存账本（轨迹在内存里、成本在内存里），没有 IO。 */
+      send(res, 200, {
+        ok: true,
+        ticket: t,
+        checkpoint: trajectory.checkpoint(tid),
+        /* 同一单可能走过多次路由：逐次拆开才看得出钱花在哪一步。 */
+        cost: (() => { try { return { summary: costLedger.summary(tid), attempts: costLedger.attempts(tid), budget: costLedger.budgetStatus(tid) }; } catch { return null; } })(),
+        /* 人插手过几次、插在哪儿 —— 复盘时最先要看的就是这个。 */
+        control: (() => { try { return ticketCtl.events(tid, 20); } catch { return []; } })(),
+        trail: (() => { try { return trajectory.read(tid, Number(url.searchParams.get("trail")) || 60); } catch { return []; } })(),
+      });
+      return;
+    }
+    if (req.method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      if (body.action === "resume") {
+        const r = ticketStore.resumeTicket(tid);
+        if (r.ok) trajectory.append(tid, { type: "ticket.resumed", epoch: r.ticket.epoch });
+        send(res, r.ok ? 200 : 400, r);
+        return;
+      }
+      if (body.action === "stop") {
+        const cur = ticketStore.get(tid);
+        if (!cur) { send(res, 404, { ok: false, error: "工单不存在" }); return; }
+        /* 先记控制事件再改状态：反过来的话，状态一旦变成 stopped，
+         * 面板的"为什么停了"就只能显示一个终态，看不到是谁按的。 */
+        let ctl = null;
+        try { ctl = ticketCtl.control(tid, "stop", { reason: body.reason || "人工停止" }); } catch {}
+        const r = ticketStore.transition(tid, "stopped", { expectRev: cur.rev, reason: body.reason || "人工停止" });
+        if (ctl && ctl.ok) trajectory.append(tid, { type: "control.stop", epoch: STOP.epoch, reason: body.reason || "人工停止" });
+        send(res, r.ok ? 200 : 400, { ...r, control: ctl && ctl.event ? ctl.event : null });
+        return;
+      }
+      /* 纠正 / 换思路：都要求带一句说明 —— 空指令等于没插手，只会在执行层留下一条噪音。 */
+      if (body.action === "correct" || body.action === "rethink") {
+        const t = ticketStore.get(tid);
+        if (!t) { send(res, 404, { ok: false, error: "工单不存在" }); return; }
+        const r = ticketCtl.control(tid, body.action, { text: body.text });
+        if (r.ok) {
+          trajectory.append(tid, { type: "control." + body.action, epoch: STOP.epoch, text: String(body.text || "").slice(0, 200) });
+        }
+        send(res, r.ok ? 200 : 400, r);
+        return;
+      }
+      send(res, 400, { ok: false, error: "action 只能是 resume / stop / correct / rethink" });
+      return;
+    }
+  }
+
+  // 成本：总账 / 按工单 / 按路由归因 / 明细
+  if (req.method === "GET" && url.pathname === "/api/cost") {
+    const ticketId = url.searchParams.get("ticket");
+    if (ticketId) {
+      send(res, 200, {
+        ok: true,
+        summary: costLedger.summary(ticketId),
+        /* 同一单可能走了多次路由（Fast Path 失败再降级），逐次拆开才看得清钱花在哪一步 */
+        attempts: costLedger.attempts(ticketId),
+        budget: costLedger.budgetStatus(ticketId),
+        rows: costLedger.list({ ticketId, limit: 50 }),
+      });
+      return;
+    }
+    send(res, 200, {
+      ok: true,
+      totals: costLedger.totals(),
+      byTicket: costLedger.byTicket(20),
+      /* 归因：哪条规则/哪个通道在烧钱。这是开并发前唯一能拦住"线性放大账单"的判据。 */
+      byRoute: costLedger.byRoute(20),
+      budgets: costLedger.budgets(),
+      pricing: { note: "USD / 百万 token；CLI 未回吐 usage 时按文本长度估算，estimated=true", table: {
+        "deepseek-v4-pro": costLedger.priceOf("deepseek-v4-pro"),
+        "deepseek-v4": costLedger.priceOf("deepseek-v4"),
+      } },
+    });
+    return;
+  }
+  /* 大附件采样计划（只算，不读文件）。
+   * 面板在用户拖进大文件时问一句"这大概要花多少"，避免整份塞进模型把账单烧穿。
+   * 纯计算、零 IO —— 所以可以放在这个位置，跟其他只读接口并列。 */
+  if (req.method === "POST" && url.pathname === "/api/attach/plan") {
+    const b = await readBody(req).catch(() => ({}));
+    try {
+      const plan = attachPlanFor(b);
+      send(res, 200, { ok: true, ...plan, verdict: attachVerdict(plan) });
+    } catch (err) {
+      send(res, 200, { ok: false, error: String(err?.message ?? err) });
+    }
+    return;
+  }
+
+  /* 能力清单（急停豁免白名单）整表。面板用它解释「急停了这个按钮为什么还能点」，
+   * 也用它做"新增豁免需三条同时满足"的展示。
+   * 顺带把"这次急停期间到底有哪些工具被拦"算出来给面板，省得面板自己推断分支。 */
+  if (req.method === "GET" && url.pathname === "/api/capabilities") {
+    const rows = capabilityTable();
+    send(res, 200, {
+      ok: true,
+      stopped: STOP.on,
+      epoch: STOP.epoch,
+      count: rows.length,
+      exempt: rows.filter((r) => r.stopExempt).map((r) => r.key),
+      rows,
+      /* 文件位置给面板一个"去看细节"的入口，不把整篇 md 塞进 JSON。 */
+      doc: "docs/capabilities.md",
+    });
+    return;
+  }
+
+  /* 应用能力矩阵自检（报告A §4.3）：列出哪些应用能直接搜、哪些只能唤起。
+     只读、不执行任何动作；深链白名单刻意留空，新增条目必须附实测记录。
+     继承统一 token 鉴权，不进 PUBLIC_PATHS。 */
+  if (req.method === "GET" && url.pathname === "/api/app-matrix") {
+    const rows = appMatrix();
+    const probe = url.searchParams.get("q");
+    /* 报告A §4.2：只有用户显式说「用客户端」才给 clientAction，
+       面板据此决定唤起还是只写剪贴板；默认解析 probe 不受影响。 */
+    const clientAction = probe ? resolveClientAction(probe) : null;
+    send(res, 200, {
+      ok: true,
+      schemaVersion: 2,
+      count: rows.length,
+      appCount: APP_COUNT,
+      confidenceGate: CONFIDENCE_GATE,
+      deepLinks: DEEP_LINKS,
+      deepLinkNote: "只放实测通过且带搜索语义的项；本机实测 0 条，刻意留空",
+      deepLinkAudit: deepLinkAudit(),
+      launchable: Object.keys(LAUNCH_EVIDENCE),
+      rows,
+      /* q 用于「以后装了新客户端，跑一次就知道能不能用，不用改代码试错」。 */
+      ...(probe ? { probe: resolveAppAction(probe) } : {}),
+      /* 复合网页指令（搜索 X 并进入其官网）：关键词与搜索 URL 都由这里给，
+         面板不再自己拼，免得出现「浏览器 湖南大学并进入其官网」这种脏 query。 */
+      ...(probe ? { landing: resolveWebLanding(probe) } : {}),
+      ...(clientAction ? { clientAction } : {}),
+    });
+    return;
+  }
+
+  /* 报告A §五 P1：客户端唤起。只接受 appId，exe/args 一律由静态能力表决定。
+     渲染层不许传路径/命令/参数，杜绝这条接口退化成任意执行入口。
+     无参数启动是硬约束（报告 §2.2：带参数被 Node CLI 拒绝）。
+     fire-and-forget：不等待窗口出现，也不谎报「已打开」。 */
+  if (req.method === "POST" && url.pathname === "/api/app-launch") {
+    const b = await readBody(req).catch(() => ({}));
+    const injected = ["exe", "path", "command", "cmd", "args", "argv", "filePath", "url"]
+      .filter((k) => Object.prototype.hasOwnProperty.call(b || {}, k));
+    if (injected.length) {
+      send(res, 400, { ok: false, launched: false, error: "app-launch 只接受 appId", rejected: injected });
+      return;
+    }
+    const p = planClientLaunch(String((b && b.appId) || ""));
+    if (!p.ok) {
+      send(res, 200, { ok: false, launched: false, ...p });
+      return;
+    }
+    if (!fsSync.existsSync(p.exe)) {
+      send(res, 200, {
+        ok: false, launched: false, appId: p.appId, reasonCode: "exe-not-found",
+        hint: "实测登记的 exe 路径当前不存在，不猜替代路径、不降级去拼协议",
+      });
+      return;
+    }
+    try {
+      const child = spawn(p.exe, p.args, { detached: true, stdio: "ignore", windowsHide: false });
+      child.once("error", (e) => log("[app-launch] 唤起失败:", p.appId, String(e && e.message || e)));
+      child.unref();
+      send(res, 200, {
+        ok: true, launched: "fire-and-forget", appId: p.appId, args: p.args,
+        evidence: p.evidence,
+        note: "已发起无参数唤起；不等待窗口出现，也不谎报已打开",
+      });
+    } catch (err) {
+      send(res, 200, { ok: false, launched: false, appId: p.appId, reasonCode: "spawn-failed", error: String(err?.message ?? err) });
+    }
+    return;
+  }
+
+  /* 工单预算：只记账侧判定，不替执行层决定停不停（停手是 ticketControl 的权力）。 */
+  if (req.method === "POST" && url.pathname === "/api/cost/budget") {
+    const b = await readBody(req).catch(() => ({}));
+    const id = String(b.ticketId || "");
+    if (!id) { send(res, 400, { ok: false, error: "需要 ticketId" }); return; }
+    if (b.action === "clear") { send(res, 200, { ok: true, ...costLedger.setBudget(id, 0) }); return; }
+    const r = costLedger.setBudget(id, b.usd);
+    send(res, r.ok ? 200 : 400, { ...r, status: r.ok ? costLedger.budgetStatus(id) : null });
+    return;
+  }
+
+  // 发件箱：看有没有卡住 / 重发 / 丢弃
+  if (req.method === "GET" && url.pathname === "/api/outbox") {
+    send(res, 200, { ok: true, stats: outbox.stats(), rows: outbox.list({ limit: Number(url.searchParams.get("limit")) || 50, status: url.searchParams.get("status") || "" }) });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/outbox") {
+    const body = await readBody(req).catch(() => ({}));
+    if (body.action === "pump") { send(res, 200, { ok: true, ...(await outbox.pump()) }); return; }
+    if (body.action === "retry") { send(res, 200, outbox.retry(body.id)); return; }
+    if (body.action === "drop") { send(res, 200, outbox.drop(body.id, body.reason)); return; }
+    send(res, 400, { ok: false, error: "action 只能是 pump / retry / drop" });
+    return;
+  }
+
+  /* GUI 独占锁：桌面 Agent 的键鼠/焦点/剪贴板是全局单例，
+   * 同一时刻只允许一条链路持有。租约到期自动释放，用户物理输入无条件让路。 */
+  if (req.method === "GET" && url.pathname === "/api/gui-lock") {
+    send(res, 200, { ok: true, ...guiLock.status(), epoch: STOP.epoch });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/gui-lock") {
+    const body = await readBody(req).catch(() => ({}));
+    const st = guiLock.status();
+    if (body.action === "acquire") { send(res, 200, guiLock.acquire({ owner: body.owner, ttlMs: body.ttlMs, epoch: STOP.epoch, meta: body.meta })); return; }
+    if (body.action === "renew") { send(res, 200, guiLock.renew(body.token, body.ttlMs)); return; }
+    if (body.action === "release") { send(res, 200, guiLock.release(body.token, body.reason)); return; }
+    if (body.action === "yield") { send(res, 200, guiLock.yieldByUser(body.reason || "user-input")); return; }
+    if (body.action === "force") { send(res, 200, guiLock.forceRelease(body.reason)); return; }
+    send(res, 400, { ok: false, error: "action 只能是 acquire / renew / release / yield / force", current: st });
+    return;
+  }
+
+  /* 派发器：**只做决策，不执行**。
+   * 现在的行为与改造前一致（没有专家 → fallback 单路）。
+   * 这条接口的意义是：以后接"派发者专家团"时，面板与桥都读同一份计划，
+   * 不会出现"面板判一次、桥里再判一次"的两套真相。 */
+  if (req.method === "GET" && url.pathname === "/api/experts") {
+    send(res, 200, {
+      ok: true,
+      experts: dispatcher.list(),
+      threshold: dispatcher.threshold,
+      maxFanout: dispatcher.maxFanout,
+      note: "注册专家用 POST /api/experts；执行仍由 /api/dispatch 统一发起",
+    });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/experts") {
+    const body = await readBody(req).catch(() => ({}));
+    try {
+      if (body.action === "unregister") { send(res, 200, { ok: dispatcher.unregister(body.id) }); return; }
+      // 注意：这里只接受**声明式**专家（关键字 + 路由），不接受函数体。
+      // 从 HTTP 收一段可执行代码等于开了个远程后门，这个桥本来就是为了防这个才用令牌的。
+      if (!body.id) { send(res, 400, { ok: false, error: "缺少 id" }); return; }
+      const words = Array.isArray(body.keywords) ? body.keywords : [];
+      const e = {
+        id: String(body.id),
+        name: String(body.name || body.id),
+        kind: body.kind === "team" ? "team" : (body.kind === "dispatcher" ? "dispatcher" : "expert"),
+        route: body.route || "workbuddy",
+        policy: body.policy === "parallel" ? "parallel" : "serial",
+        members: Array.isArray(body.members) ? body.members.map(String) : [],
+        match: words.length ? keywordsMatcher(words) : () => 0,
+        plan: Array.isArray(body.assignments) && body.assignments.length
+          ? () => ({ assignments: body.assignments })
+          : undefined,
+      };
+      send(res, 200, { ok: true, expert: dispatcher.register(e) });
+    } catch (err) {
+      send(res, 400, { ok: false, error: String(err?.message ?? err) });
+    }
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/route") {
+    const body = await readBody(req).catch(() => ({}));
+    const plan = dispatcher.route({
+      text: body.text,
+      routeHint: body.routeHint || "auto",
+      attachments: body.attachments,
+      epoch: STOP.epoch,
+      budget: body.budget,
+    }, { dryRun: body.dryRun !== false });
+    send(res, 200, { ok: true, plan });
+    return;
+  }
+
+  /* Worker 池：观测 + 开关。
+   * 打开它是有代价的（排队、可能让后台任务晚几十秒），所以做成显式动作而不是配置项自动生效。 */
+  if (req.method === "GET" && url.pathname === "/api/pool") {
+    send(res, 200, { ok: true, enabled: poolEnabled, ...pool.status() });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/pool") {
+    const body = await readBody(req).catch(() => ({}));
+    if (body.action === "enable") {
+      /* 急停期间不允许靠"开池"绕过去：池的 halted 就是急停的下游，
+       * 在这里 resume 等于给刹车开了个后门。 */
+      if (STOP.on) {
+        send(res, 409, { ok: false, error: `已被急停（第 ${STOP.epoch} 代），先恢复再开池`, epoch: STOP.epoch });
+        return;
+      }
+      poolEnabled = true;
+      pool.resume();
+      pool.setMaxWorkers(body.maxWorkers || pool.maxWorkers);
+      send(res, 200, { ok: true, enabled: true, ...pool.status() });
+      return;
+    }
+    if (body.action === "disable") {
+      poolEnabled = false;
+      send(res, 200, { ok: true, enabled: false, ...pool.status(), note: "已在跑的任务不受影响；新任务恢复为直接执行" });
+      return;
+    }
+    if (body.action === "max") { send(res, 200, { ok: true, ...pool.setMaxWorkers(body.maxWorkers) }); return; }
+    if (body.action === "halt") { send(res, 200, { ok: true, ...pool.halt(body.reason) }); return; }
+    if (body.action === "resume") { send(res, 200, { ok: true, ...pool.resume() }); return; }
+    send(res, 400, { ok: false, error: "action 只能是 enable / disable / max / halt / resume" });
+    return;
+  }
+
+  /* 看门狗：**只报告不动手**。tick 可以手动触发，便于面板上"现在看一眼"。 */
+  if (req.method === "GET" && url.pathname === "/api/watchdog") {
+    send(res, 200, { ok: true, ...watchdog.status() });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/watchdog") {
+    const body = await readBody(req).catch(() => ({}));
+    if (body.action === "start") { send(res, 200, { ok: true, ...watchdog.start(body.intervalMs || 60000) }); return; }
+    if (body.action === "stop") { send(res, 200, { ok: true, ...watchdog.stop() }); return; }
+    if (body.action === "tick") { send(res, 200, { ok: true, result: watchdog.tick() }); return; }
+    if (body.action === "sweep") { send(res, 200, { ok: true, removed: trajectory.sweep() }); return; }
+    send(res, 400, { ok: false, error: "action 只能是 start / stop / tick / sweep" });
     return;
   }
 
@@ -5236,6 +10867,73 @@ async function handle(req, res) {
     return;
   }
 
+  /* 站名 → 官网地址。「打开湖南大学官网」这类请求如果只能落到搜索结果页，
+     用户还得自己点第一条 —— 那不算完成任务。
+     实测（2026-11-05）Bing 的 RSS 输出稳定且快（~120-300ms）。
+     注意：不能取"第一条"，见 resolveSite 上面的注释（「湖南省官网」8/8 是 SEO 农场）。 */
+  if (req.method === "GET" && url.pathname === "/api/resolve-site") {
+    const q = String(url.searchParams.get("q") || "").trim().slice(0, 60);
+    if (!q) { send(res, 200, { ok: false, error: "缺少 q" }); return; }
+    const now = Date.now();
+    const hit = siteCache.get(q);
+    const ttl = hit && hit.url ? SITE_CACHE_MS : SITE_MISS_CACHE_MS;
+    if (hit && now - hit.at < ttl) {
+      send(res, 200, hit.url
+        ? { ok: true, url: hit.url, confidence: hit.confidence, source: hit.source || "cache", cached: true }
+        : { ok: false, error: "没解析到结果", cached: true, confidence: 0 });
+      return;
+    }
+    /* 第一顺位：本地站点库（书签 + 历史 + 上次确认过的结果）。
+       这是唯一"零猜测"的来源 —— 你打开过的站，地址就是那个。 */
+    let lib = null;
+    try { lib = await siteLibrary.lookup(q); } catch (err) { log("[resolve-site] 本地库查询失败：", err?.message ?? err); }
+    if (lib && lib.url) {
+      siteCache.set(q, { url: lib.url, at: now, confidence: lib.confidence, source: lib.source });
+      send(res, 200, { ok: true, url: lib.url, confidence: lib.confidence, source: lib.source, title: lib.title });
+      return;
+    }
+    let out = { url: "", tried: [] };
+    try {
+      out = await resolveSite(q);
+    } catch (err) {
+      log("[resolve-site] 解析异常：", err?.message ?? err);
+    }
+    /* 解析器没给出足够确定的答案时，最后试一次"这个名字是不是本身就是域名"。 */
+    if (!out.url || (out.confidence || 0) < 0.8) {
+      try {
+        const probe = await probeDomainAlias(siteCore(q) || q);
+        if (probe && probe.confidence >= 0.8) {
+          log(`[resolve-site] 域名命中 ${JSON.stringify(q)} → ${probe.url}（DNS ${probe.host}，HTTP ${probe.status}）`);
+          out = { url: probe.url, confidence: probe.confidence, source: "dns", tried: out.tried };
+        }
+      } catch (err) {
+        log("[resolve-site] 域名探针失败：", err?.message ?? err);
+      }
+    }
+    /* 只有"够确定"的结果才写进学习库 —— 把 0.7 分的猜测记成"以后都这么开"，就是污染的起点。 */
+    if (out.url && (out.confidence || 0) >= 0.8) siteLibrary.learn(q, out.url);
+    siteCache.set(q, { url: out.url || "", at: now, confidence: out.confidence || 0, source: out.source || "search" });
+    send(res, 200, out.url
+      ? { ok: true, url: out.url, confidence: out.confidence || 0, source: out.source || "search", via: out.tried ? out.tried.join("|") : "" }
+      : { ok: false, error: "没解析到结果", confidence: 0 });
+    return;
+  }
+
+  /* 本地站点库的状态（给设置面板 / 排查用）。 */
+  if (req.method === "GET" && url.pathname === "/api/site-library") {
+    send(res, 200, { ok: true, ...siteLibrary.stats() });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/wb-prewarm") {
+    /* 面板唤出 / 输入框聚焦时按需预热：把 CLI 那 2.5 秒启动成本挪到用户打字期间。
+       带 3 分钟 TTL，重复调用是空操作。 */
+    const warm = !!(cliPrewarmAt && Date.now() - cliPrewarmAt < PREWARM_TTL_MS);
+    prewarmCli(false);
+    send(res, 200, { ok: true, warm, at: cliPrewarmAt });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/wb-daemon") {
     const { enabled, waitMs } = await readBody(req);
     WB_DAEMON = !!enabled;
@@ -5295,8 +10993,14 @@ async function handle(req, res) {
       }
       const r = await ocrPng(png, String(body.lang || "zh-Hans-CN"));
       /* lines 给取词的"确认态"画高亮框用；没有坐标的老环境就是空数组，
-         那时取词退回"整块一次性拿走"，功能不残废。 */
-      send(res, 200, { ok: true, text: r.text, lines: r.lines });
+         那时取词退回"整块一次性拿走"，功能不残废。
+         V-11：OCR 是不可信输入。text/lines 保留原样（坐标锚定与展示要用），
+         但送进模型/记忆只准用 guarded.data —— 它已中和注入指令并包成 DATA-ONLY。 */
+      send(res, 200, {
+        ok: true, text: r.text, lines: r.lines, untrusted: true,
+        guarded: textGate.guard(String(r.text || ""), "ocr"),
+        guardNote: "text/lines 只供坐标锚定与展示；送进模型或记忆必须用 guarded.data",
+      });
     } catch (err) {
       send(res, 200, { ok: false, error: String(err?.message ?? err) });
     }
@@ -5608,13 +11312,33 @@ async function shutdown() {
      用户说的"电脑负担"很大一块就来自这里。 */
   try { disarmTriggers(); } catch {}
   try { clearInterval(asrReaper); asrReaper = null; } catch {}
+  /* 治理层的收尾：看门狗先停（别在关停过程中再报一堆"停滞"），
+   * 然后落盘工单/发件箱/成本账 —— 这三份是"下次启动还能说清上次发生了什么"的唯一依据。 */
+  try { watchdog.stop(); } catch {}
+  try { pool.halt("shutdown"); } catch {}
   killActiveProcs();
   try { daemonProc && daemonProc.kill(); } catch {}
   try { asrProc && asrProc.kill(); } catch {}
   try { rtProc && rtProc.kill(); } catch {}
   disposeAllSessions();
+  /* 阶段一收尾：会话按结束日归档，分类日志 / 事件流 / 各类账本落盘。
+     放在 killActiveProcs 之后、process.exit 之前，保证是同步写、不丢。 */
+  try { sessionMgr.finalize("before-quit"); } catch {}
+  try { logBus.flush(); logBus.close(); } catch {}
+  try { eventRecorder.flush(); } catch {}
+  try { artifactStore.flush?.(); } catch {}
+  try { spanCollector.flush(); } catch {}
+  try { observeRouter.flush(); } catch {}
+  try { receipts.flush?.(); } catch {}
+  /* 步骤收据也要在退出前落盘：否则重启后 6000 条幂等索引全丢，
+     同一步会被当成"没做过"再执行一次。 */
+  try { wfReceipts.flush?.(); } catch {}
+  try { ticketCtl.flush?.(); } catch {}
   // 干净退出后不该再留台账：下次启动会拿这批已不存在的 PID 去做回收核对
   try { writeChildReg([]); } catch {}
+  try { ticketStore.close(); } catch {}
+  try { outbox.close(); } catch {}
+  try { costLedger.close(); } catch {}
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500);
 }
@@ -5679,4 +11403,26 @@ server.listen(PORT, "127.0.0.1", async () => {
     log("[asr] 未安装本地识别（asr/venv 不存在），保持懒加载；需要离线识别可在面板一键安装");
   }
   startAsrIdleReaper();
+
+  /* 后台 CLI 预热：延迟 8s，错过启动高峰，也避开用户刚点开面板那一下。 */
+  try {
+    const pw = setTimeout(prewarmCli, 8000);
+    if (pw && typeof pw.unref === "function") pw.unref();
+  } catch {}
+  /* CLI 参数能力探测：与预热错开，避免同时拉起两个 CLI 抢 IO。 */
+  try {
+    const pb = setTimeout(probeCliFlags, 4000);
+    if (pb && typeof pb.unref === "function") pb.unref();
+  } catch {}
+
+  /* 看门狗：只判"有没有实质进展"，只报告不动手。ORB_WATCHDOG=0 可关。 */
+  if (process.env.ORB_WATCHDOG !== "0") {
+    try {
+      watchdog.start(Number(process.env.ORB_WATCHDOG_MS || 60000));
+      const removed = trajectory.sweep();
+      if (removed) log(`[trail] 启动清扫：删除 ${removed} 个过期轨迹文件`);
+    } catch (e) {
+      log("[watchdog] 启动失败:", e?.message ?? e);
+    }
+  }
 });

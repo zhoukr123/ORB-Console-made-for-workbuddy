@@ -108,6 +108,10 @@
     const base = finalText || "";
     const tail = lastPartial ? (base && !/\s$/.test(base) ? " " : "") + lastPartial : "";
     input.value = base + tail;
+    /* 报告B V-11：把本次 ASR 原文留在 dataset，send() 据此判断是否当作
+       不可信转写文本过闸（transcript）。用户手动改过输入框后 text 与这里
+       不再相等，就按用户主动输入处理，不误标。 */
+    input.dataset.orbAsrText = input.value;
     input.dispatchEvent(new Event("input"));   // 触发 autoGrow
     input.focus();
   }

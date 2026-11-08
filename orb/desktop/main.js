@@ -5,6 +5,7 @@ const {
 const path = require("node:path");
 const fs = require("node:fs");
 const net = require("node:net");
+const { pathToFileURL } = require("node:url");
 const { spawn, execFile } = require("node:child_process");
 /* 长期文件存储（录屏 / 历史 / 截图）与 MP4 收尾逻辑单独成文件：
    main.js 已经两千行，这两块的职责边界很清晰（磁盘目录管理、字节级容器修补），
@@ -23,6 +24,45 @@ const vault = require("./vault");
 /* 看视频（探底/抽帧/台词）。顶层 require 是安全的：模块内不碰 ready-gated API，
    net / app.getPath 全部在调用点取 —— 和 vault 同一条纪律。 */
 const vidx = require("./vidx");
+/* 产物目录算法（与 storage.js / 桥共用同一套 dayOf 与结构）。主进程主要用它给
+   桥未启动时的日志与产物算本地兜底日期。 */
+const AL = require("./artifactLayout.cjs");
+/* 设置 › 通道 › 检索工具：非敏感配置的归一化 / 脱敏 / 桥启动注入片段。
+   纯 CJS、零 electron 依赖，护栏由 orb/test/searchToolConfig.test.mjs 锁定。
+   API Key 不在这个模块里，仍在 vault 的密文字段中。 */
+const searchTool = require("./searchToolConfig.cjs");
+/* 检索工具「测试」按钮的纯逻辑：不碰 electron / vault，可被 node:test 真跑。 */
+const searchProbe = require("./searchProbe.cjs");
+
+/* 划词搜索统一经 orb 根的 searchUrl.mjs 生成 URL。它是 ESM，main.js 是 CJS，
+   故用顶层动态 import 预热，把两个函数缓存到模块级变量；import 完成前 handler 走回退实现。 */
+let cachedSearchEngineUrl = null;
+let cachedSearchUrl = null;
+import("../searchUrl.mjs")
+  .then((m) => {
+    cachedSearchEngineUrl = m.searchEngineUrl;
+    cachedSearchUrl = m.searchUrl;
+  })
+  .catch(() => {
+    cachedSearchEngineUrl = null;
+    cachedSearchUrl = null;
+  });
+
+/* 划词搜索用哪个引擎。默认 cn.bing.com —— 这台机器在中国大陆网络，
+   www.bing.com 会被重定向甚至超时，google / duckduckgo 基本打不开，
+   用它们当默认的表现就是「浏览器开了但停在空白页」，看着像搜索坏了。
+   想换百度/搜狗等，在 orb/local.conf 里加一行 "searchEngine": "baidu" 即可。
+   配置读坏了一律回退默认，绝不因此让搜索不可用。 */
+const SEARCH_ENGINE_DEFAULT = "bing-cn";
+let searchEngineName = SEARCH_ENGINE_DEFAULT;
+try {
+  const lp = path.join(__dirname, "..", "local.conf");
+  if (fs.existsSync(lp)) {
+    const conf = JSON.parse(fs.readFileSync(lp, "utf8"));
+    const want = conf && typeof conf.searchEngine === "string" ? conf.searchEngine.trim() : "";
+    if (want) searchEngineName = want;
+  }
+} catch { /* 配置缺失或 JSON 坏：保持默认 */ }
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
@@ -75,7 +115,9 @@ vault.init({
  * storage 按 state.storageRoot 算完，注入时求值就会定死在旧目录上。 */
 vidx.init({
   userData: () => app.getPath("userData"),
-  vidxDir: () => storage.pathOf("vidx"),
+  /* 新结构：看视频解析产物也进按会话目录。vidxDir 是同步 getter，用模块级
+     artifactCtx 缓存（解析任务启动前由 vidx-run 先 await refreshArtifactCtx()）。 */
+  vidxDir: () => artifactDir("vidx"),
   getState: () => state,
   /* 台词回顾要用的对话模型：复用「设置 › 视觉」的主力/备选槽位（主力优先）。
      密钥在 vault 里（密文），明文只在这条受控通道里出现一瞬 —— 所以由主进程注入，
@@ -103,10 +145,13 @@ vidx.init({
   log: (...a) => log(...a),
 });
 
-/* Snipaste 模块只需要「读 state」和「问 storage 要截屏目录」两件事。 */
+/* Snipaste 模块只需要「读 state」和「问 storage 要截屏目录」两件事。
+ * 截屏必须落产物树（artifacts/<日期>/sessions/<会话>/screenshots），
+ * 不能再用旧顶层 screenshots/ —— 否则「产物全在一个文件夹下」就是假的。
+ * pathOf 是闭包，真正落盘那一刻才求值，那时 artifactCtx 已刷新过。 */
 snipaste.init({
   getState: () => state,
-  pathOf: (kind) => storage.pathOf(kind),
+  pathOf: (kind) => (kind === "screenshots" ? artifactDir("screenshots") : storage.pathOf(kind)),
   log: (...a) => log(...a),
 });
 
@@ -166,8 +211,8 @@ function ensureBundledExtras() {
   if (!app.isPackaged) return;
   /* 两份东西要从包里种子到数据目录：
      ① 使用说明.md —— 桥/面板读的是 DATA_ROOT 下的那一份
-     ② workflows/*.json —— 桥的工作流目录是 DATA_DIR/workflows，
-        打包态 DATA_DIR = APPDATA，不种子的话用户一个示例工作流都看不到 */
+     ② workflows/*.json —— 桥的自动化目录是 DATA_DIR/workflows，
+        打包态 DATA_DIR = APPDATA，不种子的话用户一个示例自动化都看不到 */
   const seeds = [
     { src: path.join(process.resourcesPath, "extras", GUIDE_NAME), dst: path.join(DATA_ROOT, GUIDE_NAME), dir: false },
     { src: path.join(process.resourcesPath, "extras", "workflows"), dst: path.join(DATA_ROOT, "workflows"), dir: true },
@@ -185,7 +230,7 @@ function ensureBundledExtras() {
       } else if (fs.existsSync(s.src) && !fs.existsSync(s.dst)) {
         fs.copyFileSync(s.src, s.dst);
       }
-    } catch { /* 种子失败不影响启动：说明和工作流都只是可选项 */ }
+    } catch { /* 种子失败不影响启动：说明和自动化都只是可选项 */ }
   }
 }
 
@@ -254,7 +299,50 @@ function flushLog() {
       fs2.writeFileSync(logPath, "");
     }
     fs2.appendFileSync(logPath, batch.join("\n") + "\n");
+    forwardLogs(batch);
   } catch {}
+}
+
+/**
+ * 状态单一写者：主进程只保留 orb.log 纯文本兜底，结构化日志统一
+ * POST 到桥的 /api/log（logBus 是唯一写者）。
+ * 桥没起来 / 请求失败一律静默；[bridge] 前缀是桥 stdout 回灌，必须跳过以免回环。
+ */
+function forwardLogs(batch) {
+  /* 开关 state 驱动、默认开：state.logForward !== false 且环境变量不是 "0"。 */
+  if (state.logForward === false) return;
+  if (process.env.ORB_LOG_FORWARD === "0") return;
+  const rows = batch
+    .filter((l) => l.indexOf("[bridge]") < 0 && l.indexOf("[bridge:err]") < 0)
+    .slice(0, 64)
+    .map((l) => ({
+      category: "system",
+      level: /\[(fatal|error)\]/i.test(l) ? "error" : "info",
+      message: l.slice(0, 2000),
+    }));
+  if (!rows.length) return;
+  /* POST 失败（超时 / 非 2xx / 无令牌=桥没起来）时把 rows 以 JSONL 追加到 spool，
+     供桥起来后回放，绝不丢日志；写 spool 一律静默。 */
+  const spool = () => {
+    try {
+      const d = storage.spoolDir(pinnedDay());
+      if (!d) return;
+      fs.mkdirSync(d, { recursive: true });
+      const file = path.join(d, `main-${process.pid}.jsonl`);
+      fs.appendFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    } catch {}
+  };
+  try {
+    const token = (typeof bridgeTokenSync === "function" ? bridgeTokenSync() : "") || "";
+    if (!token) { spool(); return; }
+    fetch(`http://127.0.0.1:${PORT}/api/log`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Orb-Token": token },
+      body: JSON.stringify({ batch: rows }),
+      signal: AbortSignal.timeout(1500),
+    }).then((res) => { if (!res || !res.ok) spool(); })
+      .catch(() => spool());
+  } catch { spool(); }
 }
 
 function log(...args) {
@@ -419,6 +507,9 @@ const state = {
    *   ② 用户改错了还能看出来自己原来用的是哪儿。
    * 搬迁完成后会被清空，避免设置面板一直提示「有旧数据待搬迁」。 */
   storageRootPrev: "",
+  /* 主进程日志转发到桥 /api/log 的总开关（默认开）。桥未启动时日志落 spool，
+     桥起来后回放；置 false、或环境变量 ORB_LOG_FORWARD=0 即可关。 */
+  logForward: true,
   /* 最近一次成功落盘的录屏，形如 { path, bytes, ms, mime }。
    * 面板拿它可以做「上次录的在哪儿」的直达入口，不必自己再翻目录。 */
   lastRecording: null,
@@ -475,6 +566,160 @@ const state = {
   themeGlass: { t1: false, t2: false, t3: true, t4: false },
   themeImage: "",
 };
+
+/* ---------------- 产物布局上下文（与桥共用一棵日期树） ----------------
+ * 【固定形状 · 改前先读 artifactLayout.cjs 顶部注释】
+ *   产物（录屏 / 截屏 / 看视频 / 导出 / 归档 / 杂项）全部落在
+ *     <storageRoot>/artifacts/<YYYY-MM-DD>/sessions/<会话>/{recordings,screenshots,vidx,exports,archive,misc}
+ *   日志不在这里（用户要求「除日志文件外」）：
+ *     <storageRoot>/logs/<YYYY-MM-DD>/          结构化日志 / spool / 安全链
+ *     <storageRoot>/governance/<YYYY-MM-DD>/    观测流
+ *   day / conversationId / logsDir 由桥的 /api/ops (layout.context) 决定 —— 桥是
+ *   会话的唯一权威；桥没起来 / 请求失败一律回退**固定**的本地兜底，绝不因请求失败抛异常。
+ *   兜底也不能用 pid：那会让同一个安装在每次重启后换一个目录名，用户就找不回上次的
+ *   文件了。所以本地兜底 ID 一次生成、写进 state、此后永久不变。
+ * 结果缓存：vidx 的 vidxDir 是同步 getter，用缓存值即可；录屏 / 截屏 / 解析在
+ * 各自开始前 await refreshArtifactCtx() 把缓存刷成最新。 */
+
+/* 本机固定兜底会话 ID 的取值缓存（真实值在 state.localConversationId）。 */
+let artifactCtx = {
+  day: AL.dayOf(Date.now()),
+  conversationId: "",
+  logsDir: "",
+};
+
+/* 本机的固定兜底会话 ID（桥不可用时用）。一次生成，写进 orb-state.json。 */
+function localConversationId() {
+  const cur = AL.safeId(state && state.localConversationId);
+  if (cur && !/^\.+$/.test(cur)) return cur;
+  const id = "local-" + Date.now().toString(36);
+  try {
+    state.localConversationId = id;
+    if (typeof saveState === "function") saveState();
+  } catch { /* 存不下也要能用，别把录屏拖死 */ }
+  return id;
+}
+
+/** 当前生效的会话 ID：桥给的就用，没有就用固定兜底。 */
+function pinnedConversationId() {
+  const c = artifactCtx && typeof artifactCtx.conversationId === "string" ? artifactCtx.conversationId : "";
+  const id = AL.safeId(c);
+  return (id && !/^\.+$/.test(id)) ? id : localConversationId();
+}
+
+/** 当前生效的日期（严格 YYYY-MM-DD，非法值回退当天，绝不让 day 漂移）。 */
+function pinnedDay() {
+  const d = artifactCtx && typeof artifactCtx.day === "string" ? artifactCtx.day : "";
+  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : AL.dayOf(Date.now());
+}
+
+async function refreshArtifactCtx() {
+  /* 兜底也必须是**固定**的：day 用当天，会话用一次生成后永久不变的本地 ID。
+     绝不用 pid —— 那会让重启后的文件散进另一个目录。 */
+  const fallback = () => ({
+    day: AL.dayOf(Date.now()),
+    conversationId: localConversationId(),
+    logsDir: storage.logsDir(),
+  });
+  try {
+    const token = (typeof bridgeTokenSync === "function" ? bridgeTokenSync() : "") || "";
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["X-Orb-Token"] = token;
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/ops`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ action: "layout.context" }),
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res || !res.ok) throw new Error("layout.context HTTP " + (res && res.status));
+    const j = await res.json();
+    const d = j && j.data;
+    if (!d || typeof d !== "object") throw new Error("layout.context 无 data");
+    const day = (typeof d.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d.day)) ? d.day : AL.dayOf(Date.now());
+    const cid = AL.safeId(d.conversationId);
+    artifactCtx = {
+      day,
+      conversationId: (cid && !/^\.+$/.test(cid)) ? cid : localConversationId(),
+      logsDir: (typeof d.logsDir === "string" && d.logsDir) ? d.logsDir : storage.logsDir(day),
+    };
+  } catch {
+    artifactCtx = fallback();
+  }
+  return artifactCtx;
+}
+
+/** 新写入统一入口：扁平化后按 kind + 日期落进 <root>/<kind>/<day>/ 真实落点。
+ * 【硬约束】这是**写**路径，永远只在 <root>/<kind>/<day>/ 下（kindDir 已返回扁平形状），
+ * 绝不回落到旧的顶层 recordings / screenshots / vidx / artifacts —— 回落到那里
+ * 就等于用户以为文件进了产物目录、实际还散在外面。读旧数据用 legacyDir（只读）。 */
+function artifactDir(kind) {
+  const cid = pinnedConversationId();
+  const day = pinnedDay();
+  const d = storage.kindDir(kind, cid, day);
+  if (d) return d;
+  /* kindDir 只对未知 kind 返 null；走到这里说明调用方传错了 kind，
+     按同一扁平形状兜到 <root>/misc/<day>，宁可文件位置偏一点，也不能写到树外面去。 */
+  const misc = storage.kindDir("misc", cid, day);
+  if (misc) return misc;
+  return path.join(storage.resolveRoot() || storage.artifactsRoot(), "misc", day);
+}
+
+/** 当天生成、但不属于任何会话的文件（自检报告、验收截图等）。 */
+function artifactDayMiscDir() {
+  const d = storage.dayMiscDir(pinnedDay());
+  return d || path.join(storage.resolveRoot() || storage.artifactsRoot(), "misc", pinnedDay());
+}
+
+/** 开始一次会产生产物的动作前调用：把当天 / 该会话的六类目录一次性建全。
+ *  固定形状从第一秒就是完整的，不靠各功能各自 mkdir 拼。 */
+function ensureArtifactTree() {
+  try { storage.ensureSession(pinnedConversationId(), pinnedDay()); } catch {}
+}
+
+/* 录屏相关操作（字幕 / 烧录 / 定位）的候选目录：新目录优先、旧顶层兜底。
+ * 历史录屏的 mp4 还在旧顶层 recordings/，字幕也跟着它；新录屏在按会话目录。
+ * state.lastRecording.path 新旧路径都可能出现，读取必须两处都查。 */
+function recordingDirs(recPath) {
+  const out = [];
+  const push = (d) => {
+    if (!d) return;
+    try { const r = path.resolve(d); if (!out.includes(r)) out.push(r); } catch {}
+  };
+  push(artifactDir("recordings"));                                    // ① 新目录（按会话）
+  if (recPath && typeof recPath === "string") push(path.dirname(recPath)); // ② 该 mp4 实际所在目录
+  push(storage.legacyDir("recordings"));                             // ③ 旧顶层（历史）
+  return out;
+}
+
+/* 写字幕 / 烧录成片时，产物必须与 mp4 同目录：ffmpeg 用裸文件名 + cwd=dir，
+ * 目录不对就找不到输入。优先跟随 mp4 实际所在目录（新录屏自然落在按会话目录），
+ * 取不到再回落到新的 kindDir。 */
+function recordingWorkDir(recPath) {
+  if (recPath && typeof recPath === "string") {
+    try {
+      const d = path.dirname(path.resolve(recPath));
+      if (fs.existsSync(d)) return d;
+    } catch {}
+  }
+  return artifactDir("recordings");
+}
+
+/* 主进程日志：按天落到 <root>/logs/<day>/orb.log（**不在产物树里**）；
+   目录不可写则回退 userData。 */
+function resolveLogPath() {
+  try {
+    const d = storage.logsDir(pinnedDay());
+    if (d) {
+      fs.mkdirSync(d, { recursive: true });
+      const probe = path.join(d, ".orb-write-test");
+      fs.writeFileSync(probe, "ok");
+      fs.unlinkSync(probe);
+      return path.join(d, "orb.log");
+    }
+  } catch {}
+  return path.join(app.getPath("userData"), "orb.log");
+}
+
 /* 主题 id 全集（面板 localStorage 与这里必须一致；t4 = 自定义图片主题） */
 const THEME_IDS = ["t1", "t2", "t3", "t4"];
 /* 极光渐变搭配 id（前端 T3_GRADS 的同名清单，主进程只做白名单校验） */
@@ -1180,7 +1425,12 @@ function purgeRecordingParts() {
    *  ① recordings/ 顶层 —— 按约定清理的位置（别的写入路径也可能落在这一层）；
    *  ② recordings/.tmp/ —— 本实现真正写分片的地方（见 cap-open）。
    * 都不递归：screenshots / history 与其它用户文件一概不碰。 */
-  for (const dir of [storage.pathOf("recordings"), storage.pathOf("tmp")]) {
+  /* 新结构：录屏成片进 artifacts/<day>/sessions/<cid>/recordings，那里若有
+     .part 残留也一并清；旧顶层 recordings / recordings/.tmp 一个都不动。 */
+  const newRecDir = storage.kindDir("recordings", pinnedConversationId(), pinnedDay());
+  /* 新分片目录是 newRecDir/.tmp（见 recTmpDir），别漏 —— 否则崩一次就永久留脏文件。 */
+  const newTmpDir = newRecDir ? path.join(newRecDir, ".tmp") : null;
+  for (const dir of [storage.pathOf("recordings"), storage.pathOf("tmp"), newRecDir, newTmpDir]) {
     try {
       if (!dir || !fs.existsSync(dir)) continue;
       for (const name of fs.readdirSync(dir)) {
@@ -2622,9 +2872,34 @@ async function pickAttachments() {
   return { ok: true, files, skipped, failed, maxSize: ATTACH_MAX_SIZE };
 }
 
+/* 选完立刻解析（2026-11-03 新增）。
+ *
+ * 目的：把"这份附件是什么"从**发送时的一轮模型推理**，提前成**选择后的一次本地读取**。
+ * 用户在选完文件的那一刻就能看到「12 页 / 约 3800 字 / 扫描件」，模型也不必为了
+ * 搞清楚它是什么而多跑一轮。
+ *
+ * 三个必须守住的边界：
+ *   ① **只读**：不拷贝、不改 mtime、不上传；
+ *   ② **不阻塞**：异步跑，选完立刻返回文件列表，解析结果稍后单独推；
+ *   ③ **不夸口**：探不出来就如实写 note（扫描件/加密/时长未知），
+ *      绝不编一个看起来合理的数字 —— 那会让下游 Agent 基于假事实做决策。
+ */
+async function probeAttachments(files, win) {
+  try {
+    const { probeMany } = require("./attach-probe");
+    const results = await probeMany(files.map((f) => f.path));
+    if (win && !win.isDestroyed()) win.webContents.send("attach-probed", { files: results });
+    return results;
+  } catch (e) {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send("attach-probed", { files: [], error: (e && e.message) || String(e) });
+    }
+    return [];
+  }
+}
+
 /* 缩略图：只读图片扩展名且 ≤4MB，转 data URL 回面板；
-   非图片 / 超限 / 读失败一律 { ok: false }，面板收到后移除那个 <img>。 */
-function attachPreview(p) {
+   非图片 / 超限 / 读失败一律 { ok: false }，面板收到后移除那个 <img>。 */function attachPreview(p) {
   if (typeof p !== "string" || !p) return { ok: false };
   const ext = path.extname(p).slice(1).toLowerCase();
   if (ATTACH_IMG_EXT.indexOf(ext) < 0) return { ok: false };
@@ -2796,7 +3071,7 @@ app.whenReady().then(async () => {
   // 是否首次运行：以「首跑向导有没有看完」为准。同样的语义 main 这边只算一次，
   // 后面 get-state 直接把这个结果发给渲染层，不做二次推断。
   state.firstRun = !state.envWizardDone;
-  logPath = path.join(app.getPath("userData"), "orb.log");
+  logPath = resolveLogPath();
   log("[app] 启动，日志:", logPath);
   /* 明文 API Key → 密文库。位置三条件缺一不可：
      1) 在 whenReady 里 —— safeStorage 是 ready-gated，模块顶层调用会抛，而顶层
@@ -2870,9 +3145,22 @@ app.whenReady().then(async () => {
       env: Object.assign({}, process.env, {
         ELECTRON_RUN_AS_NODE: "1",
         ORB_DATA_DIR: DATA_ROOT,
+        /* ORB_STORAGE_ROOT：让桥与面板共用同一个用户可配存储根 —— 桥的
+           artifactLayout 从这里读 root，面板/主进程从 storage.resolveRoot() 读，
+           两边必须同源，否则产物与日志会分叉到两棵树；打包态也确保落进可写目录。 */
+        ORB_STORAGE_ROOT: storage.resolveRoot(),
         /* 自定义模型配置的绝对路径（与 cm-set 写的同一个文件）。
            bridge 自己读它发请求 —— 明文 key 因此不必经过渲染层，也不进 HTTP。 */
         ORB_CM_FILE: cmFile(),
+        /* 检索工具（设置 › 通道 独立栏目）：把用户自己申请、经 vault 加密保存的
+           key 在启动桥这一瞬注入环境变量。桥仍然只认「启动时的受控环境变量」，
+           不接受请求体 / /api/ops / 面板的运行时注入 —— 红线不变。
+           从没配置过 → bridgeEnv 返回空对象，桥保持既有默认 inert。 */
+        ...searchTool.bridgeEnv(
+          searchTool.readConfig(searchToolFile()),
+          vault.getSearchKey(),
+          searchTool.hasConfigFile(searchToolFile()),
+        ),
       }),
     });
     bridgeProc.stdout.on("data", (d) => log("[bridge]", String(d).trim()));
@@ -2948,7 +3236,7 @@ app.whenReady().then(async () => {
   reg(hk.stop, stopNow);
   if (hk.stop2) reg(hk.stop2, stopNow);
 
-  /* 录制打点热键（默认 F9）：把"当前鼠标位置点一下"记进正在录制的工作流。
+  /* 录制打点热键（默认 F9）：把"当前鼠标位置点一下"记进正在录制的自动化。
      全局鼠标钩子需要原生模块（SetWindowsHookEx / uiohook），本机 csc 被安全策略拦、
      npm 也拉不到包，所以改用这条"用户主动打点"的路子 —— 反而更可控，
      不会把误触和无关点击也录进去。录制没开时按了不做任何事。 */
@@ -2961,7 +3249,7 @@ app.whenReady().then(async () => {
 });
 
 /* ---------------- 热键触发器 ----------------
- * 读 <控制台>/triggers.json 中 type=hotkey 的条目，按键触发时调 bridge 回放工作流。
+ * 读 <控制台>/triggers.json 中 type=hotkey 的条目，按键触发时调 bridge 回放自动化。
  * 注册失败（热键被别的软件占用）只告警，不影响其它触发器。
  */
 const TRIGGER_FILE = path.join(DATA_ROOT, "triggers.json");
@@ -2979,7 +3267,7 @@ const HOTKEY_DEFAULTS = {
   clipboard: "Control+Alt+G",
   stop: "Control+Alt+Backspace",
   stop2: "Control+Alt+E",
-  // 录制打点：鼠标停在目标上按一下，就把"当前坐标点一次"记进工作流。
+  // 录制打点：鼠标停在目标上按一下，就把"当前坐标点一次"记进自动化。
   // 用它来补上"手动鼠标操作录不进去"这个缺口（全局鼠标钩子需要原生模块，本机不可用）。
   recordMark: "F9",
 };
@@ -3017,7 +3305,9 @@ function armHotkeyTriggers() {
         fetch(`http://127.0.0.1:${PORT}/api/wf`, {
           method: "POST",
           headers,
-          body: JSON.stringify({ action: "play", name: t.workflow }),
+          /* 走唯一点火入口（fire），不再直连 play：
+             否则热键这一层会绕过运行账本、工单归属与急停留痕。 */
+          body: JSON.stringify({ action: "fire", name: t.workflow, triggerId: t.id, layer: "hotkey" }),
         }).catch(() => {});
       });
       if (ok) hotkeyRegistered.push(t.accelerator);
@@ -3099,6 +3389,10 @@ app.on("will-quit", () => {
      · 截屏态轮询（600ms）—— 不停的话 tick 会一直查窗口类名，直到进程真的没了。 */
   stopSnipPoll();
   try { fgStop(); } catch { /* 退出路径上不允许再抛 */ }
+  /* 记忆库必须在这里强制落盘：memory.js 的写入是 300ms 防抖（markDirty），
+     用户在面板里删掉一条记忆、马上关窗口，走不到定时器就把进程收掉了 ——
+     下次打开那条记忆又"复活"，看起来像删除功能坏了。 */
+  try { memory.flush(); } catch { /* 退出路径上不允许再抛 */ }
   try { bridgeProc && bridgeProc.kill(); } catch {}
 });
 app.on("window-all-closed", () => {});
@@ -3450,11 +3744,37 @@ safeHandle("open-cli-login", async () => {
 }, false);
 // 面板改完触发器配置后，让主进程重新注册热键
 ipcMain.on("trigger-reload", () => { try { armHotkeyTriggers(); } catch {} });
+
+/* 重启控制台（设置 › 安全 ›「写操作人工确认」切换后的确认弹窗触发）。
+   先 relaunch 排好新实例，再 quit；app 的 before-quit 会优雅收桥后再退出。 */
+ipcMain.handle("app-relaunch", () => {
+  try { app.relaunch(); } catch { /* 某些环境不支持 relaunch，退化为仅退出 */ }
+  try { app.quit(); } catch { /* 退出路径不抛 */ }
+  return { ok: true };
+});
 ipcMain.on("toolbar-hide", () => toolbar && toolbar.hide());
 ipcMain.on("toolbar-action", (_e, action, text) => {
   if (toolbar) toolbar.hide();
   if (action === "search") {
-    shell.openExternal("https://www.bing.com/search?q=" + encodeURIComponent(text));
+    let url = "";
+    if (cachedSearchEngineUrl && cachedSearchUrl) {
+      // 统一经 searchUrl.mjs 生成，再用 searchUrl 二次校验（http(s) 协议闸 + 双重编码闸）。
+      // 配置的引擎若名字不认识（比如手写错），退回默认引擎，别让搜索直接失效。
+      let built = cachedSearchEngineUrl(text, searchEngineName);
+      if (!built.ok && searchEngineName !== SEARCH_ENGINE_DEFAULT) {
+        built = cachedSearchEngineUrl(text, SEARCH_ENGINE_DEFAULT);
+      }
+      if (built.ok) {
+        const checked = cachedSearchUrl(built.url);
+        if (checked.ok) url = checked.url;
+      }
+    } else {
+      // 模块尚未加载完成：退回等价的直接拼接（同样走国内可达的 cn.bing.com）。
+      url = "https://cn.bing.com/search?q=" + encodeURIComponent(text);
+    }
+    // 任何情况下都只允许 http(s)，非法 URL 直接不打开。
+    if (!/^https?:\/\//i.test(url)) return;
+    shell.openExternal(url);
     return;
   }
   /* ⚠️ 这里**没有** translate 分支了：划词工具条的「翻译」不再把文字塞进对话框
@@ -4467,7 +4787,10 @@ safeHandle("snip-run", async () => {
     /* 产物走剪贴板（裸 snip 的正常行为），所以盯剪贴板而不是盯文件。
        落盘文件名在这里生成 —— 目录此刻就要在（用户可能刚改过存储根）。 */
     if (r && r.ok) {
-      const dir = storage.pathOf("screenshots");
+      /* 截屏落盘前刷新产物上下文：这张图归到当前会话 / 日期目录。 */
+      await refreshArtifactCtx();
+      ensureArtifactTree();   // 六类目录一次建全，产物树形状从第一秒就固定
+      const dir = artifactDir("screenshots");
       const file = snipaste.snipFile(dir);
       duckForSnip(true);
       watchSnipClipboard(file, base.seq, base.hash);
@@ -5077,20 +5400,30 @@ function capSweepStale(now = Date.now()) {
   }
 }
 
-/** 崩溃残留的 .part 文件不会被任何会话认领，启动时顺手清掉超过一天的。 */
+/** 录屏分片的临时目录：**必须**和成片同卷同树。
+ *  旧实现挂在 <root>/recordings/.tmp（旧顶层），成片却已经改落产物树 ——
+ *  中间分片于是散在旧目录里，用户看着就是"产物没全进一个文件夹"。
+ *  现在固定为 <day>/sessions/<cid>/recordings/.tmp：同卷，rename 仍是原子瞬时。 */
+function recTmpDir() {
+  return path.join(artifactDir("recordings"), ".tmp");
+}
+
+/** 崩溃残留的 .part 文件不会被任何会话认领，启动时顺手清掉超过一天的。
+ *  扫两处：新（产物树内 .tmp）+ 旧（顶层 recordings/.tmp，历史残留），旧的不删目录只清文件。 */
 function purgeStaleParts() {
-  const dir = storage.pathOf("tmp");
   const deadline = Date.now() - 24 * 60 * 60 * 1000;
-  try {
-    if (!fs.existsSync(dir)) return;
-    for (const name of fs.readdirSync(dir)) {
-      if (!name.endsWith(".part")) continue;
-      const full = path.join(dir, name);
-      try {
-        if (fs.statSync(full).mtimeMs < deadline) fs.unlinkSync(full);
-      } catch { /* 正在被占用就下次再说 */ }
-    }
-  } catch { /* 临时目录读不了不影响启动 */ }
+  for (const dir of [recTmpDir(), storage.pathOf("tmp")]) {
+    try {
+      if (!dir || !fs.existsSync(dir)) continue;
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.endsWith(".part")) continue;
+        const full = path.join(dir, name);
+        try {
+          if (fs.statSync(full).mtimeMs < deadline) fs.unlinkSync(full);
+        } catch { /* 正在被占用就下次再说 */ }
+      }
+    } catch { /* 某个临时目录读不了，不影响启动 */ }
+  }
 }
 
 /* 看视频产物：原始媒体（L4）留 7 天，到点删文件；L1~L3 纯文本永久保留。
@@ -5123,14 +5456,17 @@ safeHandle("cap-sources", async () => {
   };
 }, () => ({ ok: false, sources: [], error: "获取屏幕源失败（详见 .orbdata/orb.log）" }));
 
-safeHandle("cap-open", (_e, opts) => {
+safeHandle("cap-open", async (_e, opts) => {
+  /* 录屏开始即刷新产物上下文，cap-close 落盘用同一份缓存（整段录制同会话）。 */
+  await refreshArtifactCtx();
+  ensureArtifactTree();   // 六类目录一次建全，产物树形状从第一秒就固定
   const o = opts && typeof opts === "object" ? opts : {};
   capSweepStale();
   // 已达上限：宁可明确失败，也不要让多个未关闭的会话静默堆积磁盘写入
   if (capSessions.size >= CAP_MAX_SESSIONS) {
     return { ok: false, sessionId: "", error: `同时进行的录制不能超过 ${CAP_MAX_SESSIONS} 个` };
   }
-  const dir = storage.pathOf("tmp");
+  const dir = recTmpDir();   // 产物树内 <day>/sessions/<cid>/recordings/.tmp，与成片同卷
   const id = `cap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     fs.mkdirSync(dir, { recursive: true });
@@ -5215,7 +5551,7 @@ safeHandle("cap-close", (_e, sessionId, opts) => {
     typeof o.name === "string" ? o.name : "",
     "录屏-" + recStamp()
   );
-  const dir = storage.pathOf("recordings");
+  const dir = artifactDir("recordings");
   const target = uniqueFile(dir, baseName, ext);
   let viaCopy = false;
   try {
@@ -5316,7 +5652,10 @@ safeHandle("cap-native-start", async (_e, opts) => {
     ? o.rect
     : ratioToPhysical(o.ratio);
   capNativeRect = rect ? { w: Number(rect.w) || 0, h: Number(rect.h) || 0 } : null;
-  const dir = storage.pathOf("recordings");
+  /* 录屏开始即刷新产物上下文（原生链路直接在这里定成片路径）。 */
+  await refreshArtifactCtx();
+  ensureArtifactTree();   // 六类目录一次建全，产物树形状从第一秒就固定
+  const dir = artifactDir("recordings");
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch (e) {
@@ -5865,7 +6204,7 @@ safeHandle("sub-save", (_e, payload) => {
   const p = payload && typeof payload === "object" ? payload : {};
   const rec = state.lastRecording && typeof state.lastRecording === "object" ? state.lastRecording : null;
   if (!rec || !rec.path) return { ok: false, error: "没有录屏产物" };
-  const dir = storage.pathOf("recordings");
+  const dir = recordingWorkDir(rec.path);
   const stem = path.basename(rec.path, path.extname(rec.path));
   const ass = typeof p.ass === "string" ? p.ass : "";
   const srt = typeof p.srt === "string" ? p.srt : "";
@@ -5883,9 +6222,11 @@ safeHandle("sub-save", (_e, payload) => {
 /* 定位已生成的字幕（资源管理器里选中）。
    渲染层传来的路径不能当"打开任意文件"用：只放行录屏目录里的字幕/视频。 */
 safeHandle("sub-reveal", (_e, p) => {
-  const dir = path.resolve(storage.pathOf("recordings")) + path.sep;
   const abs = path.resolve(String(p || ""));
-  if (!abs.startsWith(dir) || !/\.(srt|ass|mp4)$/i.test(abs)) {
+  /* 新旧录屏目录都放行：新录屏在按会话目录，历史录屏还在旧顶层 recordings/。 */
+  const dirs = recordingDirs(state.lastRecording && state.lastRecording.path);
+  const allowed = dirs.some((d) => abs.startsWith(d + path.sep));
+  if (!allowed || !/\.(srt|ass|mp4)$/i.test(abs)) {
     return { ok: false, error: "只能定位录屏目录里的文件" };
   }
   if (!fs.existsSync(abs)) return { ok: false, error: "文件不存在（可能已被移走）" };
@@ -5893,20 +6234,175 @@ safeHandle("sub-reveal", (_e, p) => {
   return { ok: true, dir: path.dirname(abs) };
 }, { ok: false, error: "定位文件失败" });
 
+/**
+ * PDF 只能在主进程生成：桥跑在 ELECTRON_RUN_AS_NODE=1 下，
+ * require("electron") 返回的是路径字符串，拿不到 webContents.printToPDF。
+ * 渲染层只给 HTML 与文件名，**绝对路径一律由主进程解析**（渲染层不碰 fs）。
+ *
+ * 硬约束：
+ *   1. 只认 .pdf 文件名，且只取 basename —— 传 ../../x.pdf 也只会落在 exports/ 里；
+ *   2. HTML 上限 12MB：再大就该走别的通道，别把整个窗口内存顶爆；
+ *   3. 同时只渲染一份：printToPDF 会起一个隐藏窗口，并发几份就是几十 MB × N；
+ *   4. 落盘走 .part + rename，中途失败不会留下半个 PDF 冒充"导出成功"。
+ */
+const PDF_MAX_HTML = 12 * 1024 * 1024;
+let pdfRendering = false;
+
+safeHandle("artifact-render-pdf", async (_e, opts) => {
+  const o = opts && typeof opts === "object" ? opts : {};
+  const html = String(o.html || "");
+  if (!html) return { ok: false, error: "需要 html" };
+  if (Buffer.byteLength(html, "utf8") > PDF_MAX_HTML) {
+    return { ok: false, error: "内容超过 12MB，PDF 渲染已拒绝（请改用 Markdown/HTML 导出）" };
+  }
+  /* fileName 优先，其次兼容老的 outPath；两者都只取最后一段。 */
+  const rawName = String(o.fileName || o.outPath || `export-${Date.now()}.pdf`);
+  const name = path.basename(rawName).replace(/^[.\s]+/, "");
+  if (!name || !/\.pdf$/i.test(name)) return { ok: false, error: "只放行 .pdf 文件名" };
+  if (pdfRendering) return { ok: false, error: "上一份 PDF 还在渲染，请稍后重试" };
+  pdfRendering = true;
+  const dir = artifactDir("exports");
+  const out = path.join(dir, name);
+  /* CSP 兜底：导出的 HTML 理应自包含，这里再堵一次外链，避免打印时发起网络请求。 */
+  const csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data: file:; style-src \'unsafe-inline\'">';
+  const safeHtml = /<head[^>]*>/i.test(html)
+    ? html.replace(/<head[^>]*>/i, (m) => m + csp)
+    : csp + html;
+  let win = null;
+  try {
+    win = new BrowserWindow({
+      show: false, width: 1024, height: 768,
+      webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true },
+    });
+    await win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(safeHtml));
+    const buf = await win.webContents.printToPDF({
+      printBackground: true, pageSize: "A4",
+      margins: { marginType: "default" },
+    });
+    if (!buf || !buf.length) return { ok: false, error: "printToPDF 返回空内容" };
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = out + ".part";
+    fs.writeFileSync(tmp, buf);
+    fs.renameSync(tmp, out);   // 原子落盘，不留半个 PDF
+    log("[export] PDF 已生成:", out, `(${buf.length} 字节)`);
+    return { ok: true, path: out, fileName: name, dir, bytes: buf.length };
+  } catch (e) {
+    try { fs.rmSync(out + ".part", { force: true }); } catch {}
+    return { ok: false, error: String((e && e.message) || e) };
+  } finally {
+    pdfRendering = false;
+    if (win && !win.isDestroyed()) win.destroy();
+  }
+}, { ok: false, error: "PDF 渲染失败" });
+
+/* 打开「本会话的导出目录」。
+   不走 storage.openSubdir：那里只认旧的顶层分类目录，导出在产物树里。
+   目录不存在就先建 —— shell.openPath 对不存在的路径是静默失败。 */
+safeHandle("artifact-open-exports", async () => {
+  const dir = artifactDir("exports");
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  try {
+    const ret = await shell.openPath(dir);
+    /* openPath 成功返回空串，失败返回错误描述（不能让空串被当成失败） */
+    return ret ? { ok: false, path: dir, error: String(ret) } : { ok: true, path: dir, error: null };
+  } catch (e) {
+    return { ok: false, path: dir, error: String((e && e.message) || e) };
+  }
+}, { ok: false, path: null, error: "打开导出目录失败" });
+
+/* 在资源管理器里定位刚导出的文件。
+   渲染层传来的路径不能当"打开任意文件"用：只放行产物树 exports / misc 里的文件。
+   找不到就返回 ok:false，由面板如实显示，不静默打开别处。 */
+safeHandle("artifact-reveal", (_e, p) => {
+  const abs = path.resolve(String(p || ""));
+  if (!abs || !/\.(md|txt|csv|tsv|html|pdf|zip|db|vtt|lrc)$/i.test(abs)) {
+    return { ok: false, error: "只放行导出格式的文件" };
+  }
+  const cid = pinnedConversationId();
+  const day = pinnedDay();
+  const dirs = ["exports", "misc"]
+    .map((k) => storage.kindDir(k, cid, day))
+    .filter(Boolean);
+  const allowed = dirs.some((d) => abs.startsWith(d + path.sep));
+  if (!allowed) return { ok: false, error: "只能定位产物树里导出的文件" };
+  if (!fs.existsSync(abs)) return { ok: false, error: "文件不存在（可能已被移走）" };
+  shell.showItemInFolder(abs);
+  return { ok: true, dir: path.dirname(abs) };
+}, { ok: false, error: "定位文件失败" });
+
+/* ---- I-17 产物浮层：按 artifactId 定位 / 打开 --------------------------------
+ * 面板只给一个 artifactId，主进程自己去桥查表拿 rel，再用 artifactLayout 的
+ * resolveSafe 解析回绝对路径。绝不接受渲染层传来的路径 —— 那等于把「打开任意
+ * 文件」暴露给面板；也不扫目录，路径完全由固定形状推导。
+ * 扩展名白名单与产物登记表同源，内部状态文件（.bridge.json 等）一律不放行。 */
+const ARTIFACT_SAFE_EXT = /^(md|txt|csv|tsv|html|json|vtt|lrc|srt|ass|mp4|webm|mkv|png|jpg|jpeg|webp|zip|pdf|db)$/i;
+
+async function artifactResolveById(id) {
+  const key = String(id || "");
+  if (!/^a_[0-9a-f]{20}$/.test(key)) return { ok: false, error: "artifactId 格式不对" };
+  let rel = "";
+  try {
+    const token = (typeof bridgeTokenSync === "function" ? bridgeTokenSync() : "") || "";
+    const headers = {};
+    if (token) headers["X-Orb-Token"] = token;
+    const url = `http://127.0.0.1:${PORT}/api/artifacts/item?id=${encodeURIComponent(key)}`;
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(2500) });
+    const j = await res.json();
+    if (!j || j.ok === false) return { ok: false, error: (j && j.error) || "产物表里没有这条登记" };
+    rel = String(j.rel || "");
+  } catch (e) {
+    return { ok: false, error: "查产物表失败：" + String((e && e.message) || e) };
+  }
+  const abs = storage.resolveSafe(rel);
+  if (!abs) return { ok: false, error: "路径不在产物树里，拒绝定位" };
+  const name = path.basename(abs);
+  const ext = name.includes(".") ? name.split(".").pop() : "";
+  if (!ARTIFACT_SAFE_EXT.test(ext)) return { ok: false, error: "不是允许定位的产物格式" };
+  /* 边界是「存储根」本身：扁平化后新形 rel 落在 <root>/<kind>/<day>/... 下，
+   * 旧 artifacts/ 容器已不再是产物树的根，用 artifactsRoot 当边界会把所有新形 rel 一律拒掉。 */
+  const base = path.resolve(String(storage.resolveRoot() || ""));
+  if (!base || (abs !== base && !abs.startsWith(base + path.sep))) {
+    return { ok: false, error: "路径越出产物树" };
+  }
+  if (!fs.existsSync(abs)) return { ok: false, error: "文件不存在（可能已被移走）" };
+  return { ok: true, path: abs, dir: path.dirname(abs), rel, name };
+}
+
+safeHandle("artifact-locate", async (_e, id) => {
+  const r = await artifactResolveById(id);
+  if (!r.ok) return r;
+  try { shell.showItemInFolder(r.path); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  return { ok: true, dir: r.dir, name: r.name };
+}, { ok: false, error: "定位产物失败" });
+
+safeHandle("artifact-open", async (_e, id) => {
+  const r = await artifactResolveById(id);
+  if (!r.ok) return r;
+  try {
+    const ret = await shell.openPath(r.path);
+    return ret ? { ok: false, error: String(ret) } : { ok: true, name: r.name };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+}, { ok: false, error: "打开产物失败" });
+
 /* 读回已落盘的字幕文本。
    存在的理由只有一个：用户可能用记事本改了 .srt。烧录/再次保存前必须先从磁盘读一遍，
    否则烧的还是内存里那份旧台词 —— 那才是最气人的"我明明改了"。 */
 safeHandle("sub-read", () => {
   const rec = state.lastRecording && typeof state.lastRecording === "object" ? state.lastRecording : null;
   if (!rec || !rec.path) return { ok: false, error: "没有录屏产物" };
-  const dir = storage.pathOf("recordings");
   const stem = path.basename(rec.path, path.extname(rec.path));
+  /* 先查新目录、找不到再查旧顶层：历史录屏的字幕还在 legacy 里。 */
+  const dirs = recordingDirs(rec.path);
   const rd = (p) => {
     try { return { text: fs.readFileSync(p, "utf8"), mtime: fs.statSync(p).mtimeMs }; }
     catch { return null; }
   };
-  const srt = rd(path.join(dir, stem + ".srt"));
-  const ass = rd(path.join(dir, stem + ".ass"));
+  const find = (ext) => {
+    for (const d of dirs) { const r = rd(path.join(d, stem + ext)); if (r) return r; }
+    return null;
+  };
+  const srt = find(".srt");
+  const ass = find(".ass");
   if (!srt && !ass) return { ok: false, error: "还没有字幕文件（先生成一次）" };
   return { ok: true, srt, ass, stem, video: rec.path };
 }, { ok: false, error: "读取字幕失败" });
@@ -5936,10 +6432,13 @@ safeHandle("sub-burn", async (_e, payload) => {
   const p = payload && typeof payload === "object" ? payload : {};
   const rec = state.lastRecording && typeof state.lastRecording === "object" ? state.lastRecording : null;
   if (!rec || !rec.path || !fs.existsSync(rec.path)) return { ok: false, error: "没有可用的录屏产物" };
-  const dir = storage.pathOf("recordings");
+  const dir = recordingWorkDir(rec.path);
   const stem = path.basename(rec.path, path.extname(rec.path));
   const assAbs = path.resolve(String(p.ass || path.join(dir, stem + ".ass")));
-  if (!assAbs.startsWith(path.resolve(dir) + path.sep) || !/\.ass$/i.test(assAbs) || !fs.existsSync(assAbs)) {
+  /* 新旧目录都放行：字幕可能跟着新录屏进按会话目录，也可能是旧顶层的历史字幕。 */
+  const dirs = recordingDirs(rec.path);
+  const assAllowed = dirs.some((d) => assAbs.startsWith(d + path.sep));
+  if (!assAllowed || !/\.ass$/i.test(assAbs) || !fs.existsSync(assAbs)) {
     return { ok: false, error: "找不到可用的 .ass 字幕（先生成并保存字幕）" };
   }
   const exe = findFfmpeg();
@@ -6031,11 +6530,41 @@ safeHandle("clear-theme-image", () => clearThemeImage(), { ok: false, error: "�
 
 /* 附件两条通道：选文件（多选 + 体积上限）+ 图片缩略图 data URL。
    与 pick-theme-image 同一模式：对话框在主进程，渲染层零 fs 权限。 */
-safeHandle("attach-pick", async () => {
-  try { return await pickAttachments(); }
-  catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+safeHandle("attach-pick", async (e, opts) => {
+  try {
+    const r = await pickAttachments();
+    /* 选完立刻开解析，但**不 await**：解析 10 个视频要几秒，
+     * await 会让面板在"选择文件"这一步就卡住。结果走 attach-probed 事件回来。
+     *
+     * 是否立即解析由面板决定（Max 模式开启才做）：
+     * 关着的时候走"先发送再解析"——用户可能只是点开看了看又删掉，
+     * 没必要在他还没决定要发之前就去读人家的文件。 */
+    const probeNow = !opts || opts.probe !== false;
+    if (probeNow && r && r.ok && r.files && r.files.length) {
+      const win = e && e.sender ? BrowserWindow.fromWebContents(e.sender) : null;
+      probeAttachments(r.files, win);
+    }
+    return r;
+  } catch (e2) { return { ok: false, error: (e2 && e2.message) || String(e2) }; }
 }, { ok: false, error: "选择附件失败" });
+/* 手动重探（面板上"重新解析"按钮）。用于文件刚被改过、或首次解析超时的场景。 */
+safeHandle("attach-probe", async (e, p) => {
+  try {
+    const list = await probeAttachments([{ path: String(p || "") }], e && e.sender
+      ? BrowserWindow.fromWebContents(e.sender) : null);
+    return { ok: true, probed: list[0] || null };
+  } catch (e2) { return { ok: false, error: (e2 && e2.message) || String(e2) }; }
+}, { ok: false, error: "解析附件失败" });
 safeHandle("attach-preview", (_e, p) => attachPreview(p), { ok: false, error: "读取图片失败" });
+/* PDF 首页转图片（Max 模式的扫描件兜底）。
+   只回 data URL，不落临时文件：面板拿到后直接喂给视觉模型，
+   少一个"解析完没删干净"的残留源。 */
+safeHandle("pdf-page", async (_e, p) => {
+  try {
+    const { toDataUrl } = require("./pdf-page");
+    return await toDataUrl(String(p || ""));
+  } catch (e2) { return { ok: false, note: (e2 && e2.message) || String(e2) }; }
+}, { ok: false, note: "PDF 取图失败" });
 
 ipcMain.handle("get-state", () => ({
   pinned: state.pinned,
@@ -6191,6 +6720,114 @@ safeHandle("cm-clear", () => {
   return { ok: true };
 }, { ok: false });
 
+/* ---------- 设置 › 通道 › 检索工具（独立栏目） ----------
+ * 三条通道**只回脱敏视图**：面板永远拿不到明文 key。明文只在 spawnBridge
+ * 注入 ORB_SEARCH_API_KEY 的那一瞬出现（与 vidx.model 同一套纪律，见文件头 115 行）。
+ * 非敏感配置落 userData/search-tool.json；key 落 vault.bin 的密文 search 字段。
+ * 保存后必须重启 ORB 控制台才生效 —— 桥只在启动时读环境变量，这是刻意的：
+ * 不接受任何运行时 HTTP 注入凭据，也就不存在「任意网页塞 key」的口子。
+ */
+function searchToolFile() {
+  return path.join(app.getPath("userData"), "search-tool.json");
+}
+
+function searchToolView() {
+  const f = searchToolFile();
+  const key = vault.getSearchKey();
+  return searchTool.publicView(searchTool.readConfig(f), {
+    apiKey: key,
+    hasKey: !!key,
+    encrypted: vault.isAvailable(),
+    configured: searchTool.hasConfigFile(f),
+  });
+}
+
+safeHandle("search-tool-get", () => ({ ok: true, ...searchToolView() }), { ok: false });
+
+safeHandle("search-tool-set", (_e, patch) => {
+  const f = searchToolFile();
+  const cur = searchTool.readConfig(f);
+  const p = patch && typeof patch === "object" ? patch : {};
+  let key = vault.getSearchKey();
+  /* apiKey 语义与视觉槽一致：空串/不传 = 保持原值（只改模型名不必重填），
+     null = 清除，非空字符串 = 覆盖。写库失败就整体拒绝，绝不悄悄降级成明文。 */
+  if (typeof p.apiKey === "string" && p.apiKey.trim()) {
+    const r = vault.setSearchKey(p.apiKey);
+    if (!r.ok) return { ok: false, error: "API Key 保存失败：" + (r.error || "未知原因") };
+    key = p.apiKey.trim();
+  } else if (p.apiKey === null) {
+    const r = vault.setSearchKey("");
+    if (!r.ok) return { ok: false, error: "清除 API Key 失败：" + (r.error || "未知原因") };
+    key = "";
+  }
+  let cfg;
+  try {
+    cfg = searchTool.writeConfig(f, searchTool.normalize(p, cur));
+  } catch (e) {
+    return { ok: false, error: "配置保存失败：" + ((e && e.message) || String(e)) };
+  }
+  return {
+    ok: true,
+    restartRequired: true,
+    ...searchTool.publicView(cfg, {
+      apiKey: key, hasKey: !!key, encrypted: vault.isAvailable(), configured: true,
+    }),
+  };
+}, { ok: false });
+
+safeHandle("search-tool-clear", () => {
+  const r = vault.setSearchKey("");
+  if (!r.ok) return { ok: false, error: "清除 API Key 失败：" + (r.error || "未知原因") };
+  /* 不删配置文件：写一条 enabled:false，下次启动会显式注入 ORB_SEARCH_ENABLED=0，
+     压住环境里可能残留的旧开关。删文件反而会造成「清除了却仍在外发」。 */
+  const cfg = searchTool.writeConfig(searchToolFile(), {
+    enabled: false, provider: searchTool.DEFAULT_PROVIDER, model: "", endpoint: "", customName: "",
+  });
+  return { ok: true, restartRequired: true, ...searchTool.publicView(cfg, { configured: true }) };
+}, { ok: false });
+
+/* ---------- 检索工具的「测试」按钮（2026-11-06） ----------
+ * 与视觉模型的测试按钮同一套用法：先保存，再真发一条请求看通不通。
+ *
+ * 为什么由**主进程**发，而不是像其它功能那样打桥接口：
+ *   ① 桥只在启动时读环境变量，「刚保存还没重启」时它手里还是旧配置，
+ *      拿它测等于永远测不到用户刚填的东西；
+ *   ② 想把 key 交给桥就得走请求体 / 运行时端点，那是既有的凭据红线，不开。
+ * 所以 key 从 vault 读、只在本进程内存里出现一瞬，请求由本进程 fetch 发出。
+ *
+ * 返回体只带结论与首几条标题：不回传原始响应（可能很大，也可能含账号信息）。
+ * 形状仍以 searchProviderAdapters.mjs 为单一真相源，这里不复制任何厂商协议。 */
+function searchAdapterPath() {
+  /* 相对位置在开发态与打包态一致：开发是 orb/desktop/，打包是 resources/app/，
+     上一级都正好是模块所在目录（pack.cjs 的 BRIDGE_LOCAL 把桥模块拷到 resources/ 根）。 */
+  const p = path.join(__dirname, "..", "searchProviderAdapters.mjs");
+  try { return fs.existsSync(p) ? p : ""; } catch { return ""; }
+}
+
+safeHandle("search-tool-test", async () => {
+  const cfg = searchTool.readConfig(searchToolFile());
+  if (cfg.enabled !== true) {
+    return { ok: false, reasonCode: "disabled", detail: "检索没启用：先点「启用」再测试" };
+  }
+  const file = searchAdapterPath();
+  if (!file) return { ok: false, reasonCode: "adapter-missing", detail: "找不到 searchProviderAdapters.mjs" };
+  let mod;
+  try { mod = await import(pathToFileURL(file).href); }
+  catch (e) { return { ok: false, reasonCode: "adapter-load-failed", detail: String((e && e.message) || e).slice(0, 160) }; }
+  const adapter = typeof mod.getAdapter === "function" ? mod.getAdapter(cfg.provider) : null;
+  if (!adapter) return { ok: false, reasonCode: "unknown-provider", detail: "未登记的服务商：" + String(cfg.provider || "") };
+
+  /* 具体探测逻辑在 searchProbe.cjs：纯 CJS、不碰 electron/vault，可以被单测真跑。 */
+  const r = await searchProbe.probe({
+    adapter,
+    key: vault.getSearchKey(),
+    endpoint: cfg.endpoint || "",
+    model: cfg.model,
+    timeoutMs: 15000,
+  });
+  return r;
+}, { ok: false });
+
 /* 把 state 里躺着的明文 API Key 搬进 vault。
  * 幂等：vault 里已有同一槽位的 key 就直接把 state 的明文删掉（老版本升级上来时
  * 可能两边都有）。加密不可用时整个跳过 —— 不能因为加密不可用就让视觉模型用不了。
@@ -6243,7 +6880,7 @@ safeHandle("get-vision-key", (_e, slot) => {
 }, "");
 
 /* ---------- 站点凭据库（设置 › 安全 › 我的站点） ----------
- * 只存「站点 + 账户」，不存密码：persist 分区的 Cookie 已能长期保留登录态，
+ * 只存「站点 + 账户」，不存密码：免登靠系统默认浏览器 profile 的 Cookie，
  * 存密码的收益（自动重登）会被验证码/OTP 抵消，风险却高出很多。
  * 密文落 userData/vault.bin（safeStorage/DPAPI），脱库走到别的机器就解不开。 */
 safeHandle("vault-sites", () => {
@@ -6304,6 +6941,9 @@ safeHandle("vidx-status", () => vidx.status(), { ok: false, running: false });
 
 safeHandle("vidx-run", async (_e, src) => {
   try {
+    /* vidxDir 是同步 getter，用缓存值即可 —— 解析任务启动前先把上下文刷成最新。 */
+    await refreshArtifactCtx();
+    ensureArtifactTree();   // 六类目录一次建全，产物树形状从第一秒就固定
     const r = await vidx.run(src);
     /* block 是给任务文本用的引用块：把"该读哪几个文件"直接写进派发内容，
        否则 Agent 拿到一个目录又要自己 ls 一遍（还常常 ls 不到子目录）。 */
@@ -6387,7 +7027,12 @@ safeHandle("cursor", () => {
 /* ⚠️ Electron 44 的 readText()/writeText() 都是 **Promise** —— 必须 await，
    否则 IPC 返回的是 Promise 对象（渲染层拿到 "[object Promise]"）。 */
 safeHandle("clipboard-read", async () => await clipboard.readText().catch(() => ""), "");
-safeHandle("clipboard-write", async (_e, text) => { await clipboard.writeText(String(text ?? "")).catch(() => {}); return true; }, false);
+/* 返回真实结果（以前一律 return true，写失败也报成功）：
+   检索→剪贴板那条链要靠这个值决定「已复制」还是「写不进去，贴到对话里」。 */
+safeHandle("clipboard-write", async (_e, text) => {
+  try { await clipboard.writeText(String(text ?? "")); return true; }
+  catch { return false; }
+}, false);
 
 /* 录制时要用：把 ORB 自己的窗口矩形交给 bridge，
    全局钩子据此排除"用户点的是 ORB 面板/悬浮球"的情况 ——
@@ -6569,3 +7214,155 @@ ipcMain.handle("asr-status", async (_e, opt) => {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
 });
+
+/* ---------------- 录屏实机自检（ORB_RECTEST） ----------------
+ *
+ * 为什么要有这个钩子，而不是在测试脚本里"模拟一下"：
+ * 录屏这条链路的坑全在**真实设备与真实编码器**上 —— DXGI 复制在锁屏/远程桌面下
+ * 拿不到帧、MF 编码器初始化失败、helper 退出时 moov 没写全。这些用 mock 一条都测不出来。
+ *
+ * 用法：ORB_RECTEST=<报告路径> electron .  → 自动录 3 秒区域、收尾、校验、写报告、退出。
+ * 正常使用不带这个环境变量，零影响。
+ */
+async function rectestRun(reportPath) {
+  const report = {
+    at: new Date().toISOString(), ok: false, steps: [], error: "",
+    file: "", size: 0, ms: 0, start: null, stop: null, inspect: null, inspectAfter: null, patched: null,
+  };
+  let target = "";
+  try {
+    const dir = artifactDir("recordings");
+    fs.mkdirSync(dir, { recursive: true });
+    target = uniqueFile(dir, "rectest-" + recStamp(), ".mp4");
+    report.file = target;
+
+    /* 排除自身：成片里不该出现控制台窗口。这条和产品路径完全一致，
+     * 顺带也验证了引用计数没有把 shield 减错（漏减的后果是用户截不到自己的界面）。 */
+    setCaptureShield(true);
+    report.steps.push("shield:on");
+
+    report.start = await capNative.start({
+      outPath: target, fps: 30, bitrate: 4000000, display: 0,
+      rect: { x: 0, y: 0, w: 640, h: 480 },
+      audio: "none",   // 自检不依赖音频设备：没有麦克风的机器也要能过
+    });
+    report.steps.push("start:" + report.start.w + "x" + report.start.h + "@" + report.start.fps);
+
+    await new Promise((r) => setTimeout(r, 3000));
+    report.steps.push("hold:3000ms");
+
+    report.stop = await capNative.stop();
+    report.ms = (report.stop && report.stop.ms) || 0;
+    report.steps.push("stop:done");
+
+    setCaptureShield(false);
+    report.steps.push("shield:off");
+
+    report.size = fs.statSync(target).size;
+    report.inspect = mp4finalize.inspectFile(target);
+    /* 和产品路径一致：mvhd 缺时长时回填，否则播放器显示 0 秒。 */
+    if (report.inspect && !report.inspect.durationMs && report.ms > 0) {
+      report.patched = mp4finalize.patchDuration(target, report.ms);
+      report.inspectAfter = mp4finalize.inspectFile(target);
+    }
+    report.ok = report.size > 1024 && !!report.inspect && report.inspect.ok === true;
+  } catch (e) {
+    report.error = (e && (e.stack || e.message)) || String(e);
+    try { setCaptureShield(false); } catch {}
+    try { await capNative.abort(); } catch {}
+  } finally {
+    try { fs.writeFileSync(reportPath, JSON.stringify(report, null, 2)); } catch {}
+    setTimeout(() => app.exit(report.ok ? 0 : 1), 200);
+  }
+}
+
+if (process.env.ORB_RECTEST) {
+  app.whenReady().then(() => {
+    /* 等 800ms：让 storage/窗口/日志都就绪。太早的话 recordings 目录可能还没建。 */
+    setTimeout(() => { rectestRun(process.env.ORB_RECTEST); }, 800);
+  });
+}
+
+/* ---------------- Max 模式真机验收（ORB_MAXTEST=<png 路径>） ----------------
+ * 只做一件事：在真面板上点一下 Max 开关，检查视觉状态与落盘偏好，并截一张图。
+ *
+ * 为什么不在单测里验：这段逻辑的价值全在"点下去之后界面变成什么样"，
+ * executeJavaScript 拿到的是真实 DOM 状态（class / aria / title / localStorage），
+ * 比静态 grep 强一层；截图则留给验收时人眼确认按钮位置与样式。
+ */
+async function maxModeTest(pngPath) {
+  const rep = { at: new Date().toISOString(), ok: false, error: "", steps: [], before: null, after: null, shot: pngPath };
+  try {
+    await new Promise((r) => setTimeout(r, 2500));   // 等面板 did-finish-load 与首屏脚本跑完
+    const win = panel;
+    if (!win || win.isDestroyed()) throw new Error("面板窗口没起来");
+    try { win.showInactive(); } catch { /* 无边框面板可能拒绝，忽略 */ }
+    await new Promise((r) => setTimeout(r, 400));
+
+    const read = `(() => {
+      const b = document.getElementById('maxBtn');
+      const rect = (el) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+      };
+      return b ? {
+        found: true, text: b.textContent.trim(), on: b.classList.contains('on'),
+        aria: b.getAttribute('aria-pressed'), title: b.title,
+        /* 几何留给验收：按钮该紧贴滑轨右侧（间距 6px），
+           间距异常说明 flex 布局被别的东西撑开了。 */
+        route: rect(document.getElementById('routeSlider')), max: rect(b),
+        stored: (() => { try { return localStorage.getItem('orb.maxMode'); } catch { return null; } })(),
+      } : { found: false };
+    })()`;
+    rep.before = await win.webContents.executeJavaScript(read, true);
+    /* 归零：localStorage 是持久的，上一次验收可能把它留在"开"。
+       不先关掉的话，这次点一下是"关"，断言全反 —— 我第一版就栽在这。 */
+    if (rep.before && rep.before.on) {
+      await win.webContents.executeJavaScript("document.getElementById('maxBtn').click()", true);
+      await new Promise((r) => setTimeout(r, 900));
+      rep.before = await win.webContents.executeJavaScript(read, true);
+      rep.steps.push("reset:off");
+    }
+    rep.steps.push("before:on=" + (rep.before && rep.before.on));
+
+    await win.webContents.executeJavaScript("document.getElementById('maxBtn').click()", true);
+    rep.steps.push("click");
+    await new Promise((r) => setTimeout(r, 1400));   // 等一次 /api/pool 往返 + 重绘
+
+    rep.after = await win.webContents.executeJavaScript(read, true);
+    rep.steps.push("after:on=" + (rep.after && rep.after.on));
+
+    const img = await win.webContents.capturePage();
+    const png = img.toPNG();
+    fs.writeFileSync(pngPath, png);
+    rep.shotBytes = png.length;
+    rep.steps.push("shot:" + Math.round(png.length / 1024) + "KB");
+
+    rep.ok = !!(rep.before && rep.before.found
+      && rep.after && rep.after.on === true
+      && rep.after.aria === "true"
+      && rep.after.stored === "1"
+      && png.length > 4096);
+
+    /* 还原：验收不该改变用户真实的偏好。
+       原本是关的，就再点一下关回去（截图已经拍完，不影响证据）。 */
+    if (rep.before && rep.before.on === false) {
+      await win.webContents.executeJavaScript("document.getElementById('maxBtn').click()", true);
+      await new Promise((r) => setTimeout(r, 700));
+      rep.restored = await win.webContents.executeJavaScript(
+        "(() => { try { return localStorage.getItem('orb.maxMode'); } catch { return null; } })()", true);
+      rep.steps.push("restore:" + rep.restored);
+    }
+  } catch (e) {
+    rep.error = (e && (e.stack || e.message)) || String(e);
+  } finally {
+    try { fs.writeFileSync(pngPath.replace(/\.png$/i, "") + ".json", JSON.stringify(rep, null, 2)); } catch {}
+    console.log("[maxtest]", JSON.stringify(rep));
+    setTimeout(() => app.exit(rep.ok ? 0 : 1), 200);
+  }
+}
+
+if (process.env.ORB_MAXTEST) {
+  app.whenReady().then(() => { maxModeTest(process.env.ORB_MAXTEST); });
+}

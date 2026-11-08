@@ -1,0 +1,189 @@
+/* ===== 自动化栏目 / 运行历史抽屉 / 治理三卡（2026-11-08）=====
+   独立成文件：panel.html 的 4028 行 <style> 已抽到 panel.css，
+   新增样式一律不再往那份历史文件里堆。
+   颜色全部走 :root 设计令牌，切主题时跟着面板一起换。 */
+
+.auto-intro {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 8px 10px; margin-bottom: 8px;
+  background: var(--bg-soft); border: 1px solid var(--border);
+  border-radius: var(--r-sm); font-size: 12px;
+}
+.auto-intro b { font-weight: 600; color: var(--fg); }
+.auto-intro .muted { font-size: 11px; line-height: 1.55; }
+
+/* ---------- 通用小列表：策略 / 回收站共用 ---------- */
+.auto-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; }
+/* capped：窗口固定露 2 条，其余靠滑条。
+   回收站 / 运行历史都是"扫一眼有没有要处理的"，不是台账 ——
+   整列铺开会把自动化页拉得比配方列表还长，真正要点的东西反而沉到屏幕外。 */
+.auto-list.capped { max-height: 78px; overflow-y: auto; padding-right: 2px; }
+.auto-row.run-mini { cursor: pointer; }
+.auto-row.run-mini:hover { border-color: var(--accent); }
+.auto-row.run-mini .nm { flex: 1 1 90px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auto-row.run-mini .meta { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.auto-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 7px 9px; border: 1px solid var(--border);
+  border-radius: var(--r-sm); background: var(--bg-soft); font-size: 12px;
+}
+.auto-row .nm { font-weight: 500; color: var(--fg); word-break: break-all; }
+.auto-row .meta { color: var(--fg-muted); font-size: 11px; }
+.auto-row .spacer { flex: 1 1 auto; }
+.auto-row .why { flex: 1 1 100%; color: var(--fg-soft); font-size: 11px; line-height: 1.55; }
+.auto-badge {
+  flex: 0 0 auto; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--border-strong); color: var(--fg-soft);
+  background: var(--bg); font-size: 10.5px; white-space: nowrap;
+}
+.auto-badge.ok { color: var(--ok); border-color: var(--ok); }
+.auto-badge.warn { color: var(--warn); border-color: var(--warn); }
+.auto-badge.bad { color: var(--danger); border-color: var(--danger); }
+.auto-badge.observe { color: var(--accent); border-color: var(--accent); }
+.auto-row .chip { padding: 2px 9px; font-size: 11px; }
+
+/* ---------- 运行历史抽屉：右侧滑入 ---------- */
+.auto-drawer-mask {
+  position: fixed; inset: 0; z-index: 10000; display: none;
+  background: rgba(38,33,92,.16);
+  -webkit-backdrop-filter: blur(5px); backdrop-filter: blur(5px);
+}
+[data-theme="t1"] .auto-drawer-mask { background: rgba(4,6,16,.52); }
+.auto-drawer-mask.on { display: block; animation: autoFade .16s var(--ease); }
+@keyframes autoFade { from { opacity: 0 } to { opacity: 1 } }
+.auto-drawer {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: min(430px, 92vw); display: flex; flex-direction: column;
+  background: var(--bg); border-left: 1px solid var(--border);
+  box-shadow: var(--sh-lg);
+  transform: translateX(100%); transition: transform .22s var(--ease);
+}
+.auto-drawer-mask.on .auto-drawer { transform: none; }
+.auto-drawer-hd {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px 10px; border-bottom: 1px solid var(--border);
+}
+.auto-drawer-tt { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.auto-drawer-tt b { font-size: 14px; color: var(--fg); font-weight: 600; }
+.auto-drawer-tt .muted { font-size: 11px; }
+.auto-drawer-tools {
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+  padding: 9px 14px; border-bottom: 1px solid var(--border);
+}
+.auto-drawer-tools select {
+  flex: 1 1 110px; min-width: 0; max-width: 150px;
+  padding: 4px 6px; font-size: 11px; font-family: inherit;
+  color: var(--fg); background: var(--bg-soft);
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+}
+.auto-drawer-list { flex: 1 1 auto; overflow: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+.auto-drawer-ft { padding: 8px 14px 12px; border-top: 1px solid var(--border); font-size: 10.5px; line-height: 1.5; }
+
+.auto-run {
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-soft); padding: 8px 10px; font-size: 11.5px;
+}
+.auto-run-hd { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 4px; }
+.auto-run-hd .nm { font-weight: 600; color: var(--fg); word-break: break-all; }
+.auto-run-meta { color: var(--fg-muted); font-size: 10.5px; line-height: 1.6; word-break: break-all; }
+.auto-run-q { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+.auto-run-q .auto-badge { font-size: 10px; }
+.auto-run .err { margin-top: 5px; color: var(--danger); font-size: 11px; word-break: break-all; }
+
+/* ---------- 治理三卡（安全页）---------- */
+.gov-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 9px 10px; border: 1px solid var(--border);
+  border-radius: var(--r-sm); background: var(--bg-soft); font-size: 11.5px;
+}
+.gov-kv { display: flex; gap: 8px; align-items: baseline; line-height: 1.6; }
+.gov-kv .k { flex: 0 0 92px; color: var(--fg-muted); }
+.gov-kv .v { flex: 1 1 auto; color: var(--fg); word-break: break-all; }
+.gov-metrics { display: flex; gap: 6px; flex-wrap: wrap; }
+.gov-metrics .auto-badge { font-size: 11px; }
+.gov-sub { margin-top: 4px; color: var(--fg-soft); font-size: 11px; line-height: 1.6; }
+.gov-pick select {
+  width: 100%; padding: 5px 7px; font-size: 11.5px; font-family: inherit;
+  color: var(--fg); background: var(--bg-soft);
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+}
+.gov-split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.gov-col { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-soft); }
+.gov-col-hd {
+  padding: 6px 9px; border-bottom: 1px solid var(--border);
+  font-size: 11px; font-weight: 600; color: var(--fg-soft);
+}
+.gov-col-bd { max-height: 240px; overflow: auto; padding: 8px 9px; display: flex; flex-direction: column; gap: 5px; }
+.gov-line { font-size: 11px; line-height: 1.6; color: var(--fg); word-break: break-all; }
+.gov-line .t { color: var(--fg-muted); font-size: 10px; margin-right: 5px; }
+.gov-raw {
+  font-family: ui-monospace, Consolas, monospace; font-size: 10.5px;
+  line-height: 1.55; color: var(--fg-soft); word-break: break-all;
+  padding: 5px 7px; border-radius: 6px; background: var(--bg-sunken);
+  border: 1px solid var(--border);
+}
+/* 轨迹一行：时间 · 类型 · 一句摘要，参数折在「参数」后面。
+   原来一条一行 JSON，200 条轨迹就是一屏乱码 —— 用户看不懂，也就等于没有。 */
+.gov-trow {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  padding: 3px 0; border-bottom: 1px dashed var(--border);
+  font-size: 11px; line-height: 1.5;
+}
+.gov-trow:last-child { border-bottom: 0; }
+.gov-trow .t { flex: 0 0 auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.gov-trow .k { flex: 0 0 auto; color: var(--accent-fg); font-weight: 500; }
+.gov-trow .b { flex: 1 1 90px; min-width: 0; color: var(--fg-soft); word-break: break-all; }
+.gov-trow .x {
+  flex: 0 0 auto; padding: 0 6px; font-size: 10px; font-family: inherit;
+  color: var(--fg-muted); background: transparent; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 999px;
+  transition: border-color var(--dur-2) var(--ease), color var(--dur-2) var(--ease);
+}
+.gov-trow .x:hover { border-color: var(--accent); color: var(--accent-fg); }
+.gov-trow .j {
+  flex: 1 1 100%; margin: 3px 0 2px; padding: 5px 7px;
+  background: var(--bg-sunken); border-radius: 6px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 10px;
+  color: var(--fg-muted); word-break: break-all; white-space: pre-wrap;
+}
+html.no-motion .gov-trow .x { transition: none; }
+@media (prefers-reduced-motion: reduce) { .gov-trow .x { transition: none; } }
+.gov-empty { color: var(--fg-muted); font-size: 11px; line-height: 1.6; }
+
+@media (max-width: 620px) {
+  .gov-split { grid-template-columns: 1fr; }
+}
+html.no-motion .auto-drawer { transition: none; }
+html.no-motion .auto-drawer-mask.on { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .auto-drawer { transition: none; }
+  .auto-drawer-mask.on { animation: none; }
+}
+
+/* 步级轨迹（2026-11-08）：点开才渲染，所以样式要能容纳 50~500 行而不撑爆抽屉。 */
+.auto-trace {
+  margin-top: 6px; max-height: 260px; overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-sunken); padding: 5px 7px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.auto-trace-line {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  font-size: 11px; line-height: 1.55; word-break: break-all;
+}
+.auto-trace-line .k { color: var(--fg-muted); font-size: 10.5px; min-width: 52px; }
+.auto-trace-line .v { color: var(--fg-soft); font-size: 10.5px; }
+
+/* 复核备注输入（2026-11-08）：跟着卡片宽度走，不撑破抽屉；
+   聚焦描边复用 --accent / --accent-ring，与 .chip.sel 同一套视觉语言。 */
+.auto-inp {
+  width: 100%; box-sizing: border-box; margin-top: 6px; padding: 6px 9px;
+  font: inherit; font-size: 11.5px; color: var(--fg);
+  background: var(--bg-sunken); border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.auto-inp:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+.auto-inp::placeholder { color: var(--fg-muted); }

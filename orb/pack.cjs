@@ -23,7 +23,7 @@ const { execSync, spawnSync } = require('child_process');
 const ROOT = process.env.ORB_ROOT ? path.resolve(process.env.ORB_ROOT) : path.resolve(__dirname, '..');
 const APP = path.join(ROOT, 'orb', 'desktop');
 const ELECTRON = path.join(APP, 'node_modules', 'electron', 'dist');
-const VERSION = '1.4.9';
+const VERSION = '1.5.0';
 /* 输出目录带时间戳：不删旧构建。早先这里是 fs.rmSync(OUT) 一把清空，
    但批量删除会触发安全保护（3789 个文件远超阈值）而被拦截。
    版本化目录反而更好——每次构建都是可回溯的产物，旧的由用户自行清理。 */
@@ -34,6 +34,17 @@ const ZIP_NAME = `${OUT_NAME}.zip`;
 
 const APP_FILES = [
   'main.js', 'preload.js', 'panel.html', 'ball.html', 'border.html',
+  /* 面板抽壳（2026-11-08）：4028 行 <style> 已物理切到 panel.css，
+     新增的自动化栏目 / 运行历史抽屉 / 治理视图放进 automation.js。
+     两者都是 panel.html 用同源相对路径加载的，漏拷 = 发布版面板
+     「没样式 + 新栏目全部不响应」，而且开发态完全正常、测不出来。 */
+  'panel.css', 'automation.css', 'automation.js',
+  /* 插件页交互（2026-11-07 抽出，2026-11-09 补进清单）：panel.html 用
+     <script src="pluginSettings.js"> 加载，它不在 bridge.mjs 的 import 图里，
+     所以打包闭包算不到它。漏了的后果：发布版「设置 › 插件」永远停在"读取中"，
+     不报错、只是列表空着 —— 又一个"只炸发布版"的坑。
+     tools/check-pack-closure.mjs 的 PACK_ASSETS 现在会拦这一类。 */
+  'pluginSettings.js',
   'subtitle.html', 'toolbar.html', 'voice.js',
   /* 录屏链路（2026-10-21 新增）：storage.js / mp4finalize.js 被 main.js 引用，
      recbar.html + recbar-preload.js 是悬浮控制条（main.js 用 __dirname 定位）。
@@ -70,11 +81,35 @@ const APP_FILES = [
      存站点凭据 + 视觉 API Key 的密文。漏打包 = 和 memory.js 同一类事故：
      一 require 就抛 MODULE_NOT_FOUND，main.js 整个起不来。 */
   'vault.js',
+  /* 检索工具配置（2026-11-06）：main.js 顶层 require 的纯 CJS 模块。
+     漏打包 = 发布版一启动就 MODULE_NOT_FOUND，main.js 整个起不来。 */
+  'searchToolConfig.cjs',
+  /* 检索工具「测试」按钮的探测逻辑（2026-11-06）：同样被 main.js 顶层 require。 */
+  'searchProbe.cjs',
   /* 看视频（2026-11-02 新增）：vidx.js 被 main.js 顶层 require（漏了 = 起不来）；
      vidx_probe.py 是探底/抽帧的**随包脚本**，vidx.js 按 __dirname 定位它
      （漏了 = 面板显示"运行时已装"但每次解析都报"脚本没有输出结果"，
       开发态因为文件就在原地永远正常 —— 又一个"只炸发布版"的坑）。 */
   'vidx.js', 'vidx_probe.py',
+  /* md 净化层（2026-11-04）：vidx.js 顶层 require("./mdEscape.cjs")。
+     漏打包 = 发布版一解析视频就 MODULE_NOT_FOUND，且开发态完全正常。 */
+  'mdEscape.cjs',
+  /* 产物布局（2026-11-04）：storage.js 顶层 require("./artifactLayout.cjs")。
+     CJS 是唯一实现，ESM 侧 artifactLayout.mjs 用 createRequire 转发它。 */
+  'artifactLayout.cjs',
+  /* 浏览器 Agent 只走「随包 MV3 扩展」这一条路（2026-11-05 决策）：
+     扩展复用用户日常浏览器已有的登录态，不新建 profile、不复制 Cookie。
+     曾经做过一版 Electron 进程内 CDP 的原生降级后端 browserSession.cjs，
+     但它要按站点重新登录、且自动化 profile 更容易撞风控，已按用户决定移除，
+     不要再把任何 browserSession 文件加回 APP_FILES。 */
+  /* 附件即时解析（2026-11-03 新增）：attach-probe.js 被 main.js **懒 require**
+     （在 probeAttachments 内部）。漏打包 = 发布版选完附件永远拿不到解析结果，
+     而且不报错、只是什么都不发生 —— 又是"只炸发布版"的那一类。 */
+  'attach-probe.js',
+  /* PDF 首页转图（2026-11-03 新增）：pdf-page.js 同样被 main.js 懒 require。
+     漏打包 = Max 模式下扫描件永远转不出图，提示"取不出页面图"，
+     而开发态一切正常 —— 和 attach-probe 是同一类坑，必须一起进清单。 */
+  'pdf-page.js',
   'icon.png', 'icon.ico', 'icon-64.png', 'selection-watch.ps1', 'package.json',
 ];
 /* 随包附带的配置文件（都放在包根，桥的 DATA_DIR 在开发态就是项目根，行为一致）：
@@ -108,13 +143,94 @@ const CONFIG_FILES = ['approvals.json', 'danger-tools.json'];
      就白丢原生 MP4，而且只有真去录一段才看得出来 —— 所以必须校验。
      （2026-10-15 实测踩过：加上 runtime.mjs 后忘了同步这里，发布版直接瘫。） */
 const NATIVE_FILES = ['orb-foreground.exe', 'orb-selection.exe', 'orb-input.exe', 'orb-cap.exe'];
-const BRIDGE_LOCAL = ['mousehook.mjs', 'runtime.mjs'];
+const BRIDGE_LOCAL = [
+  'mousehook.mjs', 'runtime.mjs',
+  /* 治理层（2026-11-03 新增）：bridge.mjs 顶层静态 import 这八个模块。
+     漏任何一个 = 发布版桥进程 ERR_MODULE_NOT_FOUND 直接起不来，
+     面板全线"已断开"—— 与 runtime.mjs 漏打包是同一类事故，必须列全。 */
+  'ticketStore.mjs', 'outbox.mjs', 'costLedger.mjs', 'guiLock.mjs',
+  'dispatcher.mjs', 'trajectory.mjs', 'workerPool.mjs', 'watchdog.mjs',
+  /* 命令通道 / 自由路由（2026-11-04 早）：bridge.mjs 顶层静态 import。
+     之前漏登记，打包审计会直接报「桥进程引用了未打包的本地模块」。 */
+  'cmdchan.mjs', 'cmdDanger.mjs', 'freetier.mjs', 'taskRouter.mjs', 'probe.mjs',
+  /* 阶段一 A · 止血与 md 源（2026-11-04） */
+  'epoch.mjs', 'cmdGuard.mjs', 'stateWriters.mjs', 'mdEscape.mjs',
+  /* 阶段一 B · 交付层后端 */
+  'outputProfile.mjs', 'exporter.mjs', 'logBus.mjs', 'artifactStore.mjs',
+  /* 阶段一 C · 尺子与前置隔离 */
+  'span.mjs', 'observeRouter.mjs', 'textGate.mjs', 'fastPath.mjs', 'perfBaseline.mjs',
+  /* 阶段一 D · 归档与体验 */
+  'session.mjs', 'archiver.mjs', 'visualTiers.mjs', 'ticketControl.mjs',
+  'receipts.mjs', 'events.mjs',
+  /* 产物布局（2026-11-04）：bridge.mjs 顶层静态 import artifactLayout.mjs，
+     漏登记 = 发布版桥进程直接 ERR_MODULE_NOT_FOUND。 */
+  'artifactLayout.mjs',
+  /* ⚠️ 2026-11-06 打包清单审计补漏：以下 16 个模块早就是 bridge.mjs 的顶层
+     静态 import，却一直没登记进 BRIDGE_LOCAL。开发态源码就在旁边所以永远正常，
+     但 pack.cjs:337 的「打包后本地依赖审计」会在 resources/ 里找不到它们并
+     直接 process.exit(1) —— 等于便携版根本打不出来。
+     由 orb/test/packManifest.test.mjs 从 bridge.mjs 的 import 反推锁定，
+     以后再加本地模块没登记就会直接测挂。 */
+  'team.mjs', 'expertTeam.mjs', 'expertContract.mjs', 'affectGate.mjs',
+  'pluginHost.mjs', 'semanticRouter.mjs', 'telemetry.mjs',
+  'siteLibrary.mjs', 'capabilityRegistry.mjs', 'searchProvider.mjs',
+  'browserProvider.mjs', 'upgrade.mjs', 'personaSlots.mjs',
+  'safetyOverview.mjs', 'artifactView.mjs', 'attachPlan.mjs', 'vidxSynth.mjs',
+  /* 报告A P0 / 报告B 批次A / 批次B（2026-11-06 本轮新增）：
+     appIntent 静态能力表、batchA 纪律层、searchL4 对外契约。 */
+  'appIntent.mjs', 'batchA.mjs', 'searchL4.mjs',
+  /* 报告B 批次C（2026-11-06）：可插拔凭据来源 + 结果回填编排 + 多 provider 适配器。 */
+  'searchCredentials.mjs', 'searchOrchestrator.mjs', 'searchProviderAdapters.mjs',
+  /* 方案 A1/B（2026-11-06 末）：确定性锚定解析纯模块，bridge.mjs 顶层静态 import。
+     把抗迁移锚定从 OCR/Windows API 里抽出来，成为可单测的纯逻辑层。 */
+  'anchorResolver.mjs',
+  /* 方案 C（2026-11-07）：视觉锚定后端 —— C0 纯 JS 模板匹配 + C1 CLIP embedding，
+     bridge.mjs 顶层静态 import。 */
+  'visualAnchor.mjs',
+  /* 语义解析泛化（2026-11-07）：意图未命中环形日志 + schema 约束兜底（纯内存，无 IO）。 */
+  'intentMissLog.mjs', 'intentFallback.mjs',
+  /* ===== 11-07 增量简报落地 + 专家团治理纪律层 =====
+     注意：除 bridge.mjs 的顶层 import 外，还要登记「被已打包模块间接 import」的
+     三个叶子模块（refBinding / siteCapabilityData / pluginArtifactGate）——
+     打包审计只反推 bridge.mjs 的直接依赖，漏了它们开发态正常、便携版运行时才报
+     ERR_MODULE_NOT_FOUND，属于最难查的一类事故。 */
+  'policyTransition.mjs', 'dreamConsolidator.mjs', 'pluginArtifactGate.mjs',
+  'memoryBudget.mjs', 'siteCapabilityData.mjs', 'refBinding.mjs',
+  'governanceCore.mjs', 'p0Discipline.mjs', 'p1FileChannel.mjs',
+  'p2SiteAdapter.mjs', 'p2SealReview.mjs', 'p3VerifyLite.mjs',
+  'hostDataApi.mjs', 'executionBridge.mjs', 'injectable.mjs', 'apiChannel.mjs',
+  /* 插件适配层（2026-11-08）：bridge.mjs 顶层静态 import pluginEcosystem / pluginMarket /
+     pluginPack 三件，pluginAdapters 由 pluginEcosystem 间接 import。
+     漏登记 = 便携版 resources/ 里找不到它们，桥进程 ERR_MODULE_NOT_FOUND 直接起不来，
+     开发态因为源码就在旁边所以完全看不出来。由 check-pack-closure 反推锁定。 */
+  'pluginEcosystem.mjs', 'pluginMarket.mjs', 'pluginPack.mjs', 'pluginAdapters.mjs',
+  /* 自动化回收站（2026-11-08）：删除改可撤销后，bridge.mjs 新增的顶层静态 import。 */
+  'wfTrash.mjs',
+  /* 自动化运行账本（2026-11-08）：三层触发器唯一点火入口的依赖。 */
+  'wfRunLedger.mjs',
+  /* observe / auto 升降级判据（2026-11-08）。 */
+  'autoPolicy.mjs',
+  /* 可靠执行五件（2026-11-08）：bridge.mjs 顶层静态 import。
+     独立结果判定 / 步级轨迹 / 失败分类与有限重试 / 配方版本 / 受限编排。
+     漏登记 = 便携版桥进程 ERR_MODULE_NOT_FOUND 直接起不来，开发态完全正常。
+     由 orb/test/packManifest.test.mjs 从 bridge.mjs 的 import 反推锁定。 */
+  'autoOutcome.mjs', 'autoTrace.mjs', 'autoRetry.mjs',
+  'wfRecipeVersions.mjs', 'wfDag.mjs',
+  /* 判据归纳建议（2026-11-08）：把「你得自己写 outcome」这道坎降低。 */
+  'outcomeSuggest.mjs',
+  /* 界面证据候选（2026-11-08）：机器取证、人勾选 —— 解决 tree_state 判据没法自动推的问题。 */
+  'outcomeEvidence.mjs',
+  /* 断点续跑（2026-11-08）：安全功能 —— 桌面动作不可逆，重跑会把做过的再做一遍。 */
+  'wfCheckpoint.mjs',
+  /* 回放前预检（2026-11-08）：把「哪几步会失效」提前到动手之前，而不是跑废前四步才发现。 */
+  'wfPreflight.mjs',
+];
 
-/* 随包释放的示例工作流（桥读 DATA_DIR/workflows，打包态 DATA_DIR 是 APPDATA，
+/* 随包释放的示例自动化（桥读 DATA_DIR/workflows，打包态 DATA_DIR 是 APPDATA，
    所以要从 resources/extras/workflows 里种子过去）。
    ⚠️ 源目录在 orb/desktop/extras/workflows（**随仓库走**），不是项目根的 workflows/ ——
    后者是开发态录制产生的个人数据，已被 .gitignore 排除，克隆仓库的人拿不到，
-   整个目录忽略会让发布版一个示例工作流都没有。 */
+   整个目录忽略会让发布版一个示例自动化都没有。 */
 const WORKFLOW_SRC = path.join(APP, 'extras', 'workflows');
 
 const cp = (from, to) => { fs.mkdirSync(path.dirname(to), { recursive: true }); fs.copyFileSync(from, to); };
@@ -186,6 +302,37 @@ for (const d of APP_DIRS) {
   cpr(src, path.join(APPDIR, d));
 }
 
+/* 浏览器 Agent 主路径（2026-11-05）：随包 MV3 扩展，复用用户日常浏览器的登录态。
+   整个 orb/browser-extension/ 原样分发到 resources/app/browser-extension/，
+   用户在发布版里「加载已解压的扩展程序」直接指到这个目录即可；cpr 用的是上面
+   同一个 robocopy 封装（退出码 1-7 算成功）。漏打包 = 发布版找不到主路径扩展。 */
+const EXT_SRC = path.join(ROOT, 'orb', 'browser-extension');
+if (!fs.existsSync(EXT_SRC)) { console.error('✗ 缺少浏览器扩展目录:', EXT_SRC); process.exit(1); }
+cpr(EXT_SRC, path.join(APPDIR, 'browser-extension'));
+console.log('复制浏览器扩展（MV3 主路径）→ resources/app/browser-extension/');
+
+/* 浏览器宿主注册脚本（2026-11-05）：APP_FILES 之外的单文件随包项，按现有风格
+   用 cp() 单独拷一份到 resources/app/tools/，这样用户 / 面板在发布版里能直接
+   找到并运行注册脚本，不必回源码仓库翻。 */
+const REG_HOST_SRC = path.join(ROOT, 'orb', 'tools', 'register-browser-host.mjs');
+if (!fs.existsSync(REG_HOST_SRC)) { console.error('✗ 缺少注册脚本:', REG_HOST_SRC); process.exit(1); }
+cp(REG_HOST_SRC, path.join(APPDIR, 'tools', 'register-browser-host.mjs'));
+console.log('复制注册脚本 → resources/app/tools/register-browser-host.mjs');
+
+/* Native Messaging 宿主（2026-11-05）：**唯一需要保留 desktop/ 层级**的文件。
+   注册脚本生成的 orb-browser-host.cmd 里写的是 `%~dp0browserHost.cjs`，
+   %~dp0 就是 cmd 自己所在目录（DESKTOP_DIR = resources/app/desktop），
+   所以宿主必须和 cmd 同目录。其它 desktop 文件都平铺到 resources/app/
+   （main.js 靠 __dirname 找它们），只有这一个例外，故不走 APP_FILES。
+   漏打包 = 注册表写对了、扩展装了，一 connectNative 就 "Native host has exited"，
+   而开发态永远正常 —— 只炸发布版的那一类。 */
+const HOST_SRC = path.join(APP, 'browserHost.cjs');
+if (!fs.existsSync(HOST_SRC)) { console.error('✗ 缺少浏览器宿主:', HOST_SRC); process.exit(1); }
+const HOST_DST_DIR = path.join(APPDIR, 'desktop');
+fs.mkdirSync(HOST_DST_DIR, { recursive: true });
+cp(HOST_SRC, path.join(HOST_DST_DIR, 'browserHost.cjs'));
+console.log('复制浏览器宿主 → resources/app/desktop/browserHost.cjs');
+
 /* 桥进程：main.js 用 path.join(__dirname,'..','bridge.mjs') 定位，
    打包后就是 resources/bridge.mjs。它的 ESM 依赖 @modelcontextprotocol/sdk
    要放在 resources/node_modules（Node 按桥自身位置向上找 node_modules）。 */
@@ -243,6 +390,18 @@ for (const f of BRIDGE_LOCAL) {
   cp(src, path.join(OUT, 'resources', f));
   console.log('   ', f);
 }
+/* ESM 转发层落在 resources/ 根（mdEscape.mjs / artifactLayout.mjs），
+   内部用 createRequire("./desktop/X.cjs") 找 CJS 实现。
+   而 APP_FILES 只把 X.cjs 拷到 resources/app/ —— 打包态 resources/desktop/ 根本不存在，
+   于是发布版一 import 转发层就 MODULE_NOT_FOUND（开发态 orb/desktop/ 恰好有，测不出来）。
+   这一步同时修掉既有的 mdEscape 漏拷与新增的布局层，二者共用同一份 CJS 单实现。 */
+const BRIDGE_CJS_IMPL = ['mdEscape.cjs', 'artifactLayout.cjs'];
+for (const f of BRIDGE_CJS_IMPL) {
+  const src = path.join(APP, f);
+  if (!fs.existsSync(src)) { console.error('✗ 缺少 CJS 实现:', f); process.exit(1); }
+  cp(src, path.join(OUT, 'resources', 'desktop', f));
+  console.log('   desktop/' + f);
+}
 /* ⚠️ 桥的本地依赖**自动审计**：把拷进包里的 bridge.mjs 拿出来，
    扫出它所有 `from "./X"` / `import("./X")` 形式的相对导入，逐个确认 X 在
    resources/ 里真实存在。
@@ -291,13 +450,13 @@ let rtBytes = 0;
 })(RUNTIME_DST);
 console.log('    python.exe + Lib/site-packages，', (rtBytes / 1048576).toFixed(1), 'MB');
 
-/* 示例工作流 → resources/extras/workflows（main.js 启动时种子到 DATA_ROOT） */
+/* 示例自动化 → resources/extras/workflows（main.js 启动时种子到 DATA_ROOT） */
 if (fs.existsSync(WORKFLOW_SRC)) {
   const wfDst = path.join(OUT, 'resources', 'extras', 'workflows');
   fs.mkdirSync(wfDst, { recursive: true });
   const wfs = fs.readdirSync(WORKFLOW_SRC).filter((f) => f.endsWith('.json'));
   for (const f of wfs) cp(path.join(WORKFLOW_SRC, f), path.join(wfDst, f));
-  console.log('复制示例工作流…', wfs.length, '个');
+  console.log('复制示例自动化…', wfs.length, '个');
 } else console.log('  （无 workflows 目录，跳过）');
 
 /* 本地语音识别（ASR）源码：只带 .py/.ps1/.txt/.conf 四类文本，约 100 KB。
@@ -358,6 +517,9 @@ const must = [
   'ORB 控制台.exe',
   path.join('resources', 'app', 'main.js'),
   path.join('resources', 'app', 'panel.html'),
+  path.join('resources', 'app', 'panel.css'),
+  path.join('resources', 'app', 'automation.css'),
+  path.join('resources', 'app', 'automation.js'),
   path.join('resources', 'app', 'memory.js'),
   path.join('resources', 'app', 'voicepack', 'index.js'),
   path.join('resources', 'bridge.mjs'),

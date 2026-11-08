@@ -51,7 +51,7 @@ ORB 控制台是一个 **Electron 44 桌面应用**，形态是「常驻悬浮�
 
 ## 4. 硬约束（都是真事故换来的，改前必读）
 
-- **「古早 bug」的标准形态**：顶层 `getElementById('X').…` 而 HTML 里没有 `X` → 同步抛，静默掐掉其后整段脚本（用户看到的就是"点了没反应 / 只有动效"）。改完 HTML/JS **必跑** `node docs/_id_audit_all.cjs`。
+- **「古早 bug」的标准形态**：顶层 `getElementById('X').…` 而 HTML 里没有 `X` → 同步抛，静默掐掉其后整段脚本（用户看到的就是"点了没反应 / 只有动效"）。改完 HTML/JS **必跑** `node docs/_probes/panel/_id_audit_all.cjs`。
 - **改 UI 后必查对应关系**：HTML 里删了元素，JS 里对应的 `if (el)` 分支就变成永久空转的死代码（`#toolRec` / `#toolStop` 就是这么来的，前者还是"录制找不到停止键"的真根源）。要么补回元素，要么删掉分支。
 - **CSS 令牌只有已定义的**：圆角只有 `--r-sm(8px)` / `--r-lg(16px)`，**没有 `--r-md`**；用不存在的令牌会静默失效、不报错。
 - **主进程模块顶层禁碰 ready-gated API**（`screen` / `BrowserWindow` / `dialog` / `desktopCapturer` / `Tray` / `globalShortcut` / `nativeTheme` …）：同步抛会静默掐掉其后所有 `safeHandle` → 面板 `No handler registered`、按键全失效。**改 main.js 必须真启动一次看 `.orbdata/orb.log`**（headless 探针测不出主进程顺序）。
@@ -77,13 +77,13 @@ ORB 控制台是一个 **Electron 44 桌面应用**，形态是「常驻悬浮�
 
 1. `node --check orb/desktop/main.js` 与 `preload.js`；
 2. 四个 HTML 的内联脚本语法（`new Function` 包裹检查，避免 `await` 之类在错误作用域）；
-3. 静态审计四件套（都可直接 `node docs/_xxx.cjs`）：
-   - `_id_audit_all.cjs`：悬空 `id`，四个 HTML 全量；
-   - `_cls_audit.cjs`：JS 用到的 class 是否有样式；
-   - `_orb_audit.cjs`：`window.orb` 是否在 preload 白名单；
-   - `_div_audit.cjs`：标签配对；
+3. 静态审计四件套（2026-11-08 起都在 `docs/_probes/` 下按领域分好类了，直接 `node docs/_probes/<类>/_xxx.cjs`）：
+   - `panel/_id_audit_all.cjs`：悬空 `id`，四个 HTML 全量；
+   - `panel/_cls_audit.cjs`：JS 用到的 class 是否有样式；
+   - `storage/_orb_audit.cjs`：`window.orb` 是否在 preload 白名单；
+   - `panel/_div_audit.cjs`：标签配对；
 4. 大改动后真启动一次：`env -u ELECTRON_RUN_AS_NODE -u NODE_OPTIONS ./node_modules/electron/dist/electron.exe .`（本机默认带 `ELECTRON_RUN_AS_NODE=1`，不 unset 会把 electron 当 node 跑），看 `.orbdata/orb.log` 是否干净；
-5. 工作流接管 / 轮次推定等纯函数改动，跑 `docs/_round_test.mjs` / `_takeover_test.mjs` / `_probe_logic_test.mjs` 的断言。
+5. 工作流接管 / 轮次推定等纯函数改动，跑 `docs/_probes/llm/_round_test.mjs` / `_takeover_test.mjs` / `docs/_probes/panel/_probe_logic_test.mjs` 的断言。
 
 ---
 

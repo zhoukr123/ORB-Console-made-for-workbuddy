@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ORB Browser Bridge</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 14px; width: 320px; font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 14px; margin: 0 0 10px; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid rgba(127,127,127,.18); }
+  .row:last-of-type { border-bottom: 0; }
+  .k { opacity: .65; flex: none; }
+  .v { text-align: right; font-family: ui-monospace, Consolas, monospace; word-break: break-all; max-width: 200px; }
+  .ok { color: #1a9c4b; } .bad { color: #d0463b; } .warn { color: #c98a12; }
+  #err { margin-top: 10px; padding: 8px; border-radius: 6px; background: rgba(208,70,59,.10); white-space: pre-wrap; word-break: break-word; }
+  #err.none { background: rgba(26,156,75,.10); }
+  .foot { margin-top: 10px; opacity: .5; font-size: 11px; }
+
+  /* API 通道开关：与上面几行状态值区分开，单独一块卡片。 */
+  .ctl { margin-top: 10px; padding: 9px 10px; border-radius: 8px; background: rgba(127,127,127,.09); }
+  .ctl-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .ctl-title { font-weight: 600; }
+  .ctl-sub { display: block; font-weight: 400; font-size: 11px; opacity: .6; }
+  .sw { position: relative; flex: none; width: 40px; height: 22px; display: inline-block; }
+  .sw input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+  .sw .track { display: block; width: 40px; height: 22px; border-radius: 11px; background: rgba(127,127,127,.42); transition: background .16s ease; }
+  .sw .knob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.28); transition: transform .16s ease; }
+  .sw input:checked + .track { background: #1a9c4b; }
+  .sw input:checked + .track .knob { transform: translateX(18px); }
+  .sw input:disabled { cursor: not-allowed; }
+  .sw input:disabled + .track { opacity: .4; }
+  .sw input:focus-visible + .track { outline: 2px solid #1a9c4b; outline-offset: 2px; }
+  #apistate { margin-top: 7px; font-size: 12px; }
+  #apiwarn { margin-top: 6px; font-size: 11px; color: #c98a12; display: none; }
+  #apiwarn.on { display: block; }
+  .why { margin: 8px 0 0; padding: 0; list-style: none; font-size: 11px; line-height: 1.45; opacity: .78; }
+  .why li { position: relative; padding-left: 11px; margin-top: 3px; }
+  .why li::before { content: "·"; position: absolute; left: 2px; opacity: .7; }
+  details.more { margin-top: 7px; font-size: 11px; opacity: .72; }
+  details.more summary { cursor: pointer; opacity: .9; }
+  details.more ul { margin: 5px 0 0; padding-left: 14px; line-height: 1.45; }
+  details.more li { margin-top: 2px; }
+  b { font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>ORB Browser Bridge</h1>
+<div class="row"><span class="k">连接态</span><span class="v" id="conn">—</span></div>
+<div class="row"><span class="k">provider epoch</span><span class="v" id="epoch">—</span></div>
+<div class="row"><span class="k">channel 数</span><span class="v" id="channels">—</span></div>
+<div class="row"><span class="k">接管标签页数</span><span class="v" id="tabs">—</span></div>
+<div class="row"><span class="k">channel epoch</span><span class="v" id="chepoch">—</span></div>
+<div class="row"><span class="k">扩展 ID</span><span class="v" id="extid">—</span></div>
+<div class="row"><span class="k">宿主名</span><span class="v" id="host">—</span></div>
+
+<div class="ctl">
+  <div class="ctl-head">
+    <span class="ctl-title">API 通道<span class="ctl-sub">让 ORB 直接向站点公开接口取结构化数据</span></span>
+    <label class="sw" title="开启 / 关闭 API 通道">
+      <input type="checkbox" id="apich" aria-label="开启 API 通道">
+      <span class="track"><span class="knob"></span></span>
+    </label>
+  </div>
+  <div id="apistate">—</div>
+  <div id="apiwarn"></div>
+  <ul class="why">
+    <li><b>开启后</b>：只在任务确实需要时，由 ORB 向 <b id="apicount">已登记端点</b>发 GET（<span id="apinames">B 站 UP 主搜索、东方财富行情</span>），参数只透传登记过的字段。</li>
+    <li><b>不带</b>你的浏览器 Cookie 或登录态；但请求会向该站点暴露你的 IP 与查询词。</li>
+    <li><b>关闭后（默认）</b>：不发任何站外请求，相关能力退回 URL 搜索或视觉兜底，可能拿不到 mid、实时价这类结构化字段。</li>
+  </ul>
+  <details class="more">
+    <summary>更多边界</summary>
+    <ul>
+      <li>只准 https:443，禁本地 / 内网 / 云元数据地址；8 秒超时、512KB 上限。</li>
+      <li>端点白名单写在代码里，<b>不可自定义</b>，本开关不放大任何单次请求的能力。</li>
+      <li>端点会随站点风控/改版失效（B 站旧地址已因 412 风控换过一次）；失效时报错误码，不编数据。</li>
+      <li>失败返回错误码，不编造数据；开关状态由 ORB 桥持有，随桥重启保持。</li>
+      <li>桥未连接时开关不可用 —— 因为真正发请求的是桥，本地拨动不会有任何效果。</li>
+    </ul>
+  </details>
+</div>
+
+<div id="err" class="none">最近一条错误：无</div>
+<div class="foot">状态自动刷新 · 自研 Provider（com.orb.browser）· 安全判定与开关强制都在桥侧</div>
+<script src="popup.js"></script>
+</body>
+</html>

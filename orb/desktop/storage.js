@@ -13,9 +13,16 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { shell } = require("electron");
+/* 按日期分层的产物目录算法（录屏/截屏/看视频/导出/日志同树）。
+ * 单独成文件是为了让主进程(CJS)与桥(ESM)各 require 各自后缀的实现，
+ * 但 dayOf / 目录结构完全一致。 */
+const AL = require("./artifactLayout.cjs");
+const migrateLayout = require("./migrateLayout.cjs");
 
 /* 长期子目录。名字固定，是为了搬迁时只要搬这几个目录，
    不用逐个辨认散落的文件；也方便用户在资源管理器里一眼看懂。
+   扁平化后这些就是产物的真实落点：<root>/<kind>/<day>/<product>，
+   打开任何一个就能看到按日期分好的产物，不再有「占位空目录」也再没有会话层。
 
    vidx（看视频）：视频/音频解析产物的落盘位置，一个来源一个子目录，
    内含 meta/transcript/timeline/frames/media 等。它和 recordings 的区别是
@@ -25,6 +32,9 @@ const SUBDIRS = Object.freeze({
   history: "history",
   screenshots: "screenshots",
   vidx: "vidx",
+  exports: "exports",
+  archive: "archive",
+  misc: "misc",
 });
 
 /* 临时目录：录屏分片先写到 recordings/.tmp，合并成功才 rename 进 recordings。
@@ -158,6 +168,15 @@ function ensureSubdirs() {
     out.dirs.tmp = null;
     if (!out.error) out.error = "临时目录创建失败：" + errText(e);
   }
+  /* 新产物树：额外建当天公共层骨架（<kind>/<day>/、logs、spool、governance 等）。
+     失败只记到 out.error，绝不 return、也不动 out.ok —— 上面原有目录照常交付，
+     老结构照常可用（与 tmp 失败同级处理）。 */
+  try {
+    const l = L();
+    if (l) l.ensureDay();
+  } catch (e) {
+    if (!out.error) out.error = "产物日期目录创建失败：" + errText(e);
+  }
   return out;
 }
 
@@ -201,6 +220,21 @@ function countSubdirs(dir) {
   }
 }
 
+/** 数 vidx 下「解析过的视频个数」：扁平化后结构是 vidx/<day>/<vidKey>/，
+ *  顶层子目录是「天」，真正的一次解析任务是 <day> 下的 <vidKey> 子目录，
+ *  所以要对每个 <day> 目录再数一层子目录并累加。 */
+function countVidxJobs(vidxRoot) {
+  let days;
+  try { days = fs.readdirSync(vidxRoot, { withFileTypes: true }); }
+  catch { return 0; }
+  let n = 0;
+  for (const d of days) {
+    if (!d.isDirectory() || d.name.startsWith(".")) continue;
+    n += countSubdirs(path.join(vidxRoot, d.name));
+  }
+  return n;
+}
+
 /** 磁盘可用/总容量。statfs 在部分挂载类型上会失败，失败就返回 0（UI 显示「未知」）。 */
 function diskSpace(root) {
   try {
@@ -238,8 +272,10 @@ function stat() {
         files: exists ? scanRes.files : 0,
         /* 面板对「看视频」显示的是 folders（= 解析过的视频个数），不是 files。
            一次解析会产生 meta/transcript/timeline/frames/media 几十上百个文件，
-           拿 files 当"视频数"会显示成"274 个文件"，和目录里看到的完全对不上。 */
-        folders: exists ? countSubdirs(dir) : 0,
+           拿 files 当"视频数"会显示成"274 个文件"，和目录里看到的完全对不上。
+           扁平化后 vidx 是 vidx/<day>/<vidKey>/，顶层子目录是「天」，所以要用
+           countVidxJobs 数 <day> 下的 <vidKey> 子目录，而不是数顶层天数。 */
+        folders: exists ? (kind === "vidx" ? countVidxJobs(dir) : countSubdirs(dir)) : 0,
         bytes: exists ? scanRes.bytes : 0,
         truncated: !!scanRes.truncated,
       };
@@ -319,18 +355,25 @@ function setRoot(dir) {
   return { ok: true, root: target, prev, changed: true, needMigrate, reason: null };
 }
 
-/** 旧根里是不是已经有内容：没内容的「搬迁」不值得弹一个提示去烦用户。 */
+/** 目录里是否真有用户资产（非空，且不算 .tmp 工作目录）。 */
+function dirHasContent(dir) {
+  try {
+    if (!fs.existsSync(dir)) return false;
+    for (const name of fs.readdirSync(dir)) {
+      if (name === TMP_DIRNAME) continue;   // 临时目录不算用户资产
+      return true;
+    }
+  } catch { /* 读不了就当没内容 */ }
+  return false;
+}
+
+/** 旧根里是不是已经有内容：没内容的「搬迁」不值得弹一个提示去烦用户。
+ *  既要看扁平化后的分类目录，也要看旧形 artifacts 树。 */
 function hasContent(root) {
   for (const kind of Object.keys(SUBDIRS)) {
-    const dir = path.join(root, SUBDIRS[kind]);
-    try {
-      if (!fs.existsSync(dir)) continue;
-      for (const name of fs.readdirSync(dir)) {
-        if (name === TMP_DIRNAME) continue;   // 临时目录不算用户资产
-        return true;
-      }
-    } catch { /* 读不了就当没内容 */ }
+    if (dirHasContent(path.join(root, SUBDIRS[kind]))) return true;
   }
+  if (dirHasContent(path.join(root, "artifacts"))) return true;   // 旧形产物树
   return false;
 }
 
@@ -398,10 +441,14 @@ function migrate(opts) {
   if (isInside(to, from)) { res.ok = false; res.errors.push("旧目录位于新目录内部，搬迁会造成自我嵌套"); return res; }
 
   ensureSubdirs();   // 目标子目录必须先在，否则 copyTree 第一条 mkdir 也可能失败
-  for (const kind of Object.keys(SUBDIRS)) {
-    const src = path.join(from, SUBDIRS[kind]);
-    if (!fs.existsSync(src)) continue;
-    copyTree(src, path.join(to, SUBDIRS[kind]), res, 0);
+  try {
+    const m = migrateLayout.migrateRoot(from, to);
+    res.moved = m.moved; res.skipped = m.skipped; res.bytes = m.bytes;
+    res.truncated = !!m.truncated;
+    for (const e of (m.errors || [])) res.errors.push(e);
+    if (!m.ok) res.ok = false;
+  } catch (e) {
+    res.ok = false; res.errors.push((e && e.message) || String(e));
   }
   // 搬完就把 Prev 清掉：否则下次设置面板还会一直显示「有旧数据待搬迁」
   if (res.moved > 0 || (!res.errors.length && res.skipped > 0)) ctx.setState({ storageRootPrev: "" });
@@ -417,7 +464,18 @@ function migrate(opts) {
  * @returns {Promise<{ok: boolean, path: string|null, error: string|null}>}
  */
 async function openSubdir(kind) {
-  const dir = pathOf(kind);
+  let dir;
+  if (kind === "artifact-day") {
+    const l = L();
+    dir = l ? dayDir() : null;
+    if (dir) { try { l.ensure(dir); } catch {} }   // 先建再打开，openPath 对不存在的路径会静默失败
+  } else if (kind === "root") {
+    /* 存储根目录：把录屏/历史/截屏/看视频/产物五个子目录一起展示给用户，
+       是「打开存储位置」最自然的入口；之前按钮退化成只开录屏，是因为这里没接 root。 */
+    dir = resolveRoot();
+  } else {
+    dir = pathOf(kind);
+  }
   if (!dir) return { ok: false, path: null, error: "未知的子目录类型：" + String(kind) };
   try {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -448,9 +506,11 @@ async function openSubdir(kind) {
  */
 const VIDX_MEDIA_KEEP_DAYS = 7;
 
-/** 收集 vidx 下所有名为 media/source 的目录（限制深度，防止用户把别的东西塞进来）。 */
+/** 收集名为 media/source 的目录（限制深度，防止用户把别的东西塞进来）。
+ *  深度放宽到 8：新结构是 artifacts/<day>/sessions/<cid>/vidx/<key>/media，
+ *  比旧顶层 vidx/<key>/media 多了 day/sessions/cid 三层，4 层根本扫不到。 */
 function collectMediaDirs(dir, out, depth) {
-  if (depth > 4) return;
+  if (depth > 8) return;
   let ents = [];
   try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
   for (const e of ents) {
@@ -470,12 +530,24 @@ function collectMediaDirs(dir, out, depth) {
 function purgeVidxMedia(keepDays) {
   const days = Number(keepDays) > 0 ? Number(keepDays) : VIDX_MEDIA_KEEP_DAYS;
   const res = { ok: true, days, dirs: 0, removed: 0, freed: 0, failed: 0 };
-  const root = pathOf("vidx");
-  if (!root) return res;
-  try { if (!fs.existsSync(root)) return res; } catch { return res; }
   const cut = Date.now() - days * 86400000;
   const dirs = [];
-  collectMediaDirs(root, dirs, 0);
+  /* ① 新扁平结构：vidx/<day>/<vidKey>/media（pathOf("vidx") 即 <root>/vidx，是真实落点）；
+        不存在就跳过，别直接 return —— 可能还没有任何看视频产物。 */
+  const root = pathOf("vidx");
+  try { if (root && fs.existsSync(root)) collectMediaDirs(root, dirs, 0); } catch {}
+  /* ② 旧形：artifacts/<day>/sessions/<cid>/vidx 下各层的 media|source 目录（兼容旧数据）。
+        从 sessions/ 根深扫（深度 8 覆盖 day/sessions/cid/key 各层）；
+        新结构不存在也照样扫旧树。 */
+  try {
+    const l = L();
+    if (l) {
+      for (const day of (l.listDays() || [])) {
+        const sd = l.sessionsDir(day);
+        if (sd) collectMediaDirs(sd, dirs, 0);
+      }
+    }
+  } catch {}
   res.dirs = dirs.length;
   for (const d of dirs) {
     let ents = [];
@@ -500,6 +572,106 @@ function purgeVidxMedia(keepDays) {
   return res;
 }
 
+/* ---------------- 扁平化产物布局 ----------------
+ * 【固定形状，勿改】产物直接铺在存储根下，按类别按日期，两层：
+ *   <root>/<kind>/<YYYY-MM-DD>/<product>
+ *   kind ∈ recordings / screenshots / vidx / exports / archive / misc —— 录屏、截屏、看视频、导出、归档、杂项。
+ * 日志**不在**产物树里（用户要求「除日志文件外」）：<root>/logs/<YYYY-MM-DD>/。
+ * 观测治理流同理独立：<root>/governance/<YYYY-MM-DD>/。
+ * 目录算法由 artifactLayout.cjs 提供；这里只负责把「当前生效的 storageRoot」
+ * 喂给它 —— 用户改了存储根以后，每次取路径都必须重新 setRoot，不能把 root
+ * 定死在模块加载时（那时 state 甚至还没 loadState，取到的会是错的）。
+ * layout 内部所有 mkdir 失败已收敛、不抛；下面仍各自 try/catch 兜底。 */
+let layout = null;
+function L() {
+  const root = resolveRoot();
+  if (!layout) {
+    try { layout = AL.createLayout({ root, now: Date.now }); }
+    catch { return null; }
+  } else {
+    try { layout.setRoot(root); } catch {}
+  }
+  return layout;
+}
+
+/** 产物树根：artifacts/ */
+function artifactsRoot() { const l = L(); try { return l ? l.artifactsRoot() : null; } catch { return null; } }
+/** 日志树根：logs/（与产物树平级，不嵌在 artifacts/ 下）。 */
+function logsRoot() { const l = L(); try { return l ? l.logsRoot() : null; } catch { return null; } }
+/** 治理流根：governance/（同上，平级）。 */
+function govRoot() { const l = L(); try { return l ? l.govRoot() : null; } catch { return null; } }
+/** 某日（默认当天，UTC+8）的日期目录。 */
+function dayDir(day) { const l = L(); try { return l ? l.dayDir(day) : null; } catch { return null; } }
+/** 某会话目录。 */
+function sessionDir(cid, day) { const l = L(); try { return l ? l.sessionDir(cid, day) : null; } catch { return null; } }
+/**
+ * 某类产物的写入目录（按会话归集）。返回前顺手把目录建出来：
+ * 新结构是「日期/会话/kind」多层，调用方（例如截屏直接 writeFile）不一定会
+ * 自己 mkdir。kindDir 只给路径，ensure 才真正建，失败由 layout 收敛。
+ */
+function kindDir(kind, cid, day) {
+  const l = L();
+  if (!l) return null;
+  try {
+    const d = l.kindDir(kind, cid, day);
+    if (d) { try { l.ensure(d); } catch {} }
+    return d || null;
+  } catch { return null; }
+}
+/** 结构化日志目录（按天）。 */
+function logsDir(day) { const l = L(); try { return l ? l.logsDir(day) : null; } catch { return null; } }
+/** 桥未就绪时的日志 spool 目录（按天）。 */
+function spoolDir(day) { const l = L(); try { return l ? l.spoolDir(day) : null; } catch { return null; } }
+/** 一次性把某会话当天的五类产物目录建出来（录屏/截屏/看视频开始前调）。 */
+function ensureSession(cid, day) { const l = L(); try { return l ? (l.ensureSession(cid, day) || null) : null; } catch { return null; } }
+/** 日级 misc：当天生成但不属于任何会话的文件。 */
+function dayMiscDir(day) {
+  const l = L();
+  if (!l) return null;
+  try {
+    const d = l.dayMiscDir(day);
+    if (d) { try { l.ensure(d); } catch {} }
+    return d || null;
+  } catch { return null; }
+}
+/** 固定路径快照：面板显示、启动自检、日志落点共用同一份。 */
+function paths(cid, day) { const l = L(); try { return l ? (l.paths(cid, day) || null) : null; } catch { return null; } }
+/**
+ * 旧顶层目录（只读兼容）。新结构只影响新写入，历史文件仍躺在
+ * <root>/recordings、screenshots、vidx、artifacts 里，读取时要回落到这里。
+ */
+function legacyDir(kind) {
+  const l = L();
+  try {
+    const lg = l && l.legacy();
+    if (lg) {
+      if (typeof lg[kind] === "string" && lg[kind]) return lg[kind];
+      // exports / archive 是新增 kind，旧产物都归在顶层 artifacts/
+      if ((kind === "exports" || kind === "archive") && typeof lg.artifacts === "string") return lg.artifacts;
+    }
+  } catch {}
+  const k = (kind === "exports" || kind === "archive") ? "artifacts" : kind;
+  return pathOf(k);   // 兜底：旧 SUBDIRS 同名路径；未知 kind 返回 null
+}
+/** 给调用方 / 面板的一次性上下文快照。 */
+function artifactContext() {
+  const l = L();
+  try {
+    if (l) return { day: l.day(), artifactsRoot: l.artifactsRoot(), logsDir: l.logsDir() };
+  } catch {}
+  return { day: AL.dayOf(Date.now()), artifactsRoot: "", logsDir: "" };
+}function listDays() { const l = L(); try { return l ? (l.listDays() || []) : []; } catch { return []; } }
+function listProducts(day) { const l = L(); try { return l ? (l.listProducts(day) || []) : []; } catch { return []; } }
+function describe() { const l = L(); try { return l ? (l.describe() || {}) : {}; } catch { return {}; } }
+
+/** 相对产物根的安全路径解析：只放行 <YYYY-MM-DD>/… ，挡穿越 / 盘符 / 绝对路径。
+ *  I-17 产物浮层的主进程定位走这里，实现只有 artifactLayout.cjs 一份。 */
+function resolveSafe(rel) {
+  const l = L();
+  if (!l) return null;
+  try { return l.resolveSafe(rel); } catch { return null; }
+}
+
 module.exports = {
   SUBDIRS,
   TMP_DIRNAME,
@@ -513,4 +685,21 @@ module.exports = {
   migrate,
   openSubdir,
   purgeVidxMedia,
+  artifactsRoot,
+  logsRoot,
+  govRoot,
+  resolveSafe,
+  dayDir,
+  sessionDir,
+  kindDir,
+  dayMiscDir,
+  ensureSession,
+  paths,
+  logsDir,
+  spoolDir,
+  legacyDir,
+  artifactContext,
+  listDays,
+  listProducts,
+  describe,
 };

@@ -498,6 +498,185 @@ print("match:", process.extractOne("记事本", ["无标题 - 记事本"], score
     }
   }
 
+  /* ---------- 11. 治理层 + 录屏（2026-11-03 新增） ----------
+   * 这一组**不做破坏性动作**：不触发急停（那会杀掉用户正在跑的任务），
+   * 只验证"接口在、字段对、幂等生效"以及录屏链路的静态契约。
+   * 换代语义由 test/units.test.mjs 覆盖（纯内存、无副作用）。 */
+  console.log("\n[10] 治理层 / 录屏");
+  const H = { "X-Orb-Token": token };
+  /* 一次网络抖动不该判成产品故障：长间隔后复用到的 keep-alive 套接字被服务端
+   * 关掉时，fetch 会直接抛 "fetch failed"（不带重试）。这种情形重发一次就好，
+   * 与桥是否健康无关。真故障（桥挂、401、500）重试后依旧失败，照样报红。 */
+  async function getJson(p, tries = 3) {
+    let last;
+    for (let i = 0; i < tries; i++) {
+      try { return await fetch(BASE + p, { headers: H }).then((r) => r.json()); }
+      catch (e) { last = e; await new Promise((r) => setTimeout(r, 250)); }
+    }
+    throw last;
+  }
+  try {
+    const st = await getJson("/api/status");
+    check(st && st.stop && typeof st.stop.epoch === "number", "状态流带急停世代号", "epoch=" + (st.stop && st.stop.epoch));
+    check(st && st.tickets && typeof st.tickets.epoch === "number", "状态流带工单摘要", `在跑 ${st.tickets && st.tickets.open} / 共 ${st.tickets && st.tickets.total}`);
+    /* 世代号必须只有一个来源。曾经内存里的 STOP.epoch 每次启动从 0 重数，
+     * 而工单表的 epoch 落盘续用，两者一不等，"这单是不是上一代"的判断就全失效。 */
+    check(st && st.stop && st.tickets && st.stop.epoch === st.tickets.epoch,
+      "世代号内存值与工单表一致", `stop=${st.stop && st.stop.epoch} tickets=${st.tickets && st.tickets.epoch}`);
+    check(Array.isArray(st && st.notices), "状态流带通知队列", (st.notices || []).length + " 条");
+    check(st && st.pool && typeof st.pool.enabled === "boolean", "状态流带 Worker 池", "enabled=" + (st.pool && st.pool.enabled));
+  } catch (e) {
+    bad("状态流新增字段", e.message);
+  }
+
+  /* Max 模式背后就是池的 enable / disable。这里真按一次往返：
+     只看状态字段不够 —— 开关发出去被 400 掉（action 名写错、急停 409）
+     是最常见的静默失败，面板会一直显示"已开启"。 */
+  try {
+    const jh = { ...H, "Content-Type": "application/json" };
+    const on = await fetch(BASE + "/api/pool", {
+      method: "POST", headers: jh, body: JSON.stringify({ action: "enable", maxWorkers: 4 }),
+    }).then((r) => r.json());
+    const mid = await fetch(BASE + "/api/pool", { headers: H }).then((r) => r.json());
+    const off = await fetch(BASE + "/api/pool", {
+      method: "POST", headers: jh, body: JSON.stringify({ action: "disable" }),
+    }).then((r) => r.json());
+    check(on.enabled === true && mid.enabled === true && off.enabled === false,
+      "Max 模式开关可往返（池 enable→disable）", `maxWorkers=${on.maxWorkers}`);
+  } catch (e) { bad("Max 模式开关可往返", e.message); }
+
+  try {
+    const t = await fetch(BASE + "/api/tickets", { headers: H }).then((r) => r.json());
+    check(t.ok === true && !!t.summary, "工单表可读", `epoch=${t.summary && t.summary.epoch}`);
+  } catch (e) { bad("工单表可读", e.message); }
+
+  try {
+    const c = await fetch(BASE + "/api/cost", { headers: H }).then((r) => r.json());
+    check(c.ok === true && !!c.totals && typeof c.totals.costUSD === "number", "成本账本可读", `$${c.totals && c.totals.costUSD}`);
+  } catch (e) { bad("成本账本可读", e.message); }
+
+  try {
+    const o = await fetch(BASE + "/api/outbox", { headers: H }).then((r) => r.json());
+    check(o.ok === true && !!o.stats, "发件箱可读", `pending=${o.stats && o.stats.pending} sent=${o.stats && o.stats.sent}`);
+  } catch (e) { bad("发件箱可读", e.message); }
+
+  /* GUI 独占锁的真实语义：第二个持有者必须被拒。这是"桌面单例"的硬约束。 */
+  try {
+    const a1 = await fetch(BASE + "/api/gui-lock", {
+      method: "POST", headers: { ...H, "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "acquire", owner: "selftest-A" }),
+    }).then((r) => r.json());
+    const a2 = await fetch(BASE + "/api/gui-lock", {
+      method: "POST", headers: { ...H, "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "acquire", owner: "selftest-B" }),
+    }).then((r) => r.json());
+    check(a1.ok === true && a2.ok === false && a2.code === "busy", "GUI 锁独占生效", `A=${a1.ok} B=${a2.code || a2.ok}`);
+    if (a1.ok) {
+      await fetch(BASE + "/api/gui-lock", {
+        method: "POST", headers: { ...H, "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "release", token: a1.token }),
+      });
+    }
+  } catch (e) { bad("GUI 锁独占生效", e.message); }
+
+  try {
+    const p = await fetch(BASE + "/api/route", {
+      method: "POST", headers: { ...H, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "自检：随便一句话" }),
+    }).then((r) => r.json());
+    check(p.ok === true && p.plan && p.plan.dryRun === true, "派发器可出计划（dry-run）", p.plan && p.plan.dispatcher);
+  } catch (e) { bad("派发器可出计划（dry-run）", e.message); }
+
+  /* 录屏静态契约：打包清单 / IPC 通道 / 产物结构。实机录制走 rectest --live。 */
+  {
+    const r = spawnSync(process.execPath, [path.join(HERE, "rectest.mjs"), "--json"], { encoding: "utf8" });
+    let j = null;
+    try { j = JSON.parse(r.stdout || ""); } catch { /* 下面按失败处理 */ }
+    if (j) {
+      const bads = (j.results || []).filter((x) => x.level === "bad");
+      check(bads.length === 0, "录屏链路静态契约", bads.length ? bads.map((b) => b.name).join("；") : "全部通过");
+    } else {
+      bad("录屏链路静态契约", "rectest 没有输出可解析的 JSON（" + String(r.stderr || "").slice(0, 120) + "）");
+    }
+  }
+
+  /* ---------- 12. 面板静态契约（2026-11-03 新增） ----------
+   * 面板是单文件 1.8 万行，内联脚本改坏了**只有真把它跑起来才发现**——
+   * 桥的自检、单元测试都碰不到它。这一组用 node --check 直接验语法，
+   * 再验一次"急停口径"这类**跨文件文案**不要走散（同一句话曾同时存在于
+   * 面板 tooltip、设置页说明、SECURITY.md 三处，改行为时漏改就变成误导）。 */
+  console.log("\n[11] 面板静态契约");
+  try {
+    const p = path.join(HERE, "desktop", "panel.html");
+    const lines = fs.readFileSync(p, "utf8").split(/\r?\n/);
+    const open = lines.findIndex((l) => l.trim() === "<script>");
+    let close = -1;
+    for (let i = lines.length - 1; i >= 0; i--) if (lines[i].trim() === "</script>") { close = i; break; }
+    if (open < 0 || close <= open) {
+      bad("面板内联脚本语法", `没找到内联 <script> 块（open=${open}, close=${close}）`);
+    } else {
+      const body = lines.slice(open + 1, close).join("\n");
+      const tmp = path.join(os.tmpdir(), `orb-panel-check-${process.pid}.js`);
+      fs.writeFileSync(tmp, body, "utf8");
+      const r = spawnSync(process.execPath, ["--check", tmp], { encoding: "utf8" });
+      try { fs.unlinkSync(tmp); } catch {}
+      check(r.status === 0, "面板内联脚本语法",
+        r.status === 0 ? `${body.split("\n").length} 行通过` : String(r.stderr || "").split("\n").slice(0, 3).join(" "));
+    }
+  } catch (e) { bad("面板内联脚本语法", e.message); }
+
+  {
+    /* 急停口径：这四处的措辞必须一致指向"会让后台也停"。
+     * 只查打包进产品的那几个文件，docs/ 下的历史评估允许引用旧文案。 */
+    const files = ["SECURITY.md", path.join("orb", "desktop", "panel.html")];
+    const stale = "不影响已派发的后台任务";
+    const hits = [];
+    for (const f of files) {
+      try {
+        if (fs.readFileSync(path.join(HERE, "..", f), "utf8").includes(stale)) hits.push(f);
+      } catch { /* 文件不在就算了 */ }
+    }
+    check(hits.length === 0, "急停文案无残留旧口径",
+      hits.length ? hits.join("、") + " 仍写「" + stale + "」" : "已统一为「按下就全停」");
+
+    const panel = (() => {
+      try { return fs.readFileSync(path.join(HERE, "desktop", "panel.html"), "utf8"); } catch { return ""; }
+    })();
+    check(/STOP_SCOPE_NOTE\s*=\s*'[^']*终止在跑的后台任务/.test(panel),
+      "STOP_SCOPE_NOTE 与新行为一致", panel.includes("STOP_SCOPE_NOTE") ? "已同步" : "常量不见了");
+
+    /* 附件即时解析这条链路横跨四个文件，任何一环没接上，表现都只是"徽标不出现"
+     * （不报错、不崩），靠人眼很难发现。这里逐环点名。 */
+    const mainJs = (() => { try { return fs.readFileSync(path.join(HERE, "desktop", "main.js"), "utf8"); } catch { return ""; } })();
+    const preJs = (() => { try { return fs.readFileSync(path.join(HERE, "desktop", "preload.js"), "utf8"); } catch { return ""; } })();
+    const chain = [
+      ["主进程发 attach-probed", /webContents\.send\(\s*["']attach-probed["']/.test(mainJs)],
+      ["主进程有 attach-probe 处理", /["']attach-probe["']/.test(mainJs)],
+      ["preload 暴露 onAttachProbed", /onAttachProbed\s*:/.test(preJs)],
+      ["面板订阅并带 typeof 守卫", /typeof window\.orb\.onAttachProbed\s*===\s*['"]function['"]/.test(panel)],
+      ["面板把探针结果画进 chip", /renderAttachBar[\s\S]{0,600}attachProbeLabel\(/.test(panel)],
+    ];
+    const broken = chain.filter(([, okv]) => !okv).map(([n]) => n);
+    check(broken.length === 0, "附件解析链路四环接齐", broken.length ? "断开：" + broken.join("、") : chain.length + " 环全通");
+
+    /* Max 模式：一个开关管三件事，任何一环没接上，表现都是"开了没反应"。
+       这类"没反应"不报错、不崩，只能靠这里点名。 */
+    const packJs = (() => { try { return fs.readFileSync(path.join(HERE, "pack.cjs"), "utf8"); } catch { return ""; } })();
+    const maxChain = [
+      ["面板有 Max 开关", /id="maxBtn"/.test(panel)],
+      ["开关会同步到 /api/pool", /\/api\/pool/.test(panel) && /action:\s*maxMode\s*\?/.test(panel)],
+      ["选附件时 probe 跟随 Max", /pickAttachments\(\{\s*probe:\s*maxMode\s*\}\)/.test(panel)],
+      ["发送前会补解析（先发送再解析）", /await ensureProbed\(/.test(panel)],
+      ["扫描件走视觉兜底", /ocrScannedPdfs\(/.test(panel) && /window\.orb\.pdfPage\(/.test(panel)],
+      ["主进程有 pdf-page 处理", /["']pdf-page["']/.test(mainJs)],
+      ["preload 暴露 pdfPage", /pdfPage\s*:/.test(preJs)],
+      ["打包清单含 pdf-page.js", /['"]pdf-page\.js['"]/.test(packJs)],
+    ];
+    const maxBroken = maxChain.filter(([, okv]) => !okv).map(([n]) => n);
+    check(maxBroken.length === 0, "Max 模式三件事接线完整",
+      maxBroken.length ? "断开：" + maxBroken.join("、") : maxChain.length + " 项全通");
+  }
+
   /* ---------- 汇总 ---------- */
   console.log("\n" + "=".repeat(46));
   for (const [mark, name, detail] of results) {

@@ -26,6 +26,9 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+/* index.md / timeline.md 是永久保留、且会被 Agent 主读与渲染器加载的文本。
+   视频标题、来源 URL、ASR 台词、模型给的 why 全属不可信输入，统一先过净化层。 */
+const md = require("./mdEscape.cjs");
 
 const PY_SCRIPT = path.join(__dirname, "vidx_probe.py");
 const RT_DIRNAME = "vidxrt";          // 专属运行时目录（放在 userData，不跟存储根走）
@@ -1305,9 +1308,16 @@ function reviewSummary(transcript) {
 
 function buildIndex({ job, meta, frames, interval, transcript, origin }) {
   const L = [];
-  L.push("# " + (job.title || job.key));
+  /* front-matter：md 是唯一源格式，后面 html/pdf/docx/zip 都只是它的换壳产物。
+     epoch 在桌面侧拿不到（bridge 才是唯一来源），这里写 0，导出时由 bridge 补签当代值。 */
+  L.push(md.frontMatter({
+    key: job.key, epoch: job.epoch || 0, generatedAt: new Date().toISOString(),
+    source: md.safeLink(origin).slice(0, 200), revision: 1,
+  }).trimEnd());
   L.push("");
-  L.push("- 来源：" + origin);
+  L.push("# " + md.safeTitle(job.title || job.key));
+  L.push("");
+  L.push("- 来源：" + md.safeLink(origin));
   L.push("- 时长：" + fmtClock(meta.durationSec) + " · " + meta.width + "×" + meta.height + " · " + (meta.fps || 0) + "fps · " + meta.videoCodec);
   if (meta.audioSeparate) L.push("- 音轨：独立音频流（DASH 音视频分离，画面文件本身不含声音）");
   const segN = (transcript && transcript.ok && transcript.segments) ? transcript.segments.length : 0;
@@ -1333,8 +1343,9 @@ function buildIndex({ job, meta, frames, interval, transcript, origin }) {
   if (sus.length) {
     L.push("- 疑似误识：" + sus.length + " 处 **未替换**（模型不确定，仅供你判断，别当结论直接引用）");
     for (const o of sus.slice(0, 10)) {
-      L.push("  - " + fmtClock(o.s.start) + " 「" + o.s.text + "」 可能应是「" + o.s.suspect.text + "」"
-        + (o.s.suspect.why ? "（" + o.s.suspect.why + "）" : ""));
+      L.push("  - " + fmtClock(o.s.start) + " 「" + md.escapeInline(o.s.text) + "」 可能应是「"
+        + md.escapeInline(o.s.suspect.text) + "」"
+        + (o.s.suspect.why ? "（" + md.escapeInline(o.s.suspect.why) + "）" : ""));
     }
     if (sus.length > 10) {
       L.push("  - ……另有 " + (sus.length - 10) + " 处，完整清单见 transcript.json 的 segments[].suspect");
@@ -1431,6 +1442,11 @@ function segTag(s, v) {
 
 function buildTimeline({ meta, frames, transcript }) {
   const L = [];
+  L.push(md.frontMatter({
+    key: "timeline", epoch: 0, generatedAt: new Date().toISOString(),
+    source: "vidx", revision: 1,
+  }).trimEnd());
+  L.push("");
   const segs = (transcript && transcript.ok && transcript.segments) ? transcript.segments : [];
   /* 顶部一行说明"这些字是被校对过的"。Agent 主要读这个文件，
      它需要知道台词不是原始转写 —— 否则会把模型改错的字当原话引用。 */
@@ -1464,9 +1480,11 @@ function buildTimeline({ meta, frames, transcript }) {
         const t = segTag(s, v);
         if (t && tags.indexOf(t) < 0) tags.push(t);
       }
-      L.push("台词" + (tags.length ? "〔" + tags.join("/") + "〕" : "") + "：" + said.map((s) => s.text).join(" "));
+      L.push("台词" + (tags.length ? "〔" + tags.join("/") + "〕" : "") + "："
+        + md.escapeInline(said.map((s) => s.text).join(" ")));
     }
-    L.push("帧：`frames/" + f.file + "`");
+    const frameRef = md.frameRef("frames/" + f.file);
+    L.push(frameRef ? "帧：`" + frameRef + "`" : "帧：（本地抽帧路径不合法，已省略）");
     L.push("");
   }
   if (!frames.length) L.push("（没有截出任何帧）");

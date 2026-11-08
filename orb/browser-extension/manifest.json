@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "ORB Browser Bridge",
+  "version": "1.0.0",
+  "description": "ORB 自研浏览器 Provider：通过 com.orb.browser 本地宿主与 ORB 桥通信，安全判定全部在桥侧完成。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx8+1IWkir9g+S4NlxvQlTK27KlL/ETNC7xo9c3o1lVG2TAoCSUQ3ximOTNCuCSZjg5C0uHCcb5Src+l0mI3LdAmrf8y9BxHuKIsqg6jtPA2H+89zbJR2RBnjFDjWRmsmg5F9laDLsnsywWpuMtmucNxolkw64olhyHSWcP+0XnXIRSk9x/8//gLekzlkkD42wMLbzzp7ZGvhsxA4s0t744UJLV1mrWR2NPsz/TNfKQrpO971JXrjakGiXoLPrUBfZ9VwYPUuVmGgGPzNNosuFkSh5Q4FeYiZGW1yoFYDyPTr1J/uDkfT/G0bMv9XLDfjAFQdmzqbniA0Gi8iP3PjKwIDAQAB",
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "scripting",
+    "nativeMessaging",
+    "alarms",
+    "storage"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

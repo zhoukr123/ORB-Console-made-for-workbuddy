@@ -1,0 +1,9 @@
+{
+  "name": "com.orb.browser",
+  "description": "ORB Browser Bridge native messaging host (self-developed, com.orb.browser)",
+  "type": "stdio",
+  "path": "D:\\workbuddy_ORB控制台\\orb\\desktop\\orb-browser-host.cmd",
+  "allowed_origins": [
+    "chrome-extension://almhmgpgjdbbhgcdnhfopgnobjlcclki/"
+  ]
+}

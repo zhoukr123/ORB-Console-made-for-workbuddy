@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "note": "L2 声明式端点清单（唯一真源）。verify-endpoints 工具会回写 verified / last_verified / health。hostDataApi.mjs 优先读取本文件；读不到时回退到内联默认值（仅 2 个核心端点）。",
+  "defaults": {
+    "timeoutMs": 8000,
+    "maxBytes": 524288,
+    "encoding": "utf-8",
+    "headers": {
+      "Accept": "application/json",
+      "User-Agent": "ORB-HostDataApi/1.0"
+    }
+  },
+  "endpoints": {
+    "bilibili.com/search_uploader": {
+      "url": "https://api.bilibili.com/x/web-interface/search/all/v2",
+      "method": "GET",
+      "params": ["keyword"],
+      "channel": "api",
+      "label": "B 站 UP 主搜索",
+      "category": "影音/媒体",
+      "verified": true,
+      "last_verified": "2026-11-07",
+      "upstreamCode": { "field": "code", "ok": 0 },
+      "response": {
+        "kind": "json",
+        "pick": "data.result",
+        "pickBlock": { "matchKey": "result_type", "matchValue": "bili_user", "dataField": "data" }
+      }
+    },
+    "eastmoney.com/read_quote": {
+      "url": "https://push2.eastmoney.com/api/qt/stock/get",
+      "method": "GET",
+      "params": ["secid", "fields"],
+      "channel": "api",
+      "label": "东方财富行情",
+      "category": "金融/投资",
+      "verified": true,
+      "last_verified": "2026-11-07",
+      "response": { "kind": "json", "pick": "data" }
+    },
+    "tencent.com/read_quote": {
+      "url": "https://qt.gtimg.cn/q={code}",
+      "method": "GET",
+      "params": ["code"],
+      "channel": "api",
+      "label": "腾讯财经行情",
+      "category": "金融/投资",
+      "verified": true,
+      "last_verified": "2026-11-07",
+      "encoding": "gbk",
+      "response": {
+        "kind": "delimited",
+        "extract": "v_\\w+=\"([^\"]*)\"",
+        "delimiter": "~",
+        "fields": { "name": 1, "code": 2, "price": 3, "prevClose": 4, "open": 5, "volume": 6 },
+        "numeric": ["price", "prevClose", "open", "volume"]
+      }
+    },
+    "sina.com.cn/read_quote": {
+      "url": "https://hq.sinajs.cn/list={code}",
+      "method": "GET",
+      "params": ["code"],
+      "channel": "api",
+      "label": "新浪财经行情",
+      "category": "金融/投资",
+      "verified": true,
+      "last_verified": "2026-11-07",
+      "encoding": "gbk",
+      "headers": { "Referer": "https://finance.sina.com.cn" },
+      "response": {
+        "kind": "delimited",
+        "extract": "hq_str_\\w+=\"([^\"]*)\"",
+        "delimiter": ",",
+        "fields": { "name": 0, "open": 1, "prevClose": 2, "price": 3, "high": 4, "low": 5, "volume": 8 },
+        "numeric": ["price", "open", "prevClose", "high", "low", "volume"]
+      }
+    },
+    "github.com/search_repo": {
+      "url": "https://api.github.com/search/repositories?q={kw}&per_page={n}",
+      "method": "GET",
+      "params": ["kw", "n"],
+      "channel": "api",
+      "label": "GitHub 仓库搜索",
+      "category": "工具/AI/技术",
+      "verified": true,
+      "last_verified": "2026-11-07",
+      "headers": { "Accept": "application/vnd.github+json", "User-Agent": "orb-host/1.0" },
+      "response": { "kind": "json", "pick": "items" }
+    },
+    "github.com/get_user": {
+      "url": "https://api.github.com/users/{user}",
+      "method": "GET",
+      "params": ["user"],
+      "channel": "api",
+      "label": "GitHub 用户资料",
+      "category": "工具/AI/技术",
+      "verified": true,
+      "last_verified": "2026-11-07",
+      "headers": { "Accept": "application/vnd.github+json", "User-Agent": "orb-host/1.0" },
+      "response": { "kind": "json", "pick": "" }
+    },
+    "open-meteo.com/get_weather": {
+      "url": "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,wind_speed_10m&timezone=auto",
+      "method": "GET",
+      "params": ["lat", "lon"],
+      "channel": "api",
+      "label": "Open-Meteo 天气",
+      "category": "工具/AI/技术",
+      "verified": true,
+      "last_verified": "2026-11-07",
+      "response": { "kind": "json", "pick": "current" }
+    }
+  }
+}

@@ -1,5 +1,5 @@
 /* ══════════ 全局鼠标钩子 ══════════
- * 目的：录制工作流时，把「你手动在别的软件里做的操作」也录下来。
+ * 目的：录制自动化时，把「你手动在别的软件里做的操作」也录下来。
  *
  * 为什么挂在 bridge（Node 进程）而不是 Electron 主进程：
  *   Node 22 下 uiohook-napi 已实测可加载并可捕获真实事件；Electron 主进程的 ABI
@@ -42,7 +42,7 @@ let exclude = [];            // ORB 自己的窗口矩形，落在里面的操�
 let gesture = null;          // 当前这一"按"：{x0,y0,button,t,clicks,moved,x1,y1,ignored}
 let lastStepAt = 0;
 let stepCount = 0;
-/* 抑制窗口：ORB 自己发起的操作（/api/call、工作流回放、AI 视觉循环）
+/* 抑制窗口：ORB 自己发起的操作（/api/call、自动化回放、AI 视觉循环）
    会产生**真实**鼠标事件，钩子也看得见。但那些操作已经由 wfCapture 记过了，
    若不抑制就会被记两遍。调用期间把它关掉。 */
 let suppressed = false;

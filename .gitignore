@@ -188,6 +188,18 @@ docs/磨砂玻璃-验证截图.png
 # 是用户数据不是源码，别混进仓库（打包态落在 %APPDATA%\ORB 控制台）。
 /recordings/
 /screenshots/
+# v1.5.0 起存储根扁平化（recordings/screenshots/vidx/exports/archive/misc/logs），
+# 并且新增了一整层「运行期台账」。下面这些全都是本机跑出来的状态，
+# 换台机器就是空的、对访客毫无意义，还会把本机的任务轨迹带出去。
+/ORB存储/
+/artifacts/
+/governance/
+/trail/
+/api-channel.json
+/bridge.conf
+/cost-ledger.json
+/outbox.json
+/tickets.json
 
 # ---------- 9. 编辑器 / 系统 ----------
 .vscode/
@@ -224,3 +236,6 @@ tts/
 
 # 临时工作目录（探针与截图的中间产物，不入库）
 tmp/
+
+# 回收站目录（面板「删除」把工作流移到这里，属用户数据）
+/workflows-trash/

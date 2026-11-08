@@ -54,6 +54,13 @@ contextBridge.exposeInMainWorld("orb", {
   cmGet: () => ipcRenderer.invoke("cm-get"),
   cmSet: (patch) => ipcRenderer.invoke("cm-set", patch),
   cmClear: () => ipcRenderer.invoke("cm-clear"),
+  /* 设置 › 通道 › 检索工具（独立栏目）：key 只写不读，读回来的是掩码。
+     明文只留在主进程，启动桥时由它注入 ORB_SEARCH_API_KEY，绝不经 HTTP。 */
+  searchToolGet: () => ipcRenderer.invoke("search-tool-get"),
+  searchToolSet: (patch) => ipcRenderer.invoke("search-tool-set", patch),
+  searchToolClear: () => ipcRenderer.invoke("search-tool-clear"),
+  /* 测试：主进程读 vault 里的 key、直接发一条真实检索；面板只拿结论，拿不到 key。 */
+  searchToolTest: () => ipcRenderer.invoke("search-tool-test"),
   setVoice: (patch) => ipcRenderer.invoke("set-voice", patch),
   /* 首跑向导「已看过」标记（对应 main.js 的 set-wizard-done）。
      单独开通道而不复用 setVision：UI 标记不该混进视觉配置的写入语义。 */
@@ -114,7 +121,7 @@ contextBridge.exposeInMainWorld("orb", {
 
 
   /* 站点凭据库（设置 › 安全 › 我的站点）。
-     只存「站点 + 账户」，密码永不落盘；密文由主进程的 safeStorage 保护。
+     只存「站点 + 账户 + 密码存放位置别名 credentialAlias」，密码永不落盘；密文由主进程的 safeStorage 保护。
      注意：这里**没有任何通道能读出密文或密钥**，能做的只有增删改查这四条。 */
   vaultSites: () => ipcRenderer.invoke("vault-sites"),
   vaultSiteAdd: (input) => ipcRenderer.invoke("vault-site-add", input),
@@ -169,6 +176,19 @@ contextBridge.exposeInMainWorld("orb", {
   /* 转写后调 LLM 校对（修同音字/标点），没配模型或失败都退化为原样返回 */
   subLlmProof: () => ipcRenderer.invoke("sub-llm-proof"),
 
+  /* 导出 PDF：桥（ELECTRON_RUN_AS_NODE=1）拿不到 printToPDF，只能回一张渲染计划，
+     由面板把 plan.html 转交给主进程落地。入参只认 { html, fileName }：
+     目录由主进程定（产物树 exports/），渲染层不拼任何路径。 */
+  exportPdf: (payload) => ipcRenderer.invoke("artifact-render-pdf", payload),
+  /* 在资源管理器里定位刚导出的文件；只放行导出目录里的文件（见主进程白名单） */
+  exportReveal: (p) => ipcRenderer.invoke("artifact-reveal", p),
+  /* 打开本会话的导出目录（产物树 exports/），不存在先建 */
+  exportOpenDir: () => ipcRenderer.invoke("artifact-open-exports"),
+  /* I-17 产物浮层：只传 artifactId，路径由主进程查表 + resolveSafe 推导。
+     渲染层拿不到「打开任意文件」的入口。 */
+  artifactLocate: (id) => ipcRenderer.invoke("artifact-locate", String(id || "")),
+  artifactOpen: (id) => ipcRenderer.invoke("artifact-open", String(id || "")),
+
   /* 截屏（Snipaste）：装没装 / 唤起框选 / 首跑引导卡已读。
      唤起后截图由 Snipaste 直写 <存储根>/screenshots，字节不经过 IPC。 */
   snipDetect: () => ipcRenderer.invoke("snip-detect"),
@@ -214,8 +234,15 @@ contextBridge.exposeInMainWorld("orb", {
   /* 附件（加号）：引用语义 —— 选文件只回 {name,path,size}，文件不拷贝不移动，
      面板把路径拼进任务文本，Agent 凭路径自己读；缩略图另走 attach-preview
      读一张 ≤4MB 的图片 data URL。同样守白名单：不给 fs、不给通用 invoke。 */
-  pickAttachments: () => ipcRenderer.invoke("attach-pick"),
+  /* opts = { probe }：probe:false 时选完不解析（Max 模式关着时走"先发送再解析"） */
+  pickAttachments: (opts) => ipcRenderer.invoke("attach-pick", opts || {}),
   attachPreview: (p) => ipcRenderer.invoke("attach-preview", p),
+  /* 选完立刻解析的结果（主进程 → 面板，单次推送一批）。 */
+  onAttachProbed: (cb) => on("attach-probed", cb),
+  /* 手动重探：文件被改过、或首次解析超时的时候用 */
+  probeAttachment: (p) => ipcRenderer.invoke("attach-probe", p),
+  /* PDF 首页 → data URL（扫描件的视觉兜底，只在 Max 模式下调用） */
+  pdfPage: (p) => ipcRenderer.invoke("pdf-page", p),
   /* 字幕窗皮肤推送（主进程 → 字幕窗；面板只负责发起点，不转发） */
   onSubCfg: (cb) => on("sub:cfg", cb),
 
@@ -228,6 +255,9 @@ contextBridge.exposeInMainWorld("orb", {
   /* 外部 */
   openExternal: (url) => ipcRenderer.send("open-external", url),
   triggerReload: () => ipcRenderer.send("trigger-reload"),
+  /* 重启控制台：设置 › 安全 ›「写操作人工确认」切换后，弹窗让用户确认时用。
+     主进程侧 app.relaunch()+quit()，before-quit 会优雅收桥。 */
+  relaunch: () => ipcRenderer.invoke("app-relaunch"),
 
   /* 使用说明：设置面板「关于」页的入口。
      返回布尔值，让面板能显示"打开失败"而不是假装成功。 */

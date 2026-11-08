@@ -16,9 +16,23 @@ then reports the whole run back to the chat panel. A floating orb stays on your 
 
 </div>
 
-![ORB Console: the main panel](docs/hero.gif)
+![ORB Console: the main panel](docs/shots/theme-deepspace.png)
 
 ---
+
+## What's new in v1.5.0
+
+Measured against v1.4.5 this is a base-layer rewrite, not a feature drop: backend modules **7 → 102**, unit tests **0 → 122 files**, release gates **1 → 9**.
+
+| What | Why it matters |
+| --- | --- |
+| **Browser lane** | Load the extension and ORB drives the tab directly — read page text, open, click, type. **No mouse, no screenshot guessing.** Only 17 whitelisted commands; `eval` / `cookie` / `upload` are always denied |
+| **Plugins** | Drop a `.zip` / `plugin.json` / folder into Settings › Plugins, or pick from a 647-entry offline market index. Plugin output must pass an acceptance gate |
+| **Four governance tiers** | "Expert team" and "Max" are two orthogonal switches. Governance only exists when a team exists; heavy review is bound to team + Max |
+| **Automation that survives** | Pre-flight check, resume from checkpoint, versioned recipes with diff/rollback, run ledger, trash instead of delete |
+| **One storage root** | `ORB存储/<kind>/<day>/` for recordings, screenshots, exports, logs. The migrator copies, never deletes, and is idempotent |
+
+Full detail (Chinese): [docs/更新说明-v1.5.0.md](docs/更新说明-v1.5.0.md)
 
 ## Safety first
 
