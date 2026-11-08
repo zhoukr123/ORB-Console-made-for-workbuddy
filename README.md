@@ -209,14 +209,16 @@ ORB存储/
 
 | 方式 | 体积 | 说明 |
 | --- | --- | --- |
-| **便携单文件 `.exe`** | 约 220 MB | [Releases](https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases) 下载 `ORB-Console-<版本>-portable.exe`，双击即用 |
-| **便携包 `.zip`** | 约 220 MB | 同一个 Release 里的 zip，解压后运行里面的启动脚本 |
+| **便携单文件 `.exe`** | 约 374 MB | [Releases](https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases) 下载 `ORB-Console-<版本>-portable.exe`，双击即用 |
+| **便携包 `.zip`** | 约 374 MB | 同一个 Release 里的 zip，解压后运行里面的启动脚本 |
 | **从源码运行** | — | 需要 Node.js 22+，见下 |
 
 便携版是**自解压单文件**：运行后把自己展开到 `%LOCALAPPDATA%\ORBConsole` 并启动，
 不安装、不写注册表、不需要预装 Node 或 Python（运行时随包自带）。
 
-包里那 220 MB 中约有 9 MB 是**离线语音包**——360 句预生成语音，装完就能出声，不用联网、不用配接口。
+包里那 374 MB 主要是 Electron 运行时、随包自带的 Python 运行时（前台通道用）、Node 依赖，以及约 9 MB 的**离线语音包**——360 句预生成语音，装完就能出声，不用联网、不用配接口。
+
+> v1.4.5 是 212 MB，这一版涨到 374 MB：多出来的是随包自带的 Python 运行时（114.9 MB，前台通道不用再依赖你机器上的 Python），以及浏览器扩展、原生宿主和一批新模块。
 
 - 数据目录：`%APPDATA%\ORB 控制台`（成品在 `ORB存储/` 下）
 - 卸载：运行同目录下的 `卸载 ORB 控制台.cmd`
@@ -532,8 +534,8 @@ node orb\tools\verify-all.mjs      :: 全部门禁：单测 / 打包闭包 / 面
 **我原来的录屏和截图呢？**
 第一次启动会问要不要「搬过来」。迁移只复制不删除，源目录原样保留；重复跑也不会产生重复文件。
 
-**为什么便携包有 220 MB？**
-它自带 Electron 运行时、Node/Python 依赖，以及约 9 MB 的离线语音包，换来了「不装任何东西也能双击运行、开口就有声」。
+**为什么便携包有 374 MB？**
+它自带 Electron 运行时、随包自带的 Python 运行时（114.9 MB）、Node 依赖，以及约 9 MB 的离线语音包，换来了「不装任何东西也能双击运行、开口就有声」。
 
 **录屏能只录一部分屏幕吗？**
 能。「设置 › 截屏与录屏 › 录制区域」里选半屏 / 中间 / 自定义框选。选的是相对屏幕的比例，换分辨率或改缩放后依然指得对地方。
