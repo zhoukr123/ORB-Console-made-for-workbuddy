@@ -47,15 +47,30 @@
 ## 提交记录（本地 `main`）
 - `2307c58` perf(governance): S1 版本单一真相源 + S2 wb-callback 收编 logBus + #32 桥依赖生产闭包瘦身
 - `a0a39dd` feat(browser): S3 扩展新鲜度桥侧比对
-- （本批次）S4/S5/S6 + S3 测试修复
+- `90eafb6` feat(governance): S4 脱离视觉循环 + S5 缺席检测 + S6 安装清单
+- `56280f3` perf(panel): 派发前置预取 + 不拆句的投机开页
+
+## GitHub 发布（2026-11-09 完成）
+- **代码**：`git push origin main` → `a4d2618..56280f3`；远端 HEAD `56280f3` 与本地一致。
+- **Release `v1.5.0`（ID `438418638`）**资产整体替换完毕，最终 3 个、全部 `state=uploaded`：
+
+  | 资产 | 大小 | SHA256 |
+  |---|---|---|
+  | `ORB-Console-1.5.0-202611090632-portable.exe` | 218.6 MB | `2002e72366e7dd7adfeb57246688efb3eab5053ab71084ae5524af5f8974b092` |
+  | `ORB-Console-1.5.0-202611090632.zip` | 218.4 MB | `85d2cb1e4a6f3be7460d2ebda8362948505dd07fb317406e88c5a37595a9fad4` |
+  | `ORB-Console-1.5.0-202611090632.install-manifest.json` | 2.2 MB | `dee19c5e3bc5db117fea285a05599ccf470fe6956a682447168b5e230e41caa0` |
+
+  旧的 `ORB-Console-1.5.0-portable.exe` / `ORB-Console-1.5.0.zip`（各 223MB）已删除。下载页：https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases/tag/v1.5.0
+- **顺序保障**：先上传 3 个新资产并逐项确认 `state=uploaded`，才删旧资产；期间 Release 从未出现无包可下的空窗。
+- **踩坑记录**：
+  1. 本机有 `HTTPS_PROXY`，Node 原生 `https` 不走代理，大 POST 被中间设备 RST / 返回 HTML 400。改用 `curl`（自动读代理），token 经 `--config -` 从 stdin 传入，不进 argv、不落盘、不回显。
+  2. 首轮清理正则误写 `1\.5\.0-(portable\.exe|zip)`，漏匹配 `ORB-Console-1.5.0.zip`（`.0` 后是点不是连字符），导致旧 zip 残留。改为 `1\.5\.0(?:-portable\.exe|\.zip)$` 后幂等清理完成。
+- **验证边界（如实）**：Release API 已确认 3 个资产名 / 大小 / 状态与上传回执一致；但 `github.com/releases/download` → `release-assets.githubusercontent.com` 在本环境走代理 502、直连超时，**未能做下载后 SHA256 复算**，需在可访问 GitHub 的浏览器环境点开下载页确认一次。
 
 ## 待办 / 阻塞
-- **GitHub 上传阻塞**：本环境当前无法访问 GitHub（`git ls-remote` 报 `CONNECT tunnel 502`），故 `git push` 与 Release 资产重新上传均无法在本会话完成。最终优化包已就绪于：
-  - `dist/ORB控制台-1.5.0-202611090632-便携版.exe`（218.6 MB）
-  - `dist/ORB控制台-1.5.0-202611090632.zip`
-  - 目录 `dist/ORB控制台-1.5.0-202611090632/`
-  待网络恢复后，到能访问 GitHub 的环境执行删除旧资产 + 上传上述新包即可（Release ID 仍沿用既有 v1.5.0）。
-- **磁盘**：`dist/` 下累积了多个历史构建（1.4.5–1.5.0，约 4 GB+）。运行 `orb\清理旧构建.cmd`（默认保留最新 1 份）可回收，建议上传完成后执行。
+- **真实代码签名**：仍需证书采购、`signtool`、证书链与 RFC3161 时间戳；当前 manifest 如实标 `unsigned`。
+- **Python 运行时外置**：zip 现 218.4MB（旧 223MB），仍高于 200MB 目标；外置 114.9MB 运行时后估算 169.2MB 可达标。
+- **磁盘**：`dist/` 下累积了多个历史构建（1.4.5–1.5.0，约 4 GB+）。运行 `orb\清理旧构建.cmd`（默认保留最新 1 份）可回收。
 
 ## 批次 #38–#41：派发前置预取 + 不拆句投机开页（2026-11-09）
 
