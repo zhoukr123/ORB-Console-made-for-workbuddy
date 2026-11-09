@@ -2,7 +2,9 @@
 /* 校验安装清单（方案 S6）：复算哈希防篡改、核对版本、签名/来源/新鲜度分列判定。
  *
  * 用法：
- *   node orb/tools/verify-manifest.mjs <构建目录> [--expected-build-id=xxx] [--channel=..] [--json]
+ *   node orb/tools/verify-manifest.mjs <构建目录> [--manifest=独立清单路径] [--expected-build-id=磁盘侧buildId] [--channel=..] [--json]
+ *   --manifest 用于校验发布资产（清单与构建目录分开放时）；
+ *   --expected-build-id 不给时新鲜度列记 unknown，属预期行为而非资产缺字段。
  *
  * 退出码：0 = 通过/仅警告；1 = 拒绝（哈希不符 / 版本漂移 / 新鲜度失效需拒绝创建新目标）。
  * 注意：签名过期 / 内部调试未签名是**分列判定**，不因它们把 verdict 直接打成 reject。
@@ -66,7 +68,7 @@ const IS_MAIN = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPa
 if (IS_MAIN) {
   const argv = process.argv.slice(2);
   const dirArg = argv.find((a) => !a.startsWith("--"));
-  if (!dirArg) { console.error("用法: node verify-manifest.mjs <构建目录> [--expected-build-id=..] [--channel=..] [--json]"); process.exit(1); }
+  if (!dirArg) { console.error("用法: node verify-manifest.mjs <构建目录> [--manifest=..] [--expected-build-id=..] [--channel=..] [--json]"); process.exit(1); }
   const argOf = (k, d) => { const a = argv.find((x) => x.startsWith(`--${k}=`)); return a ? a.slice(k.length + 3) : d; };
   const asJson = argv.includes("--json");
   const mp = argOf("manifest", undefined);

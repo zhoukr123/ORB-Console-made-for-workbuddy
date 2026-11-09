@@ -50,22 +50,25 @@
 - `90eafb6` feat(governance): S4 脱离视觉循环 + S5 缺席检测 + S6 安装清单
 - `56280f3` perf(panel): 派发前置预取 + 不拆句的投机开页
 
-## GitHub 发布（2026-11-09 完成）
-- **代码**：`git push origin main` → `a4d2618..56280f3`；远端 HEAD `56280f3` 与本地一致。
-- **Release `v1.5.0`（ID `438418638`）**资产整体替换完毕，最终 3 个、全部 `state=uploaded`：
+## GitHub 发布（2026-11-09，v1.5.0 两次发布）
+- **代码**：`git push origin main` → `a4d2618..56280f3` → `93dfd12` → 本批次提交；远端 HEAD 与本地一致。
+- **Release `v1.5.0`（ID `438418638`）**最终资产（第二次发布，构建戳 `202611091454`，**版本号仍为 1.5.0**），全部 `state=uploaded`：
 
   | 资产 | 大小 | SHA256 |
   |---|---|---|
-  | `ORB-Console-1.5.0-202611090632-portable.exe` | 218.6 MB | `2002e72366e7dd7adfeb57246688efb3eab5053ab71084ae5524af5f8974b092` |
-  | `ORB-Console-1.5.0-202611090632.zip` | 218.4 MB | `85d2cb1e4a6f3be7460d2ebda8362948505dd07fb317406e88c5a37595a9fad4` |
-  | `ORB-Console-1.5.0-202611090632.install-manifest.json` | 2.2 MB | `dee19c5e3bc5db117fea285a05599ccf470fe6956a682447168b5e230e41caa0` |
+  | `ORB-Console-1.5.0-202611091454-portable.exe` | 218.6 MB | `98c2129e978a560328bb5cee90bd12fa987f4727155e78acaa7b323a699c1481` |
+  | `ORB-Console-1.5.0-202611091454.zip` | 218.5 MB | `9cac19db563638c7f02afff4db62dbba9ef359f4969d5b95b33ceb80de32950d` |
+  | `ORB-Console-1.5.0-202611091454.install-manifest.json` | 2.2 MB | `de4ca362c2a342d61f92c715fa3d2c105d746404c19a364230061158316f0211` |
 
-  旧的 `ORB-Console-1.5.0-portable.exe` / `ORB-Console-1.5.0.zip`（各 223MB）已删除。下载页：https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases/tag/v1.5.0
+  `buildId=1.5.0-202611091454-c8f60486a156`，`files=11151`。第一版（`202611090632`）的 3 个资产已全部删除。下载页：https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases/tag/v1.5.0
 - **顺序保障**：先上传 3 个新资产并逐项确认 `state=uploaded`，才删旧资产；期间 Release 从未出现无包可下的空窗。
+- **为什么有第二次**：第一版 `202611090632` 是当天 06:32 的构建，不含下午 #38–#41 的面板优化。本轮重跑 `pack.cjs` 生成 `202611091454`，并验证发布包内 `resources/app/panel.html` 与源码 `orb/desktop/panel.html` **SHA256 完全一致**（`674cfa81…`），确认真带上了新代码；`VERSION` 仍为 `1.5.0`，只换构建戳。
+- **工具固化**：`orb/tools/release-upload.mjs`（`--dry` / `--selftest` / `--cleanup` / `--stamp=`）。凭证从 Git Credential Manager 取、只在内存用；token 经 curl `--config -` 从 stdin 传入，不进 argv、不落盘、不回显。必须走 curl：本机有 `HTTPS_PROXY`，Node 原生 `https` 不走代理，大 POST 被 RST / HTML 400。顺手补全 `verify-manifest.mjs` 用法注释（`--manifest=` / `--expected-build-id=`）。
+- **同一个坑踩了两次（已锁死）**：清理正则把 `.zip` / `.install-manifest.json` 的分隔点误写成连字符，先后各漏删一次旧资产。工具里改用 `[-.]` 字符类，加 `--selftest` 10 项断言锁住命名规则；删旧一律基于**实时资产列表**而非启动快照。
 - **踩坑记录**：
   1. 本机有 `HTTPS_PROXY`，Node 原生 `https` 不走代理，大 POST 被中间设备 RST / 返回 HTML 400。改用 `curl`（自动读代理），token 经 `--config -` 从 stdin 传入，不进 argv、不落盘、不回显。
   2. 首轮清理正则误写 `1\.5\.0-(portable\.exe|zip)`，漏匹配 `ORB-Console-1.5.0.zip`（`.0` 后是点不是连字符），导致旧 zip 残留。改为 `1\.5\.0(?:-portable\.exe|\.zip)$` 后幂等清理完成。
-- **验证边界（如实）**：Release API 已确认 3 个资产名 / 大小 / 状态与上传回执一致；但 `github.com/releases/download` → `release-assets.githubusercontent.com` 在本环境走代理 502、直连超时，**未能做下载后 SHA256 复算**，需在可访问 GitHub 的浏览器环境点开下载页确认一次。
+- **验证边界（如实）**：认证 API 已确认 3 个资产名 / 大小 / `state=uploaded`；清单带 `--expected-build-id` 复验为 `fresh`、逐文件哈希 `missing=0 changed=0 extra=0`；全量单测 1497/1497、四项门禁全绿。但 `github.com/releases/download` → `release-assets.githubusercontent.com` 在本环境代理 502、直连超时，**未能做下载后 SHA256 复算**；匿名 API 复核也撞到限流（已改用认证通道）。需在可访问 GitHub 的浏览器点开下载页确认一次。
 
 ## 待办 / 阻塞
 - **真实代码签名**：仍需证书采购、`signtool`、证书链与 RFC3161 时间戳；当前 manifest 如实标 `unsigned`。
