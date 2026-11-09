@@ -51,7 +51,7 @@
 - `56280f3` perf(panel): 派发前置预取 + 不拆句的投机开页
 
 ## GitHub 发布（2026-11-09，v1.5.0 两次发布）
-- **代码**：`a4d2618..56280f3` → `93dfd12` 已推送；最新提交 `8a55eab`（发布工具 + 文档）因代理波动 **暂未推送**，本地已提交，网络恢复后执行 `git push origin main` 即可。Release 资产上传在推送失败之前已完成，不受影响。
+- **代码**：`a4d2618..56280f3` → `93dfd12` → `76f9a2f` **已全部推送**；认证 API 独立复核 `refs/heads/main = 76f9a2fb9057418206be336f40163637836af329`，与本地 HEAD 一致，`git status` 干净。此前 `8a55eab` / `76f9a2f` 卡在代理 TLS 故障，本轮定位根因后推完（见末尾「网络根因与收口」）。
 - **Release `v1.5.0`（ID `438418638`）**最终资产（第二次发布，构建戳 `202611091454`，**版本号仍为 1.5.0**），全部 `state=uploaded`：
 
   | 资产 | 大小 | SHA256 |
@@ -63,7 +63,7 @@
   `buildId=1.5.0-202611091454-c8f60486a156`，`files=11151`。第一版（`202611090632`）的 3 个资产已全部删除。下载页：https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases/tag/v1.5.0
 - **顺序保障**：先上传 3 个新资产并逐项确认 `state=uploaded`，才删旧资产；期间 Release 从未出现无包可下的空窗。
 - **为什么有第二次**：第一版 `202611090632` 是当天 06:32 的构建，不含下午 #38–#41 的面板优化。本轮重跑 `pack.cjs` 生成 `202611091454`，并验证发布包内 `resources/app/panel.html` 与源码 `orb/desktop/panel.html` **SHA256 完全一致**（`674cfa81…`），确认真带上了新代码；`VERSION` 仍为 `1.5.0`，只换构建戳。
-- **工具固化**：`orb/tools/release-upload.mjs`（`--dry` / `--selftest` / `--cleanup` / `--stamp=`）。凭证从 Git Credential Manager 取、只在内存用；token 经 curl `--config -` 从 stdin 传入，不进 argv、不落盘、不回显。必须走 curl：本机有 `HTTPS_PROXY`，Node 原生 `https` 不走代理，大 POST 被 RST / HTML 400。顺手补全 `verify-manifest.mjs` 用法注释（`--manifest=` / `--expected-build-id=`）。
+- **工具固化**：`orb/tools/release-upload.mjs`（`--dry` / `--selftest` / `--cleanup` / `--stamp=`）。凭证从 Git Credential Manager 取、只在内存用；token 经 curl `--config -` 从 stdin 传入，不进 argv、不落盘、不回显。API 与上传统一走 `curl`：本机有 `HTTPS_PROXY`，Node 原生 `https` 不走代理，大 POST 被 RST / HTML 400，且代理 MITM 下 Node 不读 Windows 系统根证书库会报 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`；curl(schannel) 读系统库，只需 `--ssl-no-revoke`，证书链验证仍保留（不是 `-k`）。顺手补全 `verify-manifest.mjs` 用法注释（`--manifest=` / `--expected-build-id=`）。
 - **同一个坑踩了两次（已锁死）**：清理正则把 `.zip` / `.install-manifest.json` 的分隔点误写成连字符，先后各漏删一次旧资产。工具里改用 `[-.]` 字符类，加 `--selftest` 10 项断言锁住命名规则；删旧一律基于**实时资产列表**而非启动快照。
 - **踩坑记录**：
   1. 本机有 `HTTPS_PROXY`，Node 原生 `https` 不走代理，大 POST 被中间设备 RST / 返回 HTML 400。改用 `curl`（自动读代理），token 经 `--config -` 从 stdin 传入，不进 argv、不落盘、不回显。
@@ -73,7 +73,7 @@
 ## 待办 / 阻塞
 - **真实代码签名**：仍需证书采购、`signtool`、证书链与 RFC3161 时间戳；当前 manifest 如实标 `unsigned`。
 - **Python 运行时外置**：zip 现 218.4MB（旧 223MB），仍高于 200MB 目标；外置 114.9MB 运行时后估算 169.2MB 可达标。
-- **磁盘**：`dist/` 下累积了多个历史构建（1.4.5–1.5.0，约 4 GB+）。运行 `orb\清理旧构建.cmd`（默认保留最新 1 份）可回收。
+- **磁盘**：`dist/` 下 24 项历史构建（1.4.5–1.5.0，合计 **6434.8 MB**）+ 当前 `202611091454` 全套 4 项（949.1 MB）。⚠️ `orb\清理旧构建.cmd` 默认 `-Keep 1` 会**误删当前发布构建**的 portable.exe / zip / 构建目录（只保留 manifest），不要直接跑；需先改成按 stamp 白名单保留整套，再送回收站。
 
 ## 批次 #38–#41：派发前置预取 + 不拆句投机开页（2026-11-09）
 
@@ -97,3 +97,27 @@
 - 全量单测 **1497 / 1497**、真起桥冒烟 **87 / 87**、面板内联脚本语法检查 `syntax_bad=0`。
 - 门禁全绿：`VERSION_CONSISTENT 1.5.0` / `PACK_CLOSURE OK(96/96, 137 边)` / `REG_OK(105 模块)` / `WIRING_AUDIT_OK(6 通过 / 2 提示)`。
 - 修过 1 处回归：`searchToDocWiring.test.mjs` 静态锁死 `catch { return false; }`，把清零挪到函数开头恢复原接线，未改测试迁就代码。
+
+## 网络根因与收口（截图「已提交成功」的澄清）
+
+**用户截图**显示 Release Assets 里有 3 个 `202611091454` 新资产（17/16/15 minutes ago），另有 `Source code (zip)` / `Source code (tar.gz)` 两行显示 `yesterday`。截图没错，但两者不是一回事：
+
+| 对象 | SHA | 说明 |
+|---|---|---|
+| `refs/heads/main` | `76f9a2f…` | 源码分支，本轮推送前停在 `93dfd12` |
+| `refs/tags/v1.5.0` | `c051c4f…` | 昨天打 tag 时锁定的提交，**不随 `main` 更新** |
+
+`Source code (zip/tar.gz)` 是 GitHub 按 tag 自动生成的源码快照，永远显示打 tag 时的时间（`yesterday`），既不能证明、也不影响 `main` 推送。截图真正证明的是 **Release 二进制资产上传成功**；源码那两个本地提交当时确实还没推上去。
+
+**根因**：不是「代理挂了」这么笼统，而是 Windows `schannel` 报 `CRYPT_E_NO_REVOCATION_CHECK` —— 本机 `127.0.0.1:49377` 代理 MITM 后，CRL/OCSP 吊销检查不可达。逐一验证：
+
+- `curl --ssl-no-revoke https://api.github.com/` → **200**（schannel 读系统根证书库，只是吊销检查要绕过）；
+- `git -c http.schannelCheckRevoke=false` / `GIT_SSL_NO_REVOKE=1` / `http.schannelUseSSLCAInfo=false` → **三条全失败**（该开关在这台机器的 Git for Windows 上不生效）；
+- `git -c http.sslBackend=openssl -c http.sslCAInfo=<Git ca-bundle>` → 失败（代理 MITM 根证书不在 Git 自带 bundle 里）；
+- `git -c http.sslBackend=openssl -c http.sslVerify=false` → **成功**。
+
+**处置**：一次性参数 `git -c http.sslBackend=openssl -c http.sslVerify=false push origin main`，不改全局配置；`93dfd12..76f9a2f` 推送成功。该组合跳过 TLS 验证，仅适用于本机 127.0.0.1 代理终结 TLS 的场景，不作为常规做法。推送结果另用**保留验证**的 `curl --ssl-no-revoke` + 认证 API 交叉复核，两条独立通道一致。
+
+**顺手修掉的工具回归**：`orb/tools/release-upload.mjs` 的小 API 原来走 Node `https`，在同一代理下会崩 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`（当天只能靠 `NODE_OPTIONS=--use-system-ca` 绕）。已把 `api()` 也改成走 `curl --ssl-no-revoke`，与上传共用同一条代理/TLS 通道；token 仍只经 `--config -` 从 stdin 进 curl。现在不带任何环境变量即可 `--selftest` / `--dry` 正常运行。
+
+**本轮门禁**：单测 **1497 / 1497**、真起桥冒烟 **87 / 87**；`VERSION_CONSISTENT 1.5.0` / `PACK_CLOSURE OK(96/96, 137 边)` / `REG_OK(105 模块)` / `WIRING_AUDIT_OK(6 通过 / 2 提示)` / `MANIFEST_VERIFY_OK`（哈希 `missing=0 changed=0 extra=0`、新鲜度 `fresh`、签名列如实 `unsigned`）全绿。

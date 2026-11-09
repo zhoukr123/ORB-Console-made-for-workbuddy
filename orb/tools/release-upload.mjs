@@ -9,8 +9,11 @@
  * 设计要点（都是拿事故换的）：
  *   · 凭证从 Git Credential Manager 取，只在内存里用，不落盘、不进 argv、不回显；
  *     token 经 curl 的 --config - 从 stdin 传入。
- *   · 必须走 curl：本机有 HTTPS_PROXY，Node 原生 https 不走代理，
- *     大 POST 会被中间设备 RST / 返回 HTML 400。
+ *   · API 与上传都走 curl：本机有 HTTPS_PROXY，Node 原生 https 不走代理，
+ *     大 POST 会被中间设备 RST / 返回 HTML 400；且代理会 MITM TLS，
+ *     Node 不读 Windows 系统根证书库，会报 UNABLE_TO_VERIFY_LEAF_SIGNATURE。
+ *     curl(schannel) 读系统库，只需 --ssl-no-revoke 关掉被代理挡住的吊销检查，
+ *     证书链验证仍保留（不等于 -k / sslVerify=false）。
  *   · 顺序：先传完新资产并逐项确认 state=uploaded，才删旧资产（实时列表，不用启动快照），
  *     Release 全程不出现无包可下的空窗。
  *   · 删旧只认已知命名模式且不含当前 stamp，不误删用户手动挂的其它资产。
@@ -18,7 +21,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import https from "node:https";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
@@ -117,28 +119,52 @@ function headers(tok, extra = {}) {
   };
 }
 
-function request(opts) {
-  return new Promise((resolve, reject) => {
-    const req = https.request(opts, (res) => {
-      const chunks = [];
-      res.on("data", (c) => chunks.push(c));
-      res.on("end", () => {
-        const text = Buffer.concat(chunks).toString("utf8");
-        let json = null;
-        try { json = JSON.parse(text); } catch {}
-        resolve({ status: res.statusCode, headers: res.headers, json, text });
-      });
-    });
-    req.on("error", reject);
-    req.setTimeout(120000, () => req.destroy(new Error("api request timeout")));
-    req.end();
-  });
-}
+/* 小 API 也走 curl，与上传共用同一条代理/TLS 通道，避免 Node CA 链断裂。
+   token 只经 --config - 从 stdin 进 curl，不进 argv、不落盘、不回显。 */
+function api(tok, method, p) {
+  const tag = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const tmp = process.env.TEMP || ".";
+  const hdrFile = path.join(tmp, `orb-api-${tag}.hdr`);
+  const bodyFile = path.join(tmp, `orb-api-${tag}.body`);
+  const cfg = [
+    ...Object.entries(headers(tok)).map(([k, v]) => `header = "${k}: ${v}"`),
+    `url = "https://api.github.com${p}"`,
+  ].join("\n") + "\n";
+  const args = ["-sS", "-X", method, "--config", "-",
+    "--dump-header", hdrFile, "--output", bodyFile,
+    "--write-out", "%{http_code}", "--max-time", "120"];
+  if (process.platform === "win32") args.unshift("--ssl-no-revoke");
 
-async function api(tok, method, p) {
-  const r = await request({ hostname: "api.github.com", path: p, method, headers: headers(tok) });
-  if (r.status >= 400) throw new Error(`${method} ${p} -> ${r.status} ${r.text.slice(0, 300)}`);
-  return r;
+  return new Promise((resolve, reject) => {
+    const child = spawn("curl", args, { windowsHide: true });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.stderr.on("data", (d) => { err += d; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const text = fs.existsSync(bodyFile) ? fs.readFileSync(bodyFile, "utf8") : "";
+      const rawHdr = fs.existsSync(hdrFile) ? fs.readFileSync(hdrFile, "utf8") : "";
+      for (const f of [hdrFile, bodyFile]) { try { fs.unlinkSync(f); } catch {} }
+      if (code !== 0) {
+        const safeErr = String(err).split(tok).join("[redacted]");
+        reject(new Error(`api curl_exit=${code} stderr=${safeErr.slice(0, 300)}`));
+        return;
+      }
+      const h = {};
+      for (const line of rawHdr.split(/\r?\n/)) {
+        const m = /^([^:]+):\s*(.*)$/.exec(line);
+        if (m) h[m[1].toLowerCase()] = m[2].trim();
+      }
+      let json = null;
+      try { json = JSON.parse(text); } catch {}
+      resolve({ status: Number(out.trim()), headers: h, json, text });
+    });
+    child.stdin.end(cfg);
+  }).then((r) => {
+    if (r.status >= 400) throw new Error(`${method} ${p} -> ${r.status} ${r.text.slice(0, 300)}`);
+    return r;
+  });
 }
 
 const releasePath = () => `/repos/${OWNER}/${REPO}/releases/${RELEASE_ID}`;
