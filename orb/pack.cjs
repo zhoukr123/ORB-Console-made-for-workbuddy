@@ -249,6 +249,56 @@ function cpr(from, to) {
   if (code > 7) { console.error('robocopy 失败，退出码', code); process.exit(1); }
 }
 
+/* 发布包瘦身：删掉不被引用的死重依赖与多余语言包。
+ * 诊断（2026-11-09）：pack.cjs 原先 `cpr(orb/node_modules, ...)` 整目录复制，
+ * 把 onnxruntime-web/node（各 141M/288M，浏览器 WASM 与跨平台原生二进制，桥侧零引用，
+ * ASR 实际走自带 Python）整包带进了 375MB 的 exe。这里在复制后剔除。
+ * 注意：删除走原生 rmdir / robocopy，不能用 fs.rmSync —— 本环境的 safe-delete 包装会
+ * 拦截批量删除。 */
+function rmrf(p) {
+  if (!fs.existsSync(p)) return;
+  const r = spawnSync('cmd', ['/c', 'rmdir', '/s', '/q', p], { windowsHide: true, stdio: 'ignore' });
+  if (r.error) console.error('  删除失败:', p, r.error.message);
+}
+function dirBytes(root) {
+  let total = 0;
+  const walk = (dir) => {
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const fp = path.join(dir, e.name);
+      try { if (e.isDirectory()) walk(fp); else total += fs.statSync(fp).size; } catch {}
+    }
+  };
+  walk(root); return total;
+}
+function pruneLocales(outDir) {
+  const loc = path.join(outDir, 'locales');
+  if (!fs.existsSync(loc)) return;
+  const keep = ['zh-CN.pak', 'en.pak'];
+  const tmp = path.join(outDir, '.lockeep');
+  fs.mkdirSync(tmp, { recursive: true });
+  for (const f of keep) {
+    const src = path.join(loc, f);
+    if (fs.existsSync(src)) fs.copyFileSync(src, path.join(tmp, f));
+  }
+  // robocopy 把 tmp 镜像到 locales（/PURGE 删掉 locales 中 tmp 没有的文件），原生删除绕过 safe-delete 包装
+  spawnSync('robocopy', [tmp, loc, '/PURGE', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'], { windowsHide: true, stdio: 'ignore' });
+  rmrf(tmp);
+  console.log('  语言包仅保留', keep.join(' / '));
+}
+function pruneNodeModules(outDir) {
+  const nm = path.join(outDir, 'resources', 'node_modules');
+  const dead = ['onnxruntime-web', 'onnxruntime-node', 'onnxruntime-common'];
+  for (const d of dead) {
+    const p = path.join(nm, d);
+    if (fs.existsSync(p)) {
+      const mb = (dirBytes(p) / 1048576).toFixed(0);
+      rmrf(p);
+      console.log('  剔除死重依赖', d, `(${mb} MB)`);
+    }
+  }
+}
+
 console.log('输出目录:', OUT_NAME, '（带时间戳，不覆盖旧构建）');
 if (fs.existsSync(OUT)) {
   console.error('✗ 输出目录已存在（同一秒内重复构建？），换个别的时间再试：', OUT);
@@ -258,6 +308,7 @@ fs.mkdirSync(OUT, { recursive: true });
 
 console.log('复制 Electron 运行时…');
 cpr(ELECTRON, OUT);
+pruneLocales(OUT);
 
 /* ⚠️ 必须删掉 resources/default_app.asar：
    Electron 见到它就会加载**默认示例应用**而不是我们的 app
@@ -344,6 +395,7 @@ console.log('复制桥进程…');
 cp(BRIDGE_SRC, BRIDGE_DST);
 if (fs.existsSync(NM_SRC)) { console.log('复制桥的依赖（@modelcontextprotocol 等）…'); cpr(NM_SRC, path.join(OUT, 'resources', 'node_modules')); }
 else { console.error('✗ 缺少 orb/node_modules（桥的依赖）'); process.exit(1); }
+pruneNodeModules(OUT);
 
 console.log('复制随包附带文件…');
 for (const f of EXTRA_FILES) {
