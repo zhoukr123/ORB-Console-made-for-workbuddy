@@ -14,7 +14,7 @@ ORB 控制台是一个 **Electron 44 桌面应用**，形态是「常驻悬浮�
 
 - 仓库：`zhoukr123/ORB-Console-made-for-workbuddy`（public, main）
 - 本地根：`D:\workbuddy_ORB控制台`
-- 当前版本：`v1.4.1`（AI 台词 + 自定义模型可接管后台任务 + 消耗并账；五个人格）
+- 当前版本：`v1.5.0`（浏览器快车道 / 插件生态 / 治理四档与专家团 / 自动化运维 / 存储收敛；ASR 走自带 Python）
 
 ---
 

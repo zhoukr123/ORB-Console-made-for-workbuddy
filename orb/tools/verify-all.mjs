@@ -36,6 +36,9 @@ const STEPS = [
   /* 接线审计：跨 4 层的每一处「少一行」，静态扫一遍就能拦住。
      --strict 会在遇到审查过的冗余面时失败，发布门禁用默认模式即可。 */
   { name: "wiring", label: "接线审计（preload↔主进程↔桥↔ops）", cmd: process.execPath, args: ["tools/wiring-audit.mjs"], mustMatch: /WIRING_AUDIT_OK/ },
+  /* S1：版本一致性闸门。单一真相源 = pack.cjs 的 VERSION，其余四处必须对齐，
+     否则视为漂移（P0-1：AGENTS.md 曾写 v1.4.1、orb/package.json 曾写 1.0.1）。 */
+  { name: "version", label: "版本一致性（pack.cjs 真相源对齐 4 处）", cmd: process.execPath, args: ["tools/check-version.mjs"], mustMatch: /VERSION_CONSISTENT/ },
   { name: "memory", label: "记忆引擎接线冒烟（临时目录真跑）", cmd: process.execPath, args: ["tools/memory-wiring-smoke.mjs"], mustMatch: /MEMORY_WIRING_SMOKE_OK/ },
   { name: "runtime", label: "面板运行时冒烟（真起 Electron）", cmd: process.execPath, args: ["tools/panel-runtime-smoke.cjs"], mustMatch: /PANEL_RUNTIME_OK/, skip: noRuntime, skipWhy: "--no-runtime" },
 ];

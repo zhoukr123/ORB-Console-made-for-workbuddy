@@ -645,7 +645,7 @@ function probeCliFlags() {
  * 即结果**拿不回来**，唯一途径是请求体里的 callback.url，
  * 而回调报文的字段名官方未文档化。
  * 因此做成可选：回调来了就用；没来 / 超时一律回落到 `-p` 子进程（现有可用路径），
- * 并把每次回调的原始报文追加到 wb-callback.log，便于确认字段后固化解析。
+ * 并把每次回调的原始报文经 logBus 结构化落盘（已脱敏），便于确认字段后固化解析。
  */
 /* 开关有两个来源，任一为真即启用：
  *   1) 环境变量 ORB_WB_DAEMON=1（走 .cmd 启动时有效）
@@ -1286,7 +1286,7 @@ function extractCallbackText(v, depth = 0) {
  *
  * 因此：默认且可靠的路径是 `spawnOnce`（-p 子进程，必须带 --port 避开 58449）。
  * 下面的 HTTP daemon 仅作 WB_DAEMON=1 时的 best-effort 兜底——派发成功就等回调，
- * 没来/超时一律回落到 -p 子进程，并把每次回调原始报文追加到 wb-callback.log。
+ * 没来/超时一律回落到 -p 子进程，回调原始报文经 logBus 结构化落盘（已脱敏）。
  */
 async function daemonRun(task, timeoutMs, model) {
   if (!(await ensureDaemon())) return null;
@@ -10797,25 +10797,22 @@ async function handle(req, res) {
      命中已知 runId 才算数，其余忽略；原始报文一律落盘便于确认字段。 */
   if (req.method === "POST" && url.pathname === "/api/wb-callback") {
     const body = await readBody(req);
-    try {
-      /* ① 落 DATA_DIR（装目录不可写，写那里等于日志永远丢）；
-         ② 无上限追加会把磁盘慢慢吃掉（每次后台回调都存一份原始报文），
-            超过 1MB 就砍掉前半段，只留最近的。 */
-      const f = path.join(DATA_DIR, "wb-callback.log");
-      try {
-        const st = fsSync.statSync(f);
-        if (st.size > 1024 * 1024) {
-          const old = fsSync.readFileSync(f, "utf8");
-          fsSync.writeFileSync(f, old.slice(Math.floor(old.length / 2)));
-        }
-      } catch { /* 还没有这个文件，下面 append 会建出来 */ }
-      fsSync.appendFileSync(f, JSON.stringify({ at: new Date().toISOString(), body }) + "\n");
-    } catch { /* 落盘失败不影响主流程 */ }
     const id = String(body?.runId || body?.id || body?.data?.runId || "");
+    try {
+      /* 回调原始报文改走 logBus —— 全仓日志的唯一写者，自带脱敏
+         （Bearer / sk- / token / 本地路径 / 外链 / 指令注入全部中和），
+         不再有 wb-callback.log 这个绕开总线、不脱敏的第二写者（P0-2）。
+         body 作为 message 传入，logBus.write 按字段级策略脱敏后落盘。 */
+      logBus.write({
+        category: "task", level: "info", epoch: epochOf(),
+        runId: id || undefined,
+        message: "wb-callback " + (id || "(缺失 runId)") + ": " + JSON.stringify(body),
+      });
+    } catch { /* 落盘失败不影响主流程 */ }
     const entry = id && pendingRuns.get(id);
     if (entry) {
       pendingRuns.delete(id);
-      entry.resolve(extractCallbackText(body) || "(回调里没找到正文，原始报文见 wb-callback.log)");
+      entry.resolve(extractCallbackText(body) || "(回调里没找到正文，详情见日志 wb-callback 条目)");
     } else {
       log("[wb-callback] 收到未匹配的回调 runId =", id || "(缺失)");
     }

@@ -16,6 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync, spawnSync } = require('child_process');
+const { isBuiltin } = require('node:module');
 
 /* ROOT：默认按脚本自身位置反推（本文件在 <ROOT>/orb/pack.cjs），
    因此任何人克隆仓库后 `node orb/pack.cjs` 都能直接跑，不必改这一行。
@@ -299,6 +300,114 @@ function pruneNodeModules(outDir) {
   }
 }
 
+/* 生产依赖闭包复制（2026-11-09，Task #32）：
+ * 不再整目录 `cpr(orb/node_modules)`，而是从运行时入口（bridge.mjs + 桌面 CJS 实现
+ * + package.json 声明的运行/可选依赖）出发，按 Node 解析规则递归收集**真正被
+ * import/require 的包**，只拷这些。
+ * 收益：自动排除 devDependencies（puppeteer-core 仅测试工具用）、零引用死重；
+ * 完全离线、不依赖网络或 lockfile，结果可复现。之后仍跑 pruneNodeModules 剔掉
+ * onnxruntime-*（CLIP 视觉档优雅降级到 C0，不崩），作为体积兜底。 */
+function pkgNameOf(spec) {
+  if (!spec || spec[0] === '.' || isBuiltin(spec) || spec === 'electron') return null; // 相对导入 / Node 内置 / Electron 内置都不是 npm 包
+  const parts = spec.split('/');
+  if (spec[0] === '@') return parts.slice(0, 2).join('/'); // 作用域包 @scope/name
+  return parts[0];
+}
+function resolvePkgRoot(name) {
+  let p = NM_SRC;
+  for (const part of name.split('/')) p = path.join(p, part);
+  return (fs.existsSync(p) && fs.existsSync(path.join(p, 'package.json'))) ? p : null;
+}
+const SPEC_RE = /(?:import\b[^'"]*?\s+from\s*|export\b[^'"]*?\s+from\s*|require\(\s*|import\(\s*)[`'"]((?:[^'"`\\]|\\.)+)[`'"]/g;
+function scanSpecs(file, out) {
+  let txt; try { txt = fs.readFileSync(file, 'utf8'); } catch { return; }
+  SPEC_RE.lastIndex = 0; let m;
+  while ((m = SPEC_RE.exec(txt))) { const n = pkgNameOf(m[1]); if (n) out.add(n); }
+}
+function collectClosure() {
+  const roots = new Map();   // name -> 顶层包根目录
+  const queue = [];
+  const enqueue = (name) => {
+    if (roots.has(name)) return;
+    const root = resolvePkgRoot(name);
+    if (!root) return;       // 解析不到（Node 内置 / 嵌套未平铺）跳过
+    roots.set(name, root);
+    queue.push(root);
+  };
+  // 种子 1：package.json 声明的运行/可选依赖
+  const pj = JSON.parse(fs.readFileSync(path.join(ROOT, 'orb', 'package.json'), 'utf8'));
+  for (const n of [...Object.keys(pj.dependencies || {}), ...Object.keys(pj.optionalDependencies || {})]) enqueue(n);
+  // 种子 2：运行时入口文件的裸导入
+  const seeds = [
+    path.join(ROOT, 'orb', 'bridge.mjs'),
+    path.join(APP, 'mdEscape.cjs'),
+    path.join(APP, 'artifactLayout.cjs'),
+  ];
+  const specs = new Set();
+  for (const f of seeds) scanSpecs(f, specs);
+  for (const s of specs) enqueue(s);
+  // 广度优先展开：读每个包的依赖声明 + 扫其源文件的裸导入
+  while (queue.length) {
+    const root = queue.shift();
+    const pjPath = path.join(root, 'package.json');
+    if (fs.existsSync(pjPath)) {
+      try {
+        const p = JSON.parse(fs.readFileSync(pjPath, 'utf8'));
+        for (const n of [...Object.keys(p.dependencies || {}), ...Object.keys(p.optionalDependencies || {}), ...Object.keys(p.peerDependencies || {})]) enqueue(n);
+      } catch {}
+    }
+    const walk = (dir) => {
+      let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        const fp = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name === 'node_modules') continue; walk(fp); } // 嵌套依赖随父包整体复制
+        else if (/\.(?:m?js|cjs|mjs)$/.test(e.name)) { const s2 = new Set(); scanSpecs(fp, s2); for (const sp of s2) enqueue(sp); }
+      }
+    };
+    walk(root);
+  }
+  return roots;
+}
+function copyProductionClosure(outDir) {
+  const nmDst = path.join(outDir, 'resources', 'node_modules');
+  const roots = collectClosure();
+  let total = 0;
+  for (const [name, root] of roots) {
+    const dst = path.join(nmDst, path.relative(NM_SRC, root));
+    cpr(root, dst);
+    const mb = dirBytes(dst) / 1048576; total += mb;
+    console.log('    ', name, mb.toFixed(1) + ' MB');
+  }
+  console.log('  生产依赖闭包', roots.size, '个包，', (total / 1048576).toFixed(0), 'MB（已排除 dev/puppeteer 等死重）');
+}
+/* 闭包审计（安全网）：扫发布包内所有本地 JS 的裸导入，确认每个都能在包内
+ * node_modules 解析到；缺失的从源码 node_modules 补拷，绝不静默丢依赖。 */
+function auditNodeModulesClosure(outDir) {
+  const nmDst = path.join(outDir, 'resources', 'node_modules');
+  const specs = new Set();
+  const walk = (dir) => {
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const fp = path.join(dir, e.name);
+      if (e.isDirectory()) { if (e.name === 'node_modules') continue; walk(fp); }
+      else if (/\.(?:m?js|cjs|mjs)$/.test(e.name)) scanSpecs(fp, specs);
+    }
+  };
+  walk(path.join(outDir, 'resources'));
+  const missing = new Set();
+  for (const sp of specs) {
+    const name = pkgNameOf(sp); if (!name) continue;
+    let p = nmDst; for (const part of name.split('/')) p = path.join(p, part);
+    if (!fs.existsSync(p)) missing.add(name);
+  }
+  if (missing.size) {
+    console.warn('  ⚠ 闭包审计补拷缺失包：', [...missing].join(', '));
+    for (const name of missing) { const src = resolvePkgRoot(name); if (src) cpr(src, path.join(nmDst, path.relative(NM_SRC, src))); }
+  } else {
+    console.log('  桥依赖闭包审计通过：所有裸导入均在包内解析');
+  }
+}
+
 console.log('输出目录:', OUT_NAME, '（带时间戳，不覆盖旧构建）');
 if (fs.existsSync(OUT)) {
   console.error('✗ 输出目录已存在（同一秒内重复构建？），换个别的时间再试：', OUT);
@@ -393,8 +502,10 @@ const BRIDGE_DST = path.join(OUT, 'resources', 'bridge.mjs');
 if (!fs.existsSync(BRIDGE_SRC)) { console.error('✗ 缺少 bridge.mjs'); process.exit(1); }
 console.log('复制桥进程…');
 cp(BRIDGE_SRC, BRIDGE_DST);
-if (fs.existsSync(NM_SRC)) { console.log('复制桥的依赖（@modelcontextprotocol 等）…'); cpr(NM_SRC, path.join(OUT, 'resources', 'node_modules')); }
-else { console.error('✗ 缺少 orb/node_modules（桥的依赖）'); process.exit(1); }
+if (!fs.existsSync(NM_SRC)) { console.error('✗ 缺少 orb/node_modules（桥的依赖）'); process.exit(1); }
+console.log('复制桥的依赖（生产依赖闭包，自动排除 dev/puppeteer 等死重）…');
+copyProductionClosure(OUT);
+auditNodeModulesClosure(OUT);
 pruneNodeModules(OUT);
 
 console.log('复制随包附带文件…');
