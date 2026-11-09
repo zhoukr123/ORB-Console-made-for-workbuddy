@@ -1158,6 +1158,7 @@
           <button id="browser-chan-stop" title="立刻断开所有浏览器通道并释放已接管的标签页">急停</button>
         </div>
         <div class="slotmsg" id="browser-chan-msg"></div>
+        <div class="slotmsg warn" id="browser-chan-freshness" style="display:none"></div>
         <ol class="bchan-steps">
           <li>点「安装扩展」，把本机连接注册到浏览器（只写当前用户，不用管理员）。</li>
           <li>点「打开扩展目录」，记住这个文件夹的位置。</li>
@@ -2883,8 +2884,22 @@ function bchanRenderStatus(st) {
   const detailEl = document.getElementById('browser-chan-detail');
   if (!stateEl) return;
   const p = (st && st.provider) || {};
+  const cfg = (st && st.config) || {};
   const ch = Number(p.channels || 0);
   const owned = Number(p.ownedTabs || 0);
+  /* 扩展新鲜度（S3）：桥侧比对「扩展上报的 build」与「随包 background.js 的 BUILD」。
+     不一致说明浏览器里还跑着旧副本 —— 表现为"修好的行为又回来了"，必须提示重载。 */
+  const freshEl = document.getElementById('browser-chan-freshness');
+  if (freshEl) {
+    if (cfg.buildStale) {
+      freshEl.style.display = '';
+      freshEl.textContent = '⚠ 扩展版本过期：浏览器里跑的是旧副本（' + (cfg.extensionBuild || '未知') +
+        '），随包已是 ' + (cfg.bundledBuild || '未知') + '。请到扩展页点「重新加载」使新逻辑生效。';
+    } else {
+      freshEl.style.display = 'none';
+      freshEl.textContent = '';
+    }
+  }
   stateEl.classList.remove('ok', 'warn', 'bad');
   if (st && st.reasonCode === 'stopped') {
     stateEl.classList.add('bad');

@@ -280,6 +280,9 @@ function connect() {
     extension_id: chrome.runtime.id,
     extension_version: chrome.runtime.getManifest().version,
     browser_family: BROWSER_FAMILY,
+    /* 构建戳：桥侧拿它和随包 background.js 里的 BUILD 比对，判断浏览器里跑的是不是旧副本。
+       没这个字段 = 跑的是更老的构建（那时还没有它）。改 background.js 时记得同步改顶部 BUILD。 */
+    build: BUILD,
   });
 }
 

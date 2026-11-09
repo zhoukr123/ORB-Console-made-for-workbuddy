@@ -135,6 +135,9 @@ export function createBrowserProvider(opts = {}) {
    * 老版本扩展据此显示"桥不支持"，而不是显示一个假的默认值。 */
   const readSettings = typeof o.settingsSnapshot === "function" ? o.settingsSnapshot : null;
   const writeSettings = typeof o.onSettings === "function" ? o.onSettings : null;
+  /* 随包扩展构建戳（background.js 顶部 BUILD 常量），由桥侧从磁盘读取后传入。
+   * provider 只做"上报值 vs 期望值"的比对，不自己定义期望值，避免两处各自维护漂移。 */
+  const bundledBuild = isNonEmptyString(o.bundledBuild) ? o.bundledBuild : null;
 
   /* instance id 只依赖 clock + 模块内计数，不引入其它不可控来源。 */
   instanceCounter += 1;
@@ -144,6 +147,8 @@ export function createBrowserProvider(opts = {}) {
   let helloSeq = 0;
   let stopped = false;
   let protocolMismatch = false;
+  /* 扩展最近一次上报的构建戳（provider_hello 带 build 字段）；null = 未上报 / 老扩展。 */
+  let reportedBuild = null;
 
   let hellos = 0;
   let commands = 0;
@@ -243,6 +248,8 @@ export function createBrowserProvider(opts = {}) {
         !isNonEmptyString(m.browser_family)) {
       return null;
     }
+    /* 新鲜度比对：记下来自扩展的上报构建戳，config()/stats() 里与 bundledBuild 比对。 */
+    reportedBuild = isNonEmptyString(m.build) ? m.build : null;
     protocolMismatch = false;
     hellos += 1;
     advanceEpoch();
@@ -533,7 +540,16 @@ export function createBrowserProvider(opts = {}) {
       ownedTabs,
       inflight: inflight.size,
       stopped,
+      /* 扩展新鲜度：上报构建戳 / 随包期望值 / 是否过期需重载。 */
+      extensionBuild: reportedBuild,
+      bundledBuild,
+      buildStale: buildStale(),
     };
+  }
+
+  /* 上报构建戳与随包期望值不一致 = 浏览器里跑的是旧副本，需要到扩展页「重新加载」。 */
+  function buildStale() {
+    return !!bundledBuild && isNonEmptyString(reportedBuild) && reportedBuild !== bundledBuild;
   }
 
   /* 脱敏配置：只挑白名单字段，绝不展开 opts（apiKey 等凭据一律不外泄），不含 onCommand。 */
@@ -545,6 +561,10 @@ export function createBrowserProvider(opts = {}) {
       maxChannels,
       providerEpoch,
       providerInstanceId,
+      /* 暴露新鲜度字段，面板据此提示「扩展需重载」。 */
+      extensionBuild: reportedBuild,
+      bundledBuild,
+      buildStale: buildStale(),
     };
   }
 

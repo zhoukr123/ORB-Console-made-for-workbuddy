@@ -3907,7 +3907,31 @@ function registerBrowserCommand(corrId) {
   browserCmdResults.set(corrId, slot);
   return slot.promise;
 }
+/* 扩展新鲜度比对（S3）：读随包 background.js 顶部的 `const BUILD = '...'` 作为期望值。
+ * 扩展每次 provider_hello 会带着自己的 build 上报，browserProvider 比对两者：
+ * 不一致即判定浏览器里跑的是旧副本，需要到扩展页「重新加载」。
+ * 期望值直接从随包文件读，与扩展实现同源，天然不会两处漂移。 */
+function readBundledExtBuild() {
+  const candidates = [
+    path.join(HERE, "app", "browser-extension", "background.js"),
+    path.join(HERE, "..", "browser-extension", "background.js"),
+  ];
+  for (const f of candidates) {
+    try {
+      const t = fsSync.readFileSync(f, "utf8");
+      const m = t.match(/const\s+BUILD\s*=\s*['"]([^'"]+)['"]/);
+      if (m && m[1]) return m[1];
+    } catch { /* 读不到试下一个候选 */ }
+  }
+  return null;
+}
+const BUNDLED_EXT_BUILD = readBundledExtBuild();
+if (BUNDLED_EXT_BUILD) log(`[browser] 随包扩展构建戳 ${BUNDLED_EXT_BUILD}（用于新鲜度比对）`);
+else log("[browser] 未找到随包 background.js 的 BUILD，扩展新鲜度比对暂不启用");
+
 const browserProvider = createBrowserProvider({
+  /* 期望值传给 provider，由它对扩展上报值做比对。 */
+  bundledBuild: BUNDLED_EXT_BUILD,
   onCommand: async (method, params, ctx) => {
     /* 记录关联：扩展会用新 command_id 重派发，桥授权后执行，回执带扩展的 command_id。
        这里把扩展的 command_id 映射回桥侧 corrId（放在 params._orbCmd 透传过来）。 */
