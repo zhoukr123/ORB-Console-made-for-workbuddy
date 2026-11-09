@@ -56,3 +56,26 @@
   - 目录 `dist/ORB控制台-1.5.0-202611090632/`
   待网络恢复后，到能访问 GitHub 的环境执行删除旧资产 + 上传上述新包即可（Release ID 仍沿用既有 v1.5.0）。
 - **磁盘**：`dist/` 下累积了多个历史构建（1.4.5–1.5.0，约 4 GB+）。运行 `orb\清理旧构建.cmd`（默认保留最新 1 份）可回收，建议上传完成后执行。
+
+## 批次 #38–#41：派发前置预取 + 不拆句投机开页（2026-11-09）
+
+**起因**：用户问「能否先用快速路完成搜索并进入网页，同时在后台加载 agent，随后才调用 agent 继续操作，以减少反应时间；其它方面能否套用」。
+
+**核查结论**
+- 「后台加载 agent」已存在且触发更早：`/api/wb-prewarm` 在面板 `show` / 输入框首次 `focus` 时把 CLI 冷启约 2.5s 摊到打字期间，桥侧 3 分钟 TTL + 空操作；另有可选 `ORB_WB_DAEMON=1` 常驻热启动（默认关）。在快速路里再加一层预热，边际收益 ≈ 0。
+- 真正的时间黑洞是：复合句被 `parseQuickWeb` 拒绝 → 整句派后台 → Agent 自己搜索/开页/等页面加载，全部串行在 TTFT 之后；以及 `runBack()` 里 `await memoryRecall()` 阻塞派发。
+
+**交付（按序 ① ② ③）**
+1. `PREFETCH_START/END` 段：`createPrefetcher()` 通用前置预取器，输入期 debounce（320ms）+ 精确 key + 60s TTL + `allSettled` 失败降级；`note()` 立刻节流预热 CLI。
+2. `runBack()` 命中预取时直接 `await` 更早开始的 promise（通常已完成 = 零等待）；未命中回落原有现查，行为不变。键用 `o.prefetchText`（用户原文），因为 `runBack` 收到的是 `composeTask` 拼过的 task。② 的兜底预热放在 `runBack` 开头，覆盖语音 / 全局快捷键 / TTL 过期。
+3. `SPECOPEN_START/END` 段 + `maybeSpecOpen()`：**不拆句**——整句仍完整派后台，只在确实要派发时并行预开检索页。query 复用 `trySearchProduce` 那次 `/api/search/plan`（不新增请求、不灌 `intentMiss` 日志），只生成 Bing 搜索 URL（不解析站名，防 2026-11-06 开错站事故）。`quickWebOpen` 新增 `{quiet, channelOnly}`：抑制提示 / 台词撤销，扩展通道离线直接放弃、绝不弹系统浏览器。不改 task 文本、不新增派发、幂等键不变。
+
+**比原提案更稳的地方**：不拆句 → 规避 `QUICK_WEB_SECOND_ACT` 那类「只开了搜索页却说做完了」事故；不投机模型推理 → 不烧额度；零 UI 意外 → 不多开窗口。
+
+**已知限制（如实）**：投机开页不把 URL 注入 task 文本，后台 Agent 不会显式知道页面已开；收益来自「页面加载与 Agent 就绪并行 + 扩展通道标签已就绪」，不是任务上下文交接。要更进一步需设计 tabId 交接协议，本批次未做。
+
+**验证**
+- 新增 `test/prefetch.test.mjs`（8 项）、`test/specOpen.test.mjs`（5 项）。
+- 全量单测 **1497 / 1497**、真起桥冒烟 **87 / 87**、面板内联脚本语法检查 `syntax_bad=0`。
+- 门禁全绿：`VERSION_CONSISTENT 1.5.0` / `PACK_CLOSURE OK(96/96, 137 边)` / `REG_OK(105 模块)` / `WIRING_AUDIT_OK(6 通过 / 2 提示)`。
+- 修过 1 处回归：`searchToDocWiring.test.mjs` 静态锁死 `catch { return false; }`，把清零挪到函数开头恢复原接线，未改测试迁就代码。

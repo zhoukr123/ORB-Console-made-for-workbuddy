@@ -3918,9 +3918,104 @@ async function guardTranscript(text, asrRaw) {
   } catch { return null; }
 }
 
+/* ==== PREFETCH_START ==== */
+/* 派发前置预取（2026-11-09）：把「只读、无副作用」的准备工作挪到用户打字期间。
+ * 铁律：
+ *   · 只做读和预热，绝不提前派发任务、绝不提前触发模型推理；
+ *   · 精确 key 匹配，未命中一律回落原有 await 现查，行为完全不变；
+ *   · 任一路失败都只降级为 null，不阻断发送（allSettled）。
+ * 抽成自包含段是为了按标记丢进 new Function 独立单测，面板不必整体加载。
+ */
+const PREFETCH_DEBOUNCE_MS = 320;
+const PREFETCH_TTL_MS = 60000;
+const PREFETCH_WARM_MS = 60000;
+const PREFETCH_MAX_LEN = 4000;
+
+function prefetchKey(text) {
+  const s = String(text == null ? "" : text).trim();
+  return s.length > PREFETCH_MAX_LEN ? "" : s;
+}
+
+function createPrefetcher(deps) {
+  const d = deps || {};
+  const now = d.now || (() => Date.now());
+  const schedule = d.schedule || ((fn, ms) => setTimeout(fn, ms));
+  const cancel = d.cancel || ((t) => clearTimeout(t));
+  const tasks = d.tasks || {};
+  const warmFn = d.warm || (() => {});
+  const debounceMs = Number.isFinite(d.debounceMs) ? d.debounceMs : PREFETCH_DEBOUNCE_MS;
+  const ttlMs = Number.isFinite(d.ttlMs) ? d.ttlMs : PREFETCH_TTL_MS;
+  const warmEveryMs = Number.isFinite(d.warmEveryMs) ? d.warmEveryMs : PREFETCH_WARM_MS;
+  let timer = null;
+  let cache = null;
+  let lastWarmAt = null;   // null = 从未预热；用 0 当哨兵会把首次预热误判成「刚热过」
+
+  /* CLI 冷启约 2.5s：输入第一个字就热，不等 debounce。节流 + 桥侧 TTL 双保险，
+     语音/快捷键直接派发的入口在 runBack 里再兜一次。 */
+  function warm() {
+    const t = now();
+    if (lastWarmAt != null && t - lastWarmAt < warmEveryMs) return false;
+    lastWarmAt = t;
+    try { warmFn(); } catch {}
+    return true;
+  }
+
+  function run(key) {
+    const names = Object.keys(tasks);
+    const jobs = names.map((n) => {
+      try { return Promise.resolve(tasks[n](key)); }
+      catch (e) { return Promise.reject(e); }
+    });
+    const job = Promise.allSettled(jobs).then((rs) => {
+      const out = {};
+      rs.forEach((r, i) => { out[names[i]] = r.status === "fulfilled" ? r.value : null; });
+      return out;
+    });
+    cache = { key, at: now(), job };
+    return job;
+  }
+
+  function note(text) {
+    warm();
+    const key = prefetchKey(text);
+    if (timer != null) { cancel(timer); timer = null; }
+    if (!key) return false;
+    timer = schedule(() => { timer = null; run(key); }, debounceMs);
+    return true;
+  }
+
+  function peek(text) {
+    const key = prefetchKey(text);
+    if (!key || !cache || cache.key !== key) return null;
+    if (now() - cache.at > ttlMs) { cache = null; return null; }
+    return cache.job;
+  }
+
+  function reset() {
+    if (timer != null) { cancel(timer); timer = null; }
+    cache = null;
+  }
+
+  return { note, peek, warm, reset };
+}
+/* ==== PREFETCH_END ==== */
+
+/* 只在标记外接真实依赖，保证上面那段能脱离面板独立单测。 */
+const prefetch = createPrefetcher({
+  warm: () => { try { post('/api/wb-prewarm', {}).catch(() => {}); } catch {} },
+  tasks: {
+    memory: (text) => (charCfg.memory && charCfg.memory.enabled && window.orb && window.orb.memoryRecall)
+      ? window.orb.memoryRecall(text, { project: charCfg.memory.project || null })
+      : "",
+  },
+});
+
 /* ---------- 后台 ---------- */
 async function runBack(text, o) {
   o = o || {};
+  /* 兜住所有没经过输入框 focus 的入口（语音、全局快捷键、TTL 过期后的长间隔任务）。
+     桥侧 3 分钟 TTL 让重复调用成为空操作，失败静默。 */
+  try { prefetch.warm(); } catch {}
   const node = addMsg('Orb', '<span class="pending">已派发到后台，排队中</span>' +
     '<span class="typing"><i></i><i></i><i></i></span>', 'orb');
   /* V-12：结构化任务的结果已经写进消息气泡，不再念「完成啦」台词。 */
@@ -3936,10 +4031,16 @@ async function runBack(text, o) {
     const m = mSel;
     // 记忆注入：派发前召回相关长期记忆，拼进 task 文本（受「记忆读取」开关控制）。
     // 检索失败绝不阻断任务派发——记忆是增强项，不是派发的前置依赖。
+    // 输入期已预取时直接 await 那个更早开始的 promise（通常已完成 = 零等待）；
+    // 未命中（语音/粘贴后立刻回车）回落原有现查，行为不变。键必须用用户原文，
+    // 因为 runBack 收到的是 composeTask 拼过的 task，不是 input.value。
     let taskText = text;
     if (charCfg.memory && charCfg.memory.enabled) {
       try {
-        const mem = await window.orb.memoryRecall(text, { project: charCfg.memory.project || null });
+        const hit = prefetch.peek(o.prefetchText || text);
+        const mem = hit
+          ? ((await hit).memory || "")
+          : await window.orb.memoryRecall(text, { project: charCfg.memory.project || null });
         if (mem) taskText = mem + "\n\n" + text;
       } catch (e) { /* 记忆检索异常：忽略，照常派发 */ }
     }
@@ -5416,6 +5517,7 @@ async function send() {
   const probeSnap = new Map(probeByPath);
   input.value = '';
   autoGrow();
+  try { prefetch.reset(); } catch {}   // 发送即作废缓存，下一句不会命中上一句
   const node = addMsg('我', esc(text) + attachListHtml(snap), 'me');
   hydrateAttachImgs(node, snap);
   /* 大附件先算一笔账（异步、不挡发送）。探针快照要用**同一个** snap 对应的时间点：
@@ -5664,7 +5766,9 @@ async function send() {
     /* 探针只在有话说的时候才出声（例：目标站点直连不通、通道状态未知）。
        正常走命令行不打扰 —— 每次派发都插一行"我选了后台"只会变成噪音。 */
     if (probe && probe.note) addMsg('Orb', '<span class="muted">预测探针：' + esc(probe.note) + '</span>', 'sys');
-    await runBack(task);
+    /* 只在所有确定性捷径都没命中、确实要派后台时才投机开页。 */
+    try { maybeSpecOpen(text); } catch {}
+    await runBack(task, { prefetchText: text });
   }
 }
 
@@ -5835,7 +5939,46 @@ function quickWebUrl(q) {
  * 用户自己点名的网址，不需要接管。 */
 /* ==== QUICKWEB_END ==== */
 
-async function quickWebOpen(url) {
+/* ==== SPECOPEN_START ==== */
+/* 不拆句的投机开页（2026-11-09）。
+ *
+ * 复合浏览器任务（搜论文 + 做总结 + 写 txt）整句仍完整派给后台 Agent，
+ * 这里只做一件无副作用的事：把检索页提前加载好，让页面等待与 Agent 就绪并行。
+ *
+ * 护栏（每条对应一次真实事故或一类投诉）：
+ *   · query 只复用 trySearchProduce 那次 /api/search/plan 的结果，不新增请求；
+ *     桥侧文法抽不出来就跳过，绝不在面板里现造第二套正则。
+ *   · 只生成搜索引擎 URL，绝不解析站名/域名 —— 2026-11-06 中南大学被开成南京大学。
+ *   · 只在扩展通道在线时开，通道离线直接放弃，不弹系统浏览器（不多开窗口）。
+ *   · 不改 task 文本、不新增派发、幂等键仍是一次用户意图一个。
+ */
+const SPEC_OPEN_MAX_QUERY = 128;
+
+function specOpenPlan(text, rec) {
+  if (!rec || rec.text !== String(text == null ? "" : text)) return null;
+  const p = rec.plan;
+  if (!p || p.ok !== true) return null;
+  const q = String(p.query || "").trim();
+  if (!q || q.length > SPEC_OPEN_MAX_QUERY) return null;
+  return { query: q, url: "https://cn.bing.com/search?q=" + encodeURIComponent(q) };
+}
+/* ==== SPECOPEN_END ==== */
+
+function maybeSpecOpen(text) {
+  try {
+    if (charCfg.prefetch && charCfg.prefetch.specOpen === false) return;
+    const s = specOpenPlan(text, lastSearchPlan);
+    if (!s) return;
+    /* 故意不 await：页面加载 / 扩展往返与后台 Agent 就绪并行。
+       quiet 抑制提示与台词撤销，channelOnly 杜绝意外弹窗；失败静默。 */
+    quickWebOpen(s.url, { quiet: true, channelOnly: true }).catch(() => {});
+  } catch {}
+}
+
+async function quickWebOpen(url, opts) {
+  const o = opts || {};
+  const quiet = o.quiet === true;
+  const channelOnly = o.channelOnly === true;
   const raw = String(url || '');
   if (!/^https?:\/\//i.test(raw)) return 'fail';   // 协议闸：只放行 http/https
   /* 浏览器扩展通道在线 → 走扩展在「装了扩展的那个浏览器」里开标签。
@@ -5862,26 +6005,28 @@ async function quickWebOpen(url) {
          * 导致夸克扩展明明执行成功、面板却误判失败，又用默认浏览器开了一遍（2026-11-08 修复）。 */
         if (res2 && res2.ok && res2.result) {
           setLastOpenedUrl(normalizeOpenUrl(raw) || raw);
-          cancelRecvSpeak();   // 秒级完成：撤掉还没开口的「交给我」
+          if (!quiet) cancelRecvSpeak();   // 投机开页不干扰后台任务的台词
           return 'browser-channel';
         }
         /* 扩展执行失败 / 超时：把原因如实报出来，再退回默认浏览器。 */
         const why = (res2 && res2.error && (res2.error.message || res2.error.code))
           || (r && r.error && (r.error.message || r.error.error)) || '浏览器扩展未能执行该命令';
-        addMsg('Orb', '浏览器扩展打开未成功（' + esc(why) + '），已退回系统默认浏览器打开。', 'sys');
+        if (!quiet) addMsg('Orb', '浏览器扩展打开未成功（' + esc(why) + '），已退回系统默认浏览器打开。', 'sys');
       } else if (r && !r.ok) {
         /* 入队即被拒（no-channel / 方法不在白名单 / 缺 confirm）：如实回显，退回默认浏览器，
            不再静默穿透，让用户知道为什么没走夸克通道。 */
         const why = (r.error && (r.error.message || r.error.code)) || '浏览器通道不可用';
-        addMsg('Orb', '浏览器扩展通道不可用（' + esc(why) + '），已退回系统默认浏览器打开。', 'sys');
+        if (!quiet) addMsg('Orb', '浏览器扩展通道不可用（' + esc(why) + '），已退回系统默认浏览器打开。', 'sys');
       }
     } catch (e) { /* 桥不在线 / 网络错误 → 走下面的回退 */ }
   }
+  /* 投机开页绝不弹系统浏览器：只在扩展通道里加载，失败就算了。 */
+  if (channelOnly) return 'fail';
   try {
     window.orb.openExternal(raw);
     /* 秒级完成的确定性指令：撤掉还没开口的「交给我」。
        结果气泡马上就出，再播"任务开始"台词只会听起来像播错了时机。 */
-    cancelRecvSpeak();
+    if (!quiet) cancelRecvSpeak();
     /* 报告B V-05：所有开窗路径统一记一份规范化地址，下一轮「抓网页」可直接引用。
        实际打开的仍是原 URL，不因规范化改变 query / 编码。 */
     setLastOpenedUrl(normalizeOpenUrl(raw) || raw);
@@ -6171,11 +6316,17 @@ async function ensureLookSchema() {
     if (s) buildLookFromSchema(s);
   } catch { /* 保持宁松勿紧 */ }
 }
+/* 最近一次 /api/search/plan 的结果。投机开页复用它，不额外发请求，
+   也不会因打字期预取把 intentMiss 日志灌满。 */
+let lastSearchPlan = null;
+
 async function trySearchProduce(text) {
   ensureLookSchema();
+  lastSearchPlan = null;   // 先清上一句的结果，catch 分支保持原样不破坏既有接线断言
   let plan;
   try { plan = await post('/api/search/plan', { text }); }
   catch { return false; }
+  lastSearchPlan = { text: String(text), plan: plan || null };
   if (!plan || plan.ok !== true) return false;
 
   const sink = String(plan.sink || '');
@@ -14894,6 +15045,9 @@ function autoGrow() {
   input.style.height = Math.min(input.scrollHeight, 132) + 'px';
 }
 input.addEventListener('input', autoGrow);
+/* 打字期间把只读预取 / CLI 预热跑起来：发送时命中的是已完成的结果。
+   失败一律静默，预取永远不是派发的前置依赖。 */
+input.addEventListener('input', () => { try { prefetch.note(input.value); } catch {} });
 /* 一开始打字就热一次 CLI：把 2.5 秒冷启动摊进用户输入的那几秒里。
    桥侧有 3 分钟 TTL + 在跑任务自动跳过，所以这里放心地每次都问。 */
 input.addEventListener('focus', () => { post('/api/wb-prewarm', {}).catch(() => {}); }, { once: true });
