@@ -73,7 +73,7 @@
 ## 待办 / 阻塞
 - **真实代码签名**：仍需证书采购、`signtool`、证书链与 RFC3161 时间戳；当前 manifest 如实标 `unsigned`。
 - **Python 运行时外置**：zip 现 218.4MB（旧 223MB），仍高于 200MB 目标；外置 114.9MB 运行时后估算 169.2MB 可达标。
-- **磁盘**：`dist/` 下 24 项历史构建（1.4.5–1.5.0，合计 **6434.8 MB**）+ 当前 `202611091454` 全套 4 项（949.1 MB）。⚠️ `orb\清理旧构建.cmd` 默认 `-Keep 1` 会**误删当前发布构建**的 portable.exe / zip / 构建目录（只保留 manifest），不要直接跑；需先改成按 stamp 白名单保留整套，再送回收站。
+- **磁盘（已处理）**：`dist/` 下 24 项历史构建已全部移入回收站，只剩 `202611091454` 全套 4 项；四项 SHA256 与 Release 资产完全一致，`MANIFEST_VERIFY_OK`。⚠️ 回收站仍占着这 6.4 GB（`FreeGB` 未变），要真正腾出空间需手动清空回收站——本轮没有、也不会擅自清空。默认 `orb\清理旧构建.cmd -Keep 1` 会误删当前发布构建，未使用也未改动；后续可考虑给脚本加 `-KeepStamp` 白名单参数。
 
 ## 批次 #38–#41：派发前置预取 + 不拆句投机开页（2026-11-09）
 
@@ -121,3 +121,18 @@
 **顺手修掉的工具回归**：`orb/tools/release-upload.mjs` 的小 API 原来走 Node `https`，在同一代理下会崩 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`（当天只能靠 `NODE_OPTIONS=--use-system-ca` 绕）。已把 `api()` 也改成走 `curl --ssl-no-revoke`，与上传共用同一条代理/TLS 通道；token 仍只经 `--config -` 从 stdin 进 curl。现在不带任何环境变量即可 `--selftest` / `--dry` 正常运行。
 
 **本轮门禁**：单测 **1497 / 1497**、真起桥冒烟 **87 / 87**；`VERSION_CONSISTENT 1.5.0` / `PACK_CLOSURE OK(96/96, 137 边)` / `REG_OK(105 模块)` / `WIRING_AUDIT_OK(6 通过 / 2 提示)` / `MANIFEST_VERIFY_OK`（哈希 `missing=0 changed=0 extra=0`、新鲜度 `fresh`、签名列如实 `unsigned`）全绿。
+
+## 旧构建清理（用户确认「24 项」后执行）
+
+**范围**：`dist/` 下 24 项历史构建（1.4.5–1.5.0，合计 **6434.8 MB**），白名单保留 `202611091454` 全套 4 项。只读复核确认 `ALL=28 / KEEP=4 / OLD=24`、目标名与清单逐一吻合后才动手；先查 `NukeOnDelete=0`、D 盘可用 504 GB、回收站现占 1.21 GB，排除「配额不足被永久删除」。
+
+**执行**：2 项探针（最老的 1.4.5 两个包）→ 实证回收站 `$I` 元数据出现原路径 → 8 / 7 / 7 三批。每批验证「目标路径已消失 + 白名单仍 4 项 + 回收站元数据条目按预期增加」，任一项不过即停。全程 `SendToRecycleBin`，无永久删除；未使用、未改动 `clean-old-builds.ps1`（其默认 `-Keep 1` 会把当前发布构建的 exe/zip/目录也标成待删）。
+
+**三个坑（都已定位，不是盲目重试）**：
+1. `Add-Type -AssemblyName Microsoft.VisualBasic` 与 `New-Object -ComObject Shell.Application` 被运行时安全策略拦截。探测发现 **PowerShell 5.1 里 `Microsoft.VisualBasic.FileIO.*` 类型本就已加载**，根本不需要运行时编译 / COM，直接调用即可。验证回收站改读 `$I` 元数据文件（UTF-16LE 原路径，需先去掉 NUL 字节）。
+2. 四参数 `DeleteFile(..., UICancelOption.DoNothing)` 会在文件**已成功移入回收站后**误抛 `FileNotFoundException`。改用项目脚本同款三参数重载，并在 catch 里以「原路径是否还在」判定真失败，不把误报当失败。
+3. 目录是**按内部文件逐条**进回收站的（5 个目录各约 5100 条元数据），所以「元数据增量 == 批大小」这个条件对含目录的批次不成立，第一版验证误判并停下。诊断确认批 1 的 8 项其实全部可恢复后，把条件修正为「文件批次要求精确相等、目录批次只要求非零」，继续跑完。
+
+**结果**：`OLD_REMAINING=0 / KEEP=4`，回收站约 3.17 万条元数据（原完整路径都在，资源管理器可按原路径还原）。保留的 4 项 SHA256 与 Release 资产逐一一致（`98c2129e…` / `9cac19db…` / `de4ca362…` / `panel.html 674cfa81…`），清单复验 `MANIFEST_VERIFY_OK`。
+
+**如实说明**：`FreeGB` 几乎没变——数据在回收站里，磁盘空间**尚未真正释放**。要腾出 6.4 GB 需用户自行清空回收站；本轮不做这一步。
