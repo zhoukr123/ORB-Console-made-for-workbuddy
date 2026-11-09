@@ -328,3 +328,34 @@ test("unreview 撤销复核：字段全部清掉，可再复核一次", () => {
     assert.equal(L.unreview(runId).ok, false, "没有复核记录时撤销要拒绝");
   } finally { f.cleanup(); }
 });
+
+/* ---- S5：recipe 声明「预期完成事件契约」进运行账本 ---- */
+test("S5 begin 带 expectedEvent：字段入库、结算后仍可查、未声明不写字段", () => {
+  const f = fixture();
+  try {
+    const L = f.mk();
+    const declared = {
+      expectedEvents: ["recipe.done"], maxSilenceMs: 90000, absentAfter: 2,
+      milestones: ["phase1"], probe: "read-only-liveness",
+      idempotent: true, sideEffects: "none", credentialScope: "local",
+      // 越界字段不应被原样塞进 jsonl
+      junk: { nested: "should-not-appear" },
+    };
+    const b = L.begin(ev({ ticketId: "tk-s5", expectedEvent: declared }));
+    assert.equal(b.ok, true);
+    assert.deepEqual(b.run.expectedEvent.expectedEvents, ["recipe.done"]);
+    assert.equal(b.run.expectedEvent.maxSilenceMs, 90000);
+    assert.deepEqual(b.run.expectedEvent.milestones, ["phase1"]);
+    assert.equal(b.run.expectedEvent.idempotent, true);
+    assert.equal(b.run.expectedEvent.junk, undefined, "白名单外的字段不入账");
+    // 结算（ok）后 expectedEvent 不丢 —— 事后复盘能看到当初声明了什么
+    const done = L.finish(b.run.runId, { ok: true, steps: 3 });
+    assert.equal(done.expectedEvent.expectedEvents[0], "recipe.done");
+    // 落盘后重载仍在
+    const L2 = f.mk();
+    assert.equal(L2.get(b.run.runId).expectedEvent.maxSilenceMs, 90000);
+    // 未声明的运行记录不带该字段（存量形状不变）
+    const b2 = L.begin(ev({ triggerId: "t2", dedupeKey: "t2|x|2" }));
+    assert.equal(b2.run.expectedEvent, undefined);
+  } finally { f.cleanup(); }
+});

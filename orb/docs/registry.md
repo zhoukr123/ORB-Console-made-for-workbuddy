@@ -6,7 +6,7 @@
 
 ## 一、桥侧模块（orb/*.mjs）
 
-共 102 个。按文件名排序，不按重要性 —— 排序规则一旦掺入主观判断就会天天变。
+共 105 个。按文件名排序，不按重要性 —— 排序规则一旦掺入主观判断就会天天变。
 
 **故意不记行数**：行数每次修 bug 都变，把它放进文档等于让「漂移检测」
 每次提交都红一次，红到最后就没人看了。
@@ -16,7 +16,7 @@
 | 模块 | 它是什么 | 对外导出 |
 |---|---|---|
 | `affectGate.mjs` | Affect Gate：只回答一个问题——「ORB 此刻该不该主动开口」。 | `DEFAULT_SPEAK_TIER` `GATES` `SPEAK_TIERS` `SPEAK_TIER_IDS` `createAffectGate` `inferTierFromText` |
-| `anchorResolver.mjs` | anchorResolver（确定性锚定解析，可单测） | `ACTION_ERROR_CODES` `AGENT_DESKTOP_LIMITS` `ANCHORABLE` `ELEMENT_BACKENDS` `ELEMENT_REF_SCHEMA_VERSION` `REF_BINDING_ERRORS` `addDeltaToArgs` `bindRefVersion` `buildTreeSelector` `checkRefBinding` `classifyActionError` `classifyAgentDesktopError` `createAnchorResolver` `createTreeCache` `decideEscalation` `matchTreeNode` `normalizeElementRef` `normalizeElementRefWithBinding` `parseSnapshotTree` `preferSnapshotRef` `primaryPoint` `pruneSnapshotTree` `refBindingExtra` `resolveTreeNode` `treeFingerprint` `validateRefBinding` `verifyEffect` |
+| `anchorResolver.mjs` | anchorResolver（确定性锚定解析，可单测） | `ACTION_ERROR_CODES` `AGENT_DESKTOP_LIMITS` `ANCHORABLE` `DEGRADATION_CODES` `DEGRADE_TO` `ELEMENT_BACKENDS` `ELEMENT_REF_SCHEMA_VERSION` `REF_BINDING_ERRORS` `V13_METRICS` `V13_THRESHOLDS` `addDeltaToArgs` `bindRefVersion` `buildTreeSelector` `checkRefBinding` `classifyActionError` `classifyAgentDesktopError` `createAnchorResolver` `createTreeCache` `decideDegradation` `decideEscalation` `isSelfElectronWindow` `matchTreeNode` `normalizeElementRef` `normalizeElementRefWithBinding` `parseSnapshotTree` `preferSnapshotRef` `primaryPoint` `pruneSnapshotTree` `refBindingExtra` `resolveTreeNode` `treeFingerprint` `validateRefBinding` `verifyEffect` |
 | `apiChannel.mjs` | API 通道的用户开关 —— 宿主侧**唯一**状态源。 | `USER_DISABLED` `createApiChannel` `defaultState` `normalizeState` |
 | `appIntent.mjs` | 应用意图解析：静态能力表 + 查表函数，不猜、只查表。 | `APPS` `APP_COUNT` `CONFIDENCE_GATE` `DEEP_LINKS` `FORBIDDEN_SCHEMES` `LAUNCH_EVIDENCE` `appMatrix` `canDirectOpen` `deepLinkAudit` `extractKeyword` `findApp` `namedBrowser` `planClientLaunch` `registerDeepLink` `resolveAppAction` `resolveClientAction` `resolveDeepLink` `resolveWebLanding` `wantsClient` |
 | `archiver.mjs` | 归档：.pending/<cid> → YYYY-MM-DD/<cid> 同卷 rename（跨卷/失败退化 copy 并记入 manifest）。 | `createArchiver` |
@@ -81,6 +81,7 @@
 | `receipts.mjs` | 效果收据：幂等键绝不重复发、settle 落结果、内存归属带 interruption。 | `createReceipts` |
 | `rectest.mjs` | 录屏模块实机验证（rectest） | — |
 | `refBinding.mjs` | ref 版本绑定（11-07 增量简报 §1）：agent-desktop v1.1.0 已证实、当前 v1.2.0。 | `AGENT_DESKTOP_LIMITS` `AGENT_DESKTOP_VERSION` `ELEMENT_REF_SCHEMA_VERSION` `REF_BINDING_ERRORS` `bindRefVersion` `capabilityManifestEntry` `classifyAgentDesktopError` `refBindingExtra` `validateRefBinding` |
+| `releaseManifest.mjs` | 发布安装清单：签名 / 来源 / 新鲜度「分列判定」+ 组件分组 + 体积评估（纯模块，可单测）。 | `COMPONENT_GROUPS` `MANIFEST_SCHEMA_VERSION` `ZIP_TARGET_BYTES` `assessTrust` `classifyFreshness` `classifySignature` `classifySource` `componentGroupOf` `evaluateSize` `summarizeComponents` |
 | `runtime.mjs` | 前台通道运行时（windows-mcp 的宿主）——**单一真相源**。 | `PROC_KIND_MATCHERS` `RUNTIME_DIR` `RUNTIME_PY` `hasWindowsMcp` `matchProcKind` `resolvePython` `windowsMcpArgs` `windowsMcpEnv` |
 | `safetyOverview.mjs` | 安全子菜单的只读概览。 | `OVERVIEW_LABELS` `containsNumeric` `safetyOverview` |
 | `searchCredentials.mjs` | 批次C · 外部检索的**可插拔凭据来源**（默认 inert）。 | `CREDENTIAL_SOURCES` `DEFAULT_CREDENTIAL_SOURCE` `createCredentialProvider` |
@@ -105,11 +106,13 @@
 | `ticketStore.mjs` | 工单存储（ticketStore） | `TERMINAL` `createTicketStore` |
 | `trajectory.mjs` | 工单轨迹（trajectory） | `createTrajectory` |
 | `upgrade.mjs` | 升级器（upgrade）：把"从哪升到哪、为什么升、属于哪个世代"收敛成一种形状。 | `LADDERS` `createUpgrade` |
+| `v13LoopGuard.mjs` | V-13 / C-07 降级纪律 + 视觉循环预算（纯模块，可单测）。 | `DEGRADATION_CODES` `DEGRADE_TO` `V13_METRICS` `V13_THRESHOLDS` `createVisualLoopBudget` `decideDegradation` `isSelfElectronWindow` |
+| `v13Metrics.mjs` | V-13 / C-07 落地：五项指标 + 降级阈值 + 记录表（纯模块，可单测）。 | `DANGER_LABEL_RE` `V13_METRICS` `V13_THRESHOLDS` `computeTreeMetrics` `createV13RecordingTable` `evaluateMetric` |
 | `vidxSynth.mjs` | 看视频产物 → 「内容提要 + 关键截图」MD 合成器。 | `findVidxJob` `synthesizeVidxMd` |
 | `vidxSynthOnce.mjs` | 一次性补交脚本：把某条历史「看视频」任务（在旧存储根）合成「内容提要 + 关键截图」MD， | — |
 | `visualAnchor.mjs` | 视觉锚定后端（方案 C 的 C0 / C1 两档） | `captureVisualCrop` `cosineSim` `createClipMatcher` `createVisualAnchor` `decodePng` `templateMatch` |
 | `visualTiers.mjs` | 视觉档位选择 + 可取消预读 + 双路健康预探测。 | `NO_BATCH_ACTIONS` `TIERS` `createVisualTiers` |
-| `watchdog.mjs` | 本地看门狗（watchdog） | `createWatchdog` |
+| `watchdog.mjs` | 本地看门狗（watchdog） | `createWatchdog` `decideAbsentAction` `hasExpectedEvent` `normalizeExpectedContract` |
 | `wfCheckpoint.mjs` | 断点续跑（wfCheckpoint） | `RESUME_BLOCK` `canResume` `createCheckpoints` `isLinearRecipe` `recipeDigest` |
 | `wfDag.mjs` | 受限编排（wfDag） | `MAX_EDGES` `MAX_NODES` `NODE_KINDS` `evalCond` `normalizeGraph` `planOrder` `topoOrder` `validateGraph` |
 | `wfPreflight.mjs` | 回放前预检（wfPreflight） | `PREFLIGHT` `SEVERITY` `preflight` `snapshotWindows` `summarizePreflight` `windowState` |

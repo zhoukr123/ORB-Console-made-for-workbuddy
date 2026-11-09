@@ -455,7 +455,9 @@ test("stats 字段固定、commands === succeeded+failed、byReason 为失败分
   await h.p.handle(cmd("ch-1", "c2", "eval"));
   const s = h.p.stats();
   assert.deepEqual(Object.keys(s).sort(),
-    ["byReason", "channels", "commands", "failed", "hellos", "inflight", "ownedTabs", "stopped", "succeeded"].sort());
+    ["byReason", "channels", "commands", "failed", "hellos", "inflight", "ownedTabs", "stopped", "succeeded",
+      // S3（#33）扩展新鲜度：随包 build / 扩展上报 build / 是否过期，桥侧比对后下发面板。
+      "bundledBuild", "extensionBuild", "buildStale"].sort());
   // ownedTabs 只回规模数字，绝不回 tabId（前端不需要可枚举的标签清单）
   assert.equal(typeof s.ownedTabs, "number");
   assert.ok(Number.isInteger(s.ownedTabs) && s.ownedTabs >= 0);
@@ -480,7 +482,9 @@ test("config 脱敏：不含 onCommand / 不含注入的凭据字段 / 字段固
   const h = harness({ apiKey: SECRET, onCommand: async () => "v" });
   const c = h.p.config();
   assert.deepEqual(Object.keys(c).sort(),
-    ["leaseTtlMs", "maxChannels", "maxInflight", "protocol", "providerEpoch", "providerInstanceId"].sort());
+    ["leaseTtlMs", "maxChannels", "maxInflight", "protocol", "providerEpoch", "providerInstanceId",
+      // S3（#33）扩展新鲜度三字段，config 也需下发（面板据 buildStale 提示重新加载扩展）。
+      "bundledBuild", "extensionBuild", "buildStale"].sort());
   assert.equal(c.protocol, 1);
   assert.equal(c.leaseTtlMs, 30_000);
   assert.equal(c.maxInflight, 8);
@@ -490,6 +494,25 @@ test("config 脱敏：不含 onCommand / 不含注入的凭据字段 / 字段固
   const blob = JSON.stringify(c) + JSON.stringify(h.p.stats()) + JSON.stringify(await hello(h));
   assert.ok(!blob.includes(SECRET), "任何凭据都不外泄");
   assert.ok(!blob.includes("onCommand"), "onCommand 不外泄");
+});
+
+/* ---------------- S3（#33）扩展新鲜度：桥侧比对 build ---------------- */
+test("S3 buildStale：匹配不告警、旧版告警、老扩展不带 build 不误报", async () => {
+  const BUNDLED = "2026-11-09T0130";
+  // ① 上报 build 与随包一致 → 不 stale
+  const h1 = harness({ bundledBuild: BUNDLED });
+  await h1.p.handle({ ...HELLO, build: BUNDLED });
+  assert.equal(h1.p.stats().extensionBuild, BUNDLED);
+  assert.equal(h1.p.stats().buildStale, false);
+  // ② 浏览器里跑的是旧副本 → stale，面板据此提示「重新加载扩展」
+  const h2 = harness({ bundledBuild: BUNDLED });
+  await h2.p.handle({ ...HELLO, build: "2026-11-08T0900" });
+  assert.equal(h2.p.config().buildStale, true);
+  // ③ 老扩展不带 build → 不误报（单源无漂移，没数据就不下结论）
+  const h3 = harness({ bundledBuild: BUNDLED });
+  await h3.p.handle({ ...HELLO });
+  assert.equal(h3.p.stats().extensionBuild, null);
+  assert.equal(h3.p.stats().buildStale, false);
 });
 
 /* ---------------- 桥侧主动下发 command() 入队（2026-11-08） ---------------- */

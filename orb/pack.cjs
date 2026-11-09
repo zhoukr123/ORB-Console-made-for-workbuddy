@@ -188,6 +188,10 @@ const BRIDGE_LOCAL = [
   /* 方案 C（2026-11-07）：视觉锚定后端 —— C0 纯 JS 模板匹配 + C1 CLIP embedding，
      bridge.mjs 顶层静态 import。 */
   'visualAnchor.mjs',
+  /* S4 / V-13 / C-07 降级纪律（2026-11-09）：bridge.mjs 顶层静态 import v13LoopGuard，
+     anchorResolver / v13LoopGuard 再间接 import v13Metrics。两件都必须登记，
+     漏了便携版 resources/ 里桥进程直接 ERR_MODULE_NOT_FOUND（开发态看不出来）。 */
+  'v13LoopGuard.mjs', 'v13Metrics.mjs',
   /* 语义解析泛化（2026-11-07）：意图未命中环形日志 + schema 约束兜底（纯内存，无 IO）。 */
   'intentMissLog.mjs', 'intentFallback.mjs',
   /* ===== 11-07 增量简报落地 + 专家团治理纪律层 =====
@@ -802,10 +806,35 @@ if (!fs.existsSync(SFX_STUB)) {
   console.log('      CRC32 与 trailer 均已核对，桩可正确定位并取出 payload');
 }
 
+/* ------------------------------------------------------------------ *
+ * S6 安装清单（签名 / 来源 / 新鲜度分列判定 + 组件哈希 + 体积评估）
+ *
+ * 生成时机：zip / exe 都产完之后 —— 这样 zipBytes 是真实值，且清单作为
+ * 「与发布物并列的独立资产」落盘，不改动 zip 内容（哈希针对 OUT = zip 解压内容）。
+ * 非致命：清单是附加审计产物，生成失败绝不拖垮一次本来成功的构建。
+ * 代码签名的 crypto 步骤（signtool / 证书链 / RFC3161）属外部证书流程，
+ * 清单里如实标 unsigned，拿到证书后由发布流程回填 signature 字段再验。
+ * ------------------------------------------------------------------ */
+let MANIFEST_OUT = null;
+try {
+  MANIFEST_OUT = path.join(ROOT, 'dist', `${OUT_NAME}.install-manifest.json`);
+  const mk = spawnSync(process.execPath, [
+    path.join(ROOT, 'orb', 'tools', 'make-manifest.mjs'), OUT,
+    `--zip=${zipPath}`, `--stamp=${STAMP}`, `--channel=release`, `--out=${MANIFEST_OUT}`,
+  ], { encoding: 'utf8', windowsHide: true });
+  if (mk.status !== 0) throw new Error((mk.stderr || mk.stdout || '').trim() || `退出码 ${mk.status}`);
+  console.log('   安装清单:', MANIFEST_OUT);
+  console.log('     ' + String(mk.stdout || '').trim().split('\n').slice(1).join('\n     '));
+} catch (e) {
+  console.log('   ⚠ 安装清单生成失败（不影响构建）:', e.message);
+  MANIFEST_OUT = null;
+}
+
 console.log('\n✅ 完成');
 console.log('   目录:', OUT);
 console.log('   压缩包:', zipPath);
 if (fs.existsSync(SFX_OUT)) console.log('   单文件便携版:', SFX_OUT);
+if (MANIFEST_OUT && fs.existsSync(MANIFEST_OUT)) console.log('   安装清单:', MANIFEST_OUT);
 console.log('');
 console.log('   提示：本脚本故意不删旧构建（每次约 390MB）。要清理请运行');
 console.log('         orb\\清理旧构建.cmd  （默认保留最新 1 份，其余进回收站，可先加 -DryRun 预览）');

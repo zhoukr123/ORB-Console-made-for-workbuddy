@@ -28,8 +28,9 @@ import { resolvePython, windowsMcpArgs, windowsMcpEnv, matchProcKind, hasWindows
 /* 确定性锚定解析（方案 A1 / B 的纯逻辑层）。把抗迁移锚定从 OCR/Windows API 里抽出来，
  * 成为可单测的纯模块；bridge 只把有副作用的解析器（OCR 文字锚定、控件树抓取）以 deps 注入。
  * 依赖方向单向：bridge → anchorResolver，模块不 import bridge。 */
-import { createAnchorResolver, parseSnapshotTree, buildTreeSelector, matchTreeNode, pruneSnapshotTree, resolveTreeNode, preferSnapshotRef, createTreeCache, primaryPoint, addDeltaToArgs, ANCHORABLE, classifyActionError, decideEscalation, ACTION_ERROR_CODES, verifyEffect } from "./anchorResolver.mjs";
+import { createAnchorResolver, parseSnapshotTree, buildTreeSelector, matchTreeNode, pruneSnapshotTree, resolveTreeNode, preferSnapshotRef, createTreeCache, primaryPoint, addDeltaToArgs, ANCHORABLE, classifyActionError, decideEscalation, ACTION_ERROR_CODES, verifyEffect, isSelfElectronWindow } from "./anchorResolver.mjs";
 import { createVisualAnchor, captureVisualCrop } from "./visualAnchor.mjs";
+import { createVisualLoopBudget } from "./v13LoopGuard.mjs";
 /* 治理层（2026-11-03 接入）。五个模块都是纯 Node、无第三方依赖，
  * 之所以单独成文件而不是继续堆进 bridge.mjs：这个文件已经 5700 行，
  * 再往里塞状态机只会让"谁能写任务状态"重新变回没人说得清。
@@ -3331,9 +3332,28 @@ const watchdog = createWatchdog({
   tickets: ticketStore,
   trajectory,
   log: (...a) => log("[watchdog]", ...a),
+  /* S5 只读探活：不碰进程、不联网，仅据轨迹检查点回答"还动没动"。
+   * alive 恒不据 HTTP 200 / a11y 非空来判定"完成"—— 那正是缺席检测要拆掉的错觉。 */
+  probeLiveness: (ticketId) => {
+    try {
+      const cp = trajectory.checkpoint(ticketId);
+      return { alive: !!cp, lastAt: cp ? cp.lastAt : 0, events: cp ? cp.events : 0,
+        note: "只读：轨迹检查点，未触碰进程/端口/a11y 状态" };
+    } catch { return { alive: null, note: "探活不可用" }; }
+  },
   onAlert: (a) => {
     // 看门狗只报告。落成一条通知，推给面板 —— 不自动杀任务。
-    if (a.kind === "stalled") {
+    if (a.kind === "absent") {
+      /* S5：预期完成事件缺失 → logBus 的 safety.warn（可追溯）+ 状态行 + 面板通知。
+       * 只报不改：decision 是建议，autoRerun 恒 false，绝不自动重跑/拉起人工停止项。 */
+      try {
+        logBus.write({ category: "safety", level: "warn", epoch: epochOf(), ticketId: a.ticketId,
+          message: `[s5] 预期完成事件缺失：${a.title || a.ticketId} —— ${a.reason}（建议 ${a.decision?.action || "report"}，不自动重跑）` });
+      } catch {}
+      outbox.enqueue({ kind: "notice", dedupe: `absent:${a.ticketId}`,
+        payload: { text: `预期完成事件缺失：${a.title || a.ticketId} —— ${a.reason}；建议${a.decision?.action === "handoff" ? "交还人工" : a.decision?.action === "retry" ? "人工确认后重试" : "降级复核"}（看门狗不自动重跑）` } });
+      outbox.pump().catch(() => {});
+    } else if (a.kind === "stalled") {
       /* 5 分钟一个桶：同一次卡住只报一次，不会每分钟刷一条。
        * 用分钟做桶的话，一个卡了半小时的任务会刷 30 条通知 —— 那本身就是噪音污染。 */
       outbox.enqueue({ kind: "notice", dedupe: `stall:${a.ticketId}:${Math.floor(a.idleMs / 300000)}`, payload: { text: `可能卡住：${a.title || a.ticketId} —— ${a.reason}` } });
@@ -4797,10 +4817,24 @@ async function runNode(s, ctx, depth) {
   ctx.step = (ctx.step || 0) + 1;
   liveStep(ctx.step, s.tool);
   // 抗迁移：先按窗口锚定 / 文字锚定 / 兜底重算坐标，再回放
-  const { args: actArgs, conf } = await resolveAnchor(s);
+  const { args: actArgs, conf, element } = await resolveAnchor(s);
   ctx.lastConf = conf;
+  /* S4：resolveAnchor 在降级裁决命中时给 element 挂 degradation 标记。
+   * 此时**绝不能**因为 conf==='absolute' 就 return downgraded 触发 takeover（视觉循环），
+   * 否则等于"降级又接回 runVision()"。改走录制坐标/窗口兜底，并按 degradeTo 处理。 */
+  const degradation = element && element.degradation;
 
-  if (conf === "absolute") {
+  if (degradation && degradation.code) {
+    log(`[s4] 第 ${ctx.step} 步降级（${degradation.code} → ${degradation.degradeTo}），不进视觉接管：${degradation.reason}`);
+    try {
+      logBus.write({ category: "safety", level: "warn", epoch: epochOf(),
+        message: `[s4] 单步降级脱离视觉循环：${degradation.code} / ${degradation.degradeTo}（step=${s.tool}）` });
+    } catch {}
+    if (degradation.degradeTo === "human") {
+      throw new Error(`第 ${ctx.step} 步「${s.tool}」需要人工处理（${degradation.code}）：${degradation.reason}`);
+    }
+    // window / absolute / structured：直接按已算好的（降级）坐标继续，不升级视觉，照常往下执行动作。
+  } else if (conf === "absolute") {
     /* 配了锚点却落到录制坐标 = 真降级，界面上那个文字找不到了。
        三种处置由自动化的 escalate 决定。 */
     if (ctx.escalate === "stop") {
@@ -4871,9 +4905,10 @@ async function runNode(s, ctx, depth) {
       traceStep(ctx, { no: ctx.step, tool: s.tool, server: s.server, conf, attempt, ok: false, code, message: "hard-stop" });
       throw new Error(`第 ${ctx.step} 步「${s.tool}」被权限/急停拒绝（${code}），已停止并交人工处理：${String(err?.message ?? err)}`);
     }
-    if (decision === "takeover") {
+    if (decision === "takeover" && !(degradation && degradation.code)) {
       // STALE_REF / AMBIGUOUS_TARGET / WINDOW_GONE / UNKNOWN + escalate∈{agent,once}：
-      // 交给接管层按视觉推进。
+      // 交给接管层按视觉推进。S4：已判降级的步骤即便动作失败也**不接回 runVision()**，
+      // 落到下面 off/stop 分支原样抛出交人工，避免降级→失败→又进视觉循环的回环。
       if (ctx.q) ctx.q.anchorFallbacks++;   // 抗迁移三道防线失守一次，记账不改行为
       traceStep(ctx, { no: ctx.step, tool: s.tool, server: s.server, conf, attempt,
         ok: false, code, downgraded: true, message: String(err?.message ?? err) });
@@ -4996,6 +5031,9 @@ async function wfPlay(name, opts = {}) {
     q: { takeovers: 0, verifyFailed: 0, skippedRead: 0, anchorFallbacks: 0, retries: 0, readbacks: 0 },
     baseIndex: resumeFrom,                // 顶层步的原始下标基准（续跑时非 0）
     lastIdem: "",                         // 最近一条已结算收据的幂等键 → 断点的确认凭据
+    /* S4 独立刹车：本次回放的视觉循环预算。每次进入 takeover 记一轮，耗尽即脱离，
+     * 与 AGENT_MAX_ROUNDS 相互独立、取其更严者 —— 即便 escalation 配置再宽松也不无限截图。 */
+    s4VisualBudget: createVisualLoopBudget(Number(wf.visualLoopBudget) || AGENT_MAX_ROUNDS),
   };
 
   /* 断点：线性配方每完成一个「已结算」的顶层步就落一次，失败时它就是救命记录。
@@ -5372,6 +5410,12 @@ async function fireWorkflow(o = {}) {
   let policyEpoch = 0;
   try { policyEpoch = policyTransition.state().policyEpoch; } catch {}
 
+  /* S5：recipe 声明的「预期完成事件契约」（expected_event_schema / 最大静默期 /
+   * 里程碑 / 探测方式）。存进运行账本当真相源，watchdog 据此监听缺席。 */
+  const expectedEvent = (wf && wf.expectedEvent && typeof wf.expectedEvent === "object")
+    ? wf.expectedEvent
+    : (wf && wf.expected_event_schema && typeof wf.expected_event_schema === "object")
+      ? wf.expected_event_schema : null;
   const claim = wfRuns.begin({
     triggerId, workflow: name, source: layer === "manual" ? "manual" : "trigger",
     layer, eventId, dedupeKey: String(o.dedupeKey || ""),
@@ -5380,6 +5424,7 @@ async function fireWorkflow(o = {}) {
     epoch: STOP.epoch, escalate: String((wf && wf.escalate) || "off"), policyEpoch,
     /* 闸门优先级：急停 > observe > 其它。被拦下也进账本留收据。 */
     blockedBy: STOP.on ? "stopped" : String(o.blockedBy || ""),
+    expectedEvent: expectedEvent || undefined,
   });
   if (!claim.ok) return { ok: false, code: claim.code, run: claim.run };
 
@@ -5392,6 +5437,9 @@ async function fireWorkflow(o = {}) {
     ticketId = tk.id;
     trajectory.append(ticketId, { type: "step", name: "recipe.start", ok: true,
       target: name, epoch: tk.epoch, runId: claim.run.runId });
+    /* S5：recipe 声明了预期完成契约才 declare（默认不声明 → 存量配方完全不受影响）。
+     * 没显式写 expectedEvents 时按 recipe.done 兜底 —— 配方正常跑完就该有它。 */
+    if (expectedEvent) watchdog.declare(ticketId, { expectedEvents: ["recipe.done"], ...expectedEvent });
   } catch (err) {
     console.log("[wf] 开工单失败（回放照跑，只是没账）：", err?.message ?? err);
   }
@@ -5429,6 +5477,8 @@ async function fireWorkflow(o = {}) {
     evidenceLevel: String(res?.outcome?.evidenceLevel || ""),
   });
   if (ticketId) {
+    /* S5：配方已跑完 → 撤销预期事件契约，避免下一轮采样把它误判成 absent。 */
+    try { watchdog.clear(ticketId); } catch {}
     try {
       trajectory.append(ticketId, { type: "step", name: runStatus === "ok" ? "recipe.done" : "recipe.error",
         ok: runStatus === "ok", message: String(res.error || res?.outcome?.outcomeReasonCode || "").slice(0, 200),
@@ -6642,6 +6692,18 @@ const resolveAnchor = createAnchorResolver({
   // 录制期已抓 crop 存进 step.visualCrop；回放时 C0 模板命中即返回，未命中才上 C1 CLIP。
   anchorByVisual: createVisualAnchor({ screenshotRegion }),
   findWinRectByTitle,
+  /* S4 / V-13 / C-07 降级纪律：自属 Electron 界面（UIA 读不到）在 resolveAnchor 层
+   * 就跳过视觉档（③），即「明确不接回 runVision()」的前半段。纯现场判定、无副作用。 */
+  degradation: (step) => ({
+    selfElectron: isSelfElectronWindow(step && step.win && step.win.title),
+  }),
+  onLoopExit: (e) => {
+    log(`[s4] 脱离视觉循环 ${e.code}：${e.reason}`);
+    try {
+      logBus.write({ category: "safety", level: "warn", epoch: epochOf(),
+        message: `[s4] 视觉锚定降级：${e.code} / ${e.degradeTo}（step=${e.step && e.step.tool}）` });
+    } catch {}
+  },
 });
 
 /* ---------------- 回归探测 + 智能接管 ----------------
@@ -7048,6 +7110,21 @@ async function takeover(steps, from, ctx) {
   const list = steps || [];
   if (ctx.q) ctx.q.takeovers++;   // 智能接管 handshake 次数：确定性执行退化的直接指标
   const once = ctx.escalate === "once";
+
+  /* S4 独立刹车：视觉循环预算。每进一次接管记一轮，耗尽即脱离，绝不无限截图调模型。
+   * 记 safety.warn + 状态行，让「为什么停」在日志里查得到（方案 S4 的可解释要求）。 */
+  if (ctx.s4VisualBudget) {
+    const used = ctx.s4VisualBudget.take();
+    if (ctx.s4VisualBudget.exhausted()) {
+      const reason = `视觉循环预算耗尽（第 ${used}/${ctx.s4VisualBudget.cap()} 轮），脱离循环降级交人工`;
+      log(`[s4] ${reason}`);
+      try {
+        logBus.write({ category: "safety", level: "warn", epoch: epochOf(),
+          message: `[s4] VISUAL_LOOP_EXHAUSTED：${reason}` });
+      } catch {}
+      return once ? "fallback" : null;
+    }
+  }
 
   /* 命令短路：视觉接管之前，先看这个任务的最终目标能不能直接用命令通道完成
      （"用 X 打开 Y" / "运行 X" / "把 … 写入 …"）。能就一步做完，省掉整轮视觉。
@@ -10813,7 +10890,10 @@ async function handle(req, res) {
     if (body.action === "stop") { send(res, 200, { ok: true, ...watchdog.stop() }); return; }
     if (body.action === "tick") { send(res, 200, { ok: true, result: watchdog.tick() }); return; }
     if (body.action === "sweep") { send(res, 200, { ok: true, removed: trajectory.sweep() }); return; }
-    send(res, 400, { ok: false, error: "action 只能是 start / stop / tick / sweep" });
+    /* S5：面板/外部声明与撤销预期完成事件契约。 */
+    if (body.action === "declare") { send(res, 200, { ok: true, ...watchdog.declare(body.ticketId, body.contract || {}) }); return; }
+    if (body.action === "clear") { send(res, 200, { ok: true, removed: watchdog.clear(body.ticketId) }); return; }
+    send(res, 400, { ok: false, error: "action 只能是 start / stop / tick / sweep / declare / clear" });
     return;
   }
 

@@ -71,3 +71,30 @@ test("分析器不碰桌面：源码里没有任何点击 / 截图 / 子进程�
   assert.ok(!/child_process|spawn\(|execFile\(/.test(src));
   assert.ok(!/screenshot|Click\(|clickAt|mouse_press/.test(src));
 });
+
+/* ---- S4：报告给出五项指标与降级阈值、脱离视觉循环裁决 ---- */
+test("v13 五项指标：单次树只算 ②⑤，①③ 未采到留 null（不补零）", () => {
+  const r = analyzeUiTree(SAMPLE);
+  const m = r.v13.metrics;
+  assert.equal(m.treeFetchSuccessRate, null);
+  assert.equal(m.refStability, null);
+  assert.equal(m.prePostStateChangeRate, null);
+  assert.equal(m.keyControlCoverage, 1);        // 2 个可点控件都带 action
+  assert.equal(m.dangerConfirmVisibility, 0);   // 标签是「确定」，非危险确认词
+});
+
+test("同名控件 → 降级裁决 AMBIGUOUS_TARGET，enterVisual=false（明确不接回 runVision）", () => {
+  const r = analyzeUiTree(SAMPLE);
+  assert.equal(r.v13.degradation.code, "AMBIGUOUS_TARGET");
+  assert.equal(r.v13.degradation.reSnapshot, true);
+  assert.equal(r.v13.degradation.enterVisual, false);
+});
+
+test("自属 Electron 界面 → 报告判定 A11Y_DEGRADED 且 Markdown 写明不接回 runVision", () => {
+  const r = analyzeUiTree(SAMPLE, { selfElectron: true });
+  assert.equal(r.v13.degradation.code, "A11Y_DEGRADED");
+  const md = toMarkdown(r);
+  assert.match(md, /五项指标/);
+  assert.match(md, /明确不接回 runVision/);
+  assert.match(md, /未采到（不补零）/);
+});

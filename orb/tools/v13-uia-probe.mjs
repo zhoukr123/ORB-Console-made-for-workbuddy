@@ -12,6 +12,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+/* S4：接入 V-13 五项指标 + 降级阈值（v13Metrics / v13LoopGuard），让探针报告
+ * 直接给出「五项指标与降级阈值」并判定是否应脱离视觉循环（验收总纲 #4）。 */
+import { computeTreeMetrics, V13_METRICS, V13_THRESHOLDS, evaluateMetric } from "../v13Metrics.mjs";
+import { decideDegradation } from "../v13LoopGuard.mjs";
 
 const argv = process.argv.slice(2);
 const file = argv.find((a) => !a.startsWith("--"));
@@ -65,6 +69,17 @@ export function analyzeUiTree(raw, opts = {}) {
     maxDepth,
   };
 
+  /* S4：五项指标（单次树只算得出 ②③⑤，其余留 null 不补零）+ 阈值判定 + 降级裁决。 */
+  const metrics = computeTreeMetrics(coverage, { treeText: tree });
+  const evaluated = Object.values(V13_METRICS).map((m) => evaluateMetric(m, metrics[m], V13_THRESHOLDS[m]));
+  const degradation = decideDegradation({
+    // 同名多控件 = AMBIGUOUS_TARGET 的实机证据，落成正式错误状态（先重抓快照，不误点/不转视觉）。
+    refBindingCheck: duplicates.length > 0
+      ? { ok: false, code: "AMBIGUOUS_TARGET" } : null,
+    keyControlCoverage: metrics[V13_METRICS.KEY_CONTROL_COVERAGE],
+    selfElectron: opts.selfElectron === true,
+  });
+
   return {
     ok: true,
     capturedAt: opts.capturedAt || null,
@@ -72,6 +87,8 @@ export function analyzeUiTree(raw, opts = {}) {
     source: opts.source || null,
     coverage,
     ambiguousLabels: duplicates,
+    /* V-13 五项指标 / 阈值 / 降级裁决（S4）：报告据此回答"该不该脱离视觉循环"。 */
+    v13: { metrics, thresholds: V13_THRESHOLDS, evaluated, degradation },
     /* agent-desktop v1.1.0：旧快照 ref 与同名多控件一律 AMBIGUOUS_TARGET。
      * 这里把「同名标签」如实列出，供封装层决定是否要 (平台,快照id,ref,工具版本) 四元组。 */
     refBindingNeeded: duplicates.length > 0 || anonymous > 0,
@@ -114,6 +131,29 @@ function toMarkdown(r) {
     for (const d of r.ambiguousLabels) L.push(`| ${d.label.replace(/\|/g, "\\|")} | ${d.n} |`);
   }
   L.push("");
+  /* S4：V-13 五项指标 + 降级阈值 + 脱离视觉循环裁决。 */
+  if (r.v13) {
+    const { metrics, thresholds, evaluated, degradation } = r.v13;
+    L.push("## V-13 五项指标与降级阈值（S4）");
+    L.push("");
+    L.push("| 指标 | 实测 | 阈值 | 判定 |");
+    L.push("|---|---|---|---|");
+    const label = {
+      treeFetchSuccessRate: "① 树获取成功率", keyControlCoverage: "② 关键控件语义覆盖",
+      refStability: "③ ref 稳定性", prePostStateChangeRate: "④ 操作前后状态变化",
+      dangerConfirmVisibility: "⑤ 危险确认元素可见性",
+    };
+    for (const e of evaluated) {
+      const v = e.value === null ? "**未采到（不补零）**" : String(e.value);
+      L.push(`| ${label[e.metric] || e.metric} | ${v} | ${e.threshold} | ${e.status} |`);
+    }
+    L.push("");
+    L.push(`- 降级裁决：\`code=${degradation.code}\` / \`degradeTo=${degradation.degradeTo}\` / \`enterVisual=${degradation.enterVisual}\``);
+    L.push(`- ${degradation.reason}`);
+    L.push(`- **明确不接回 runVision()**：降级时 \`enterVisual=false\`，视觉循环预算耗尽或自属界面一律走降级/人工。`);
+    L.push("");
+  }
+
   L.push("## 结论");
   L.push("");
   L.push(`- \`refBindingNeeded = ${r.refBindingNeeded}\`：${r.refBindingNeeded

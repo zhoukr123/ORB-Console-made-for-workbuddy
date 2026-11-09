@@ -132,6 +132,20 @@ export function createWfRunLedger(opts = {}) {
     const dedupeKey = String(input.dedupeKey || "");
     const cooldownMs = Math.max(0, Number(input.cooldownMs) || 0);
     const epoch = Number(input.epoch) || 0;
+    /* S5：recipe 声明的「预期完成事件契约」。存进运行账本 = 生命周期控制的真相源，
+     * watchdog 据此监听"预期事件有没有出现"。不传就不写该字段（存量运行形状不变）。
+     * 只挑必要字段落盘，避免把任意对象塞进 jsonl。 */
+    const ee = input.expectedEvent && typeof input.expectedEvent === "object" ? input.expectedEvent : null;
+    const expectedEvent = ee ? {
+      expectedEvents: Array.isArray(ee.expectedEvents) ? ee.expectedEvents.map(String).slice(0, 20) : undefined,
+      maxSilenceMs: Number.isFinite(Number(ee.maxSilenceMs)) ? Number(ee.maxSilenceMs) : undefined,
+      absentAfter: Number.isFinite(Number(ee.absentAfter)) ? Number(ee.absentAfter) : undefined,
+      milestones: Array.isArray(ee.milestones) ? ee.milestones.map(String).slice(0, 40) : undefined,
+      probe: ee.probe != null ? String(ee.probe).slice(0, 60) : undefined,
+      idempotent: ee.idempotent === true,
+      sideEffects: ee.sideEffects != null ? String(ee.sideEffects).slice(0, 40) : undefined,
+      credentialScope: ee.credentialScope != null ? String(ee.credentialScope).slice(0, 40) : undefined,
+    } : null;
 
     pruneSeen();
     let skipCode = "";
@@ -171,6 +185,8 @@ export function createWfRunLedger(opts = {}) {
       escalate: String(input.escalate || ""),
       policyEpoch: Number(input.policyEpoch) || 0,
       ticketId: String(input.ticketId || ""),
+      // S5：只在声明了契约时挂字段，避免污染存量运行记录（append 会把 undefined 自动丢掉）。
+      ...(expectedEvent ? { expectedEvent } : {}),
     };
     if (skipCode) {
       base.detail = detail || {};

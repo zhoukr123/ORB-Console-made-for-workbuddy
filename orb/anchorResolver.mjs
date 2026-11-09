@@ -24,6 +24,13 @@ import {
 export { REF_BINDING_ERRORS, ELEMENT_REF_SCHEMA_VERSION, AGENT_DESKTOP_LIMITS,
   bindRefVersion, validateRefBinding, refBindingExtra, classifyAgentDesktopError };
 
+/* S4 / V-13 / C-07：降级阈值与「脱离视觉循环」纪律的单一来源。
+ * 方案原文要求「阈值写进 anchorResolver / refBinding」，故从此处再导出，
+ * 调用方只需认 anchorResolver 一处。纯函数，零副作用。 */
+import { decideDegradation, DEGRADATION_CODES, DEGRADE_TO, isSelfElectronWindow } from "./v13LoopGuard.mjs";
+export { V13_THRESHOLDS, V13_METRICS } from "./v13Metrics.mjs";
+export { decideDegradation, DEGRADATION_CODES, DEGRADE_TO, isSelfElectronWindow };
+
 /* 可锚定的工具：单点/区域类动作才需要抗迁移，键盘类不需要。 */
 export const ANCHORABLE = new Set([
   "windows|Click", "windows|Move",
@@ -415,12 +422,29 @@ export function createAnchorResolver(deps = {}) {
   const anchorByTree = deps.anchorByTree || null;
   const anchorByVisual = deps.anchorByVisual || null;
   const findWinRectByTitle = deps.findWinRectByTitle || (() => null);
+  /* S4：降级纪律是 opt-in。degradation(step) 返回现场信号（自属界面/平台能力/ref 校验/
+   * 覆盖度/已用视觉轮数），由 bridge 注入。不传时行为与改造前**完全一致**（不破坏存量回放）。 */
+  const degradation = typeof deps.degradation === "function" ? deps.degradation : null;
+  const onLoopExit = typeof deps.onLoopExit === "function" ? deps.onLoopExit : null;
 
   return async function resolveAnchor(step) {
     const a = (step && step.args) || {};
     const args = JSON.parse(JSON.stringify(a)); // 克隆，避免回放多次后位移被反复叠加
     const tool = `${step && step.server}|${step && step.tool}`;
     const hadAnchor = !!(a.anchor && String(a.anchor).trim());
+
+    // S4：先裁决降级纪律。命中时**绝不再走视觉档（③）**，也就不会触发上层 runVision()/takeover。
+    let deg = null;
+    if (degradation) {
+      try { deg = decideDegradation(degradation(step) || {}); } catch { deg = null; }
+    }
+    const skipVisual = !!(deg && deg.degrade && !deg.enterVisual);
+    if (skipVisual && onLoopExit) { try { onLoopExit({ step, code: deg.code, reason: deg.reason, degradeTo: deg.degradeTo }); } catch {} }
+    // 把降级结论挂在 element 上，桥据此决定是否进入智能接管（视觉循环）。
+    // 只在**真的降级**时加字段，未降级时原样返回，绝不改动存量返回结构（不破坏既有断言）。
+    const withDeg = (element) => (element && deg && deg.degrade) ? { ...element, degradation: {
+      code: deg.code, reason: deg.reason, degradeTo: deg.degradeTo, reSnapshot: deg.reSnapshot,
+    } } : element;
 
     // ① 控件树锚定（方案 A1，首选）：结构化匹配，绕开 OCR 启发式
     if (ANCHORABLE.has(tool) && anchorByTree) {
@@ -430,7 +454,7 @@ export function createAnchorResolver(deps = {}) {
           if (Array.isArray(args.loc)) args.loc = [t.x, t.y];
           else if (args.x !== undefined) { args.x = t.x; args.y = t.y; }
           delete args.anchor;
-          return { args, conf: "tree", ref: t.ref || null, element: normalizeElementRef({ x: t.x, y: t.y, ref: t.ref }, "tree") };
+          return { args, conf: "tree", ref: t.ref || null, element: withDeg(normalizeElementRef({ x: t.x, y: t.y, ref: t.ref }, "tree")) };
         }
       } catch { /* 树锚定失败，落到后面的坐标档，不阻断 */ }
     }
@@ -442,20 +466,21 @@ export function createAnchorResolver(deps = {}) {
         if (Array.isArray(args.loc)) args.loc = [pt.x, pt.y];
         else { args.x = pt.x; args.y = pt.y; }
         delete args.anchor;
-        return { args, conf: "text", element: normalizeElementRef({ x: pt.x, y: pt.y }, "text") };
+        return { args, conf: "text", element: withDeg(normalizeElementRef({ x: pt.x, y: pt.y }, "text")) };
       }
     }
 
     // ③ 视觉锚定（C0 模板匹配 + C1 CLIP embedding）：不依赖控件树、不依赖文字，
     //    能应对"控件树缺失 / 改名 / 无文字图标"这类前两档会失手的情况。
     //    C0 命中即返回；C0 未命中才上 C1（C1 贵，仅必要时唤醒）。
-    if (anchorByVisual) {
+    //    S4 降级纪律：命中降级裁决时**跳过视觉档**，这就是「明确不接回 runVision()」。
+    if (anchorByVisual && !skipVisual) {
       const v = await anchorByVisual(step);
       if (v && Number.isFinite(v.x) && Number.isFinite(v.y)) {
         if (Array.isArray(args.loc)) args.loc = [v.x, v.y];
         else if (args.x !== undefined) { args.x = v.x; args.y = v.y; }
         delete args.anchor;
-        return { args, conf: "visual", ref: v.ref || null, element: normalizeElementRef({ x: v.x, y: v.y, ref: v.ref, score: v.score }, "visual") };
+        return { args, conf: "visual", ref: v.ref || null, element: withDeg(normalizeElementRef({ x: v.x, y: v.y, ref: v.ref, score: v.score }, "visual")) };
       }
     }
 
@@ -469,7 +494,7 @@ export function createAnchorResolver(deps = {}) {
           const dy = r[1] + step.win.off[1] - pp[1];
           addDeltaToArgs(args, dx, dy);
           delete args.anchor;
-          return { args, conf: "window", element: normalizeElementRef({ x: pp[0] + dx, y: pp[1] + dy }, "window") };
+          return { args, conf: "window", element: withDeg(normalizeElementRef({ x: pp[0] + dx, y: pp[1] + dy }, "window")) };
         }
       }
     }
@@ -478,10 +503,11 @@ export function createAnchorResolver(deps = {}) {
     delete args.anchor;
     {
       const pp0 = primaryPoint(step);
-      const element = pp0 ? normalizeElementRef({ x: pp0[0], y: pp0[1] }, hadAnchor ? "absolute" : "none") : null;
+      const element = pp0 ? withDeg(normalizeElementRef({ x: pp0[0], y: pp0[1] }, hadAnchor ? "absolute" : "none")) : null;
       return { args, conf: hadAnchor ? "absolute" : "none", element };
     }
   };
 }
 
-export default { ANCHORABLE, primaryPoint, addDeltaToArgs, classifyActionError, ACTION_ERROR_CODES, parseSnapshotTree, buildTreeSelector, matchTreeNode, createAnchorResolver, createTreeCache, ELEMENT_BACKENDS, normalizeElementRef, treeFingerprint, verifyEffect };
+export default { ANCHORABLE, primaryPoint, addDeltaToArgs, classifyActionError, ACTION_ERROR_CODES, parseSnapshotTree, buildTreeSelector, matchTreeNode, createAnchorResolver, createTreeCache, ELEMENT_BACKENDS, normalizeElementRef, treeFingerprint, verifyEffect,
+  decideDegradation, DEGRADATION_CODES, DEGRADE_TO, isSelfElectronWindow };
