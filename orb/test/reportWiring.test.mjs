@@ -63,7 +63,7 @@ test("6 个新实例在桥进程里装配，hostApi 默认关", () => {
   }
   assert.match(BRIDGE, /createHostDataApi\(\{ enabled: false \}\)/, "宿主取数默认必须关");
   assert.match(BRIDGE, /createSealReview\(\{ mode: "normal", teamFactory: \(\) => team \}\)/,
-    "封驳评审必须注入已有 team，不能走硬编码绝对路径");
+    "独立复核评审必须注入已有 team，不能走硬编码绝对路径");
   assert.ok(!read("p2SealReview.mjs").includes("D:/workbuddy_ORB控制台"), "p2SealReview 不得再含绝对路径");
   assert.match(read("p2SealReview.mjs"), /new URL\("\.\/team\.mjs", import\.meta\.url\)/);
 });

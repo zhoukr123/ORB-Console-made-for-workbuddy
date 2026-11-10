@@ -9409,7 +9409,7 @@ async function handle(req, res) {
         case "site.lookup": out.data = lookupSite(b.domain || ""); break;
         case "site.audit": out.data = assertNoInventedSelectors(buildCapabilityTable()); break;
 
-        /* --- 执行桥接 / 宿主取数 / 封驳 / 五段验收 / 文件信道 --- */
+        /* --- 执行桥接 / 宿主取数 / 独立复核 / 五段验收 / 文件信道 --- */
         case "gov.plan": out.data = govExec.planExecution(b.req || {}); break;
         case "gov.plan.run": {
           if (guardStop()) break;

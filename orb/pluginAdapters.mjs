@@ -254,7 +254,7 @@ export function mcpToolAdapter(tool = {}, server = {}) {
  * 宿主 await 补丁演示（§3）
  *
  * 真实 pluginHost.run 是同步的：它先取 result 再判 ok，MCP 的 Promise 结果会被丢弃。
- * 真实落地只需在 pluginHost.mjs 的 run() 内加一行 await（见拟诏 §3）。
+ * 真实落地只需在 pluginHost.mjs 的 run() 内加一行 await（详见 §3）。
  * createDemoHostAsync 是自包含最小宿主，仅证明 await 语义、不碰用户文件。
  * ------------------------------------------------------------------ */
 

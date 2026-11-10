@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0B0E1A"/>
+      <stop offset="55%" stop-color="#121830"/>
+      <stop offset="100%" stop-color="#1B2244"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#5B6EE8" stop-opacity="0.55"/>
+      <stop offset="60%" stop-color="#3A46A0" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#3A46A0" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7C8CFF"/>
+      <stop offset="100%" stop-color="#B48CFF"/>
+    </linearGradient>
+    <linearGradient id="orb" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8FA0FF"/>
+      <stop offset="100%" stop-color="#4A57C8"/>
+    </linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#7C8CFF" stroke-opacity="0.06" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="675" fill="url(#bg)"/>
+  <rect width="1200" height="675" fill="url(#grid)"/>
+  <circle cx="960" cy="330" r="330" fill="url(#glow)"/>
+
+  <!-- 右侧：悬浮球 / 轨道意象 -->
+  <g fill="none" stroke="#8FA0FF" stroke-opacity="0.20">
+    <circle cx="960" cy="330" r="196"/>
+    <circle cx="960" cy="330" r="150" stroke-opacity="0.28"/>
+    <circle cx="960" cy="330" r="106" stroke-opacity="0.38"/>
+  </g>
+  <g fill="none" stroke="#B48CFF" stroke-opacity="0.35" stroke-width="2">
+    <path d="M764 330 A196 196 0 0 1 960 134"/>
+    <path d="M1109 231 A196 196 0 0 1 1096 442"/>
+  </g>
+  <circle cx="960" cy="330" r="64" fill="url(#orb)" opacity="0.92"/>
+  <circle cx="942" cy="310" r="20" fill="#FFFFFF" opacity="0.24"/>
+  <circle cx="960" cy="134" r="7" fill="#7C8CFF"/>
+  <circle cx="1136" cy="330" r="5" fill="#B48CFF"/>
+  <circle cx="845" cy="468" r="5" fill="#7C8CFF" opacity="0.8"/>
+  <circle cx="1060" cy="180" r="4" fill="#FFFFFF" opacity="0.55"/>
+
+  <!-- 左侧内容 -->
+  <rect x="80" y="72" width="4" height="22" rx="2" fill="url(#accent)"/>
+  <text x="98" y="90" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="17" letter-spacing="2" fill="#9AA6D8">WORKBUDDY 生态 · 社区作品</text>
+
+  <text x="78" y="196" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="68" font-weight="bold" fill="#F4F6FF">ORB 控制台</text>
+  <rect x="80" y="222" width="132" height="44" rx="22" fill="#FFB020"/>
+  <text x="146" y="252" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#1A1400">v1.5.0</text>
+
+  <text x="80" y="322" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="29" fill="#D7DDF7">说一句话，它真的会替你操作电脑</text>
+  <text x="80" y="362" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="18" fill="#8D99C8">常驻桌面的悬浮球 · 会看屏幕、会点、会输入、会交付结果</text>
+
+  <line x1="80" y1="400" x2="690" y2="400" stroke="#7C8CFF" stroke-opacity="0.22"/>
+
+  <g font-family="Microsoft YaHei, SimHei, sans-serif" font-size="19" fill="#E4E9FF">
+    <rect x="80" y="428" width="164" height="46" rx="23" fill="#7C8CFF" fill-opacity="0.13" stroke="#7C8CFF" stroke-opacity="0.42"/>
+    <text x="162" y="457" text-anchor="middle">浏览器快车道</text>
+    <rect x="256" y="428" width="132" height="46" rx="23" fill="#7C8CFF" fill-opacity="0.13" stroke="#7C8CFF" stroke-opacity="0.42"/>
+    <text x="322" y="457" text-anchor="middle">插件生态</text>
+    <rect x="400" y="428" width="132" height="46" rx="23" fill="#7C8CFF" fill-opacity="0.13" stroke="#7C8CFF" stroke-opacity="0.42"/>
+    <text x="466" y="457" text-anchor="middle">治理四档</text>
+    <rect x="544" y="428" width="146" height="46" rx="23" fill="#7C8CFF" fill-opacity="0.13" stroke="#7C8CFF" stroke-opacity="0.42"/>
+    <text x="617" y="457" text-anchor="middle">自动化运维</text>
+
+    <rect x="80" y="488" width="132" height="46" rx="23" fill="#B48CFF" fill-opacity="0.12" stroke="#B48CFF" stroke-opacity="0.42"/>
+    <text x="146" y="517" text-anchor="middle">安全急停</text>
+    <rect x="224" y="488" width="148" height="46" rx="23" fill="#B48CFF" fill-opacity="0.12" stroke="#B48CFF" stroke-opacity="0.42"/>
+    <text x="298" y="517" text-anchor="middle">四套主题</text>
+    <rect x="384" y="488" width="164" height="46" rx="23" fill="#B48CFF" fill-opacity="0.12" stroke="#B48CFF" stroke-opacity="0.42"/>
+    <text x="466" y="517" text-anchor="middle">本地零遥测</text>
+  </g>
+
+  <text x="80" y="596" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="16" fill="#7A86B8">为 WorkBuddy / CodeBuddy 生态而建 · 后台轨道直连本机 CLI，无需另配 Key</text>
+  <text x="80" y="624" font-family="Microsoft YaHei, SimHei, sans-serif" font-size="15" fill="#5E6A9C">桥侧模块 7 → 102 · 单测 0 → 122 个文件 · 验收 1 道自检 → 9 道门禁</text>
+
+  <rect x="80" y="648" width="1040" height="2" fill="url(#accent)" opacity="0.55"/>
+</svg>

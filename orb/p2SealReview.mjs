@@ -1,17 +1,17 @@
-/* P2 · Tier A 重治理：封驳评审（门下省）+ 多 agent 带上下文。
+/* P2 · Tier A 重治理：独立复核评审 + 多 agent 带上下文。
  *
  * 对应《综合性方案》§4.3 / §5 桥接② / §6 P2。
  *
  * 复用声明：评审裁决**不重造**，直接用 ORB 既有 orb/team.mjs 的 createTeam().review()
  *   —— 它已实现 pass/warn/block、needsHuman、冲突不自动裁决、evidence 归档。
- *   本模块只在其上叠加「门下省否决 + 打回重写」语义与验收标准判据。
+ *   本模块只在其上叠加「独立复核否决 + 打回重写」语义与验收标准判据。
  *
  * 硬约束：mode !== "team_max" 一律不进评审（Tier A 严格绑定 团队 && Max）。
  */
 import { isTierAEnabled } from "./governanceCore.mjs";
 import { admissibleForSeal } from "./p0Discipline.mjs";
 
-/** 封驳否决判据（帖子红线 + 方案 §2.2）。 */
+/** 复核否决判据（帖子红线 + 方案 §2.2）。 */
 export const SEAL_GROUNDS = Object.freeze({
   missing_criteria: "缺可验证验收标准",
   direction_risk: "方向风险",
@@ -45,7 +45,7 @@ export function createSealReview({ mode, teamFactory, now = Date.now } = {}) {
     }
   }
 
-  /** 拟诏 → 评审 → 执行 三节点。评审不过 = 打回，绝不迁就结果改验收标准。 */
+  /** 拟案 → 评审 → 执行 三节点。评审不过 = 打回，绝不迁就结果改验收标准。 */
   async function reviewPlan(plan = {}, findings = []) {
     // 总闸：非 team_max 直接拒绝，连评审都不启动（成本不增）
     if (!isTierAEnabled(mode)) {
@@ -56,7 +56,7 @@ export function createSealReview({ mode, teamFactory, now = Date.now } = {}) {
       return { ok: false, error: SEAL_GROUNDS.missing_criteria, stage: "propose", grounds: ["missing_criteria"] };
     }
 
-    // 证据准入：封驳只认带依据的「已核实」
+    // 证据准入：独立复核只认带依据的「已核实」
     const ev = admissibleForSeal(plan.evidence || []);
     if (plan.evidence && plan.evidence.length && !ev.ok) {
       return { ok: false, error: SEAL_GROUNDS.insufficient_evidence, stage: "propose", grounds: ["insufficient_evidence"] };
@@ -83,7 +83,7 @@ export function createSealReview({ mode, teamFactory, now = Date.now } = {}) {
       needsHuman: !!rv.needsHuman,
       grounds: [...new Set(grounds)].map((g) => SEAL_GROUNDS[g]),
       stage: passed ? "execute" : "rewrite",
-      action: passed ? "放行，进尚书省执行" : "打回中书省重写，不得改验收标准迁就结果",
+      action: passed ? "放行，交执行方执行" : "打回拟案方重写，不得改验收标准迁就结果",
       criteriaLocked: criteria.slice(),  // 验收标准锁死，评审后不得改
       at: now(),
       raw: { counts: rv.counts, rejected: rv.rejected, conflicts: rv.conflicts },
@@ -99,7 +99,7 @@ export async function defaultTeamFactory() {
   return mod.createTeam({});
 }
 
-/* ── 多 agent 带上下文（六部模型 / context bag）────────────────────
+/* ── 多 agent 带上下文（多角色分工模型 / context bag）────────────────────
  * 满血档：每个 worker 拿完整任务上下文（需求/红线/派工包/他人交付/验收标准）。
  * 轻量档：worker 只看自己那格 brief（与 expertTeam.mjs 现有「上下文隔离」一致）。
  * 角色边界仍保留：上下文全给 ≠ 可以越权动手（P0 红线 role_breach 仍拦）。
@@ -125,10 +125,10 @@ export function buildContextBag({ mode, subject, redLines = [], packets = [], de
 }
 
 export const INJECTABLE_SEAL_RULE = Object.freeze([
-  "【Tier A 总闸】封驳评审与全量上下文只在「专家团 + Max」同时开启时启用。",
-  "【三省】中书省拟案须带可验证验收标准 → 门下省评审有实权否决 → 尚书省过审才执行。",
+  "【Tier A 总闸】独立复核评审与全量上下文只在「专家团 + Max」同时开启时启用。",
+  "【分段制衡】拟案须带可验证验收标准 → 独立复核有实权否决 → 过审才交执行。",
   "【不迁就】评审未过就打回重写，严禁改验收标准迁就结果。",
-  "【证据准入】封驳只认带依据的「已核实」；标「推断」却装「已核实」直接打回。",
+  "【证据准入】独立复核只认带依据的「已核实」；标「推断」却装「已核实」直接打回。",
   "【满血上下文】每个专家携带需求/红线/派工包/他人交付，但仍各守角色边界。",
 ]);
 

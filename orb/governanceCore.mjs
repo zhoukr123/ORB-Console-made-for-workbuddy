@@ -4,7 +4,7 @@
  * 这里只做确定性判定，不碰网络/文件/子进程 —— 与 ORB 既有模块的风格一致。
  *
  * 硬约束（用户指定，不许被"优化"掉）：
- *   Tier A（封驳评审 + 多 agent 带上下文）严格绑定 team && max。
+ *   Tier A（独立复核评审 + 多 agent 带上下文）严格绑定 team && max。
  *   Tier B（轻治理）绑定 team（不论 max）。
  *   没团队 = 没有任何团队治理，Max 只放大单 agent 并行强度。
  */
@@ -44,7 +44,7 @@ export function enabledGovernance(mode) {
     : Object.freeze([...TIERS.B]);
 }
 
-/** Tier A 总闸。P2 的封驳 / context bag 注入前必须先过这一道。 */
+/** Tier A 总闸。P2 的独立复核 / context bag 注入前必须先过这一道。 */
 export function isTierAEnabled(mode) {
   return mode === "team_max";
 }

@@ -7,7 +7,7 @@
 Say one sentence. It screenshots your screen, figures out where to click, and clicks / types / scrolls for you —
 then reports the whole run back to the chat panel. A floating orb stays on your desktop; it gets out of the way when idle.
 
-[简体中文](README.md) · [Download](#download) · [Roadmap](ROADMAP.md)
+[简体中文](README.md) · [Download](#download) · [Changelog (中文)](docs/更新说明-v1.5.0.md) · [Roadmap](ROADMAP.md)
 
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D6)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen)
@@ -28,11 +28,76 @@ Measured against v1.4.5 this is a base-layer rewrite, not a feature drop: backen
 | --- | --- |
 | **Browser lane** | Load the extension and ORB drives the tab directly — read page text, open, click, type. **No mouse, no screenshot guessing.** Only 17 whitelisted commands; `eval` / `cookie` / `upload` are always denied |
 | **Plugins** | Drop a `.zip` / `plugin.json` / folder into Settings › Plugins, or pick from a 647-entry offline market index. Plugin output must pass an acceptance gate |
-| **Four governance tiers** | "Expert team" and "Max" are two orthogonal switches. Governance only exists when a team exists; heavy review is bound to team + Max |
+| **Four governance tiers** | "Expert team" and "Max" are two orthogonal switches. Governance only exists when a team exists; independent review is bound to team + Max |
 | **Automation that survives** | Pre-flight check, resume from checkpoint, versioned recipes with diff/rollback, run ledger, trash instead of delete |
 | **One storage root** | `ORB存储/<kind>/<day>/` for recordings, screenshots, exports, logs. The migrator copies, never deletes, and is idempotent |
 
 Full detail (Chinese): [docs/更新说明-v1.5.0.md](docs/更新说明-v1.5.0.md)
+
+## Browser lane: drive tabs without touching the mouse
+
+The path is **panel → local bridge → native host → browser extension → tab**. Load the unpacked extension from
+`orb/browser-extension/` and ORB can read the whole page text, open or navigate tabs, click, type and scroll —
+without taking over your mouse or guessing coordinates from a screenshot.
+
+The command surface is a hard-coded whitelist of **17 commands**, nothing else:
+
+| Kind | Commands |
+| --- | --- |
+| Read | `tab.list` `tab.url` `tab.title` `browser.info` `dom.get_page_text` `dom.get_visible_dom` `dom.get_text` `dom.get_attributes` |
+| Write | `tab.open` `tab.goto` `tab.back` `tab.forward` `tab.reload` `tab.focus` `dom.click` `dom.type` `dom.scroll` |
+
+Every write requires an explicit `params.confirm === true` or it is rejected. The `cua.*` / `cookie.*` families,
+`eval`, `upload`, `submit` and `script.execute` are **always denied** — no arbitrary-JS back door, even if someone
+adds a whitelist entry by mistake.
+
+`dom.get_page_text` uses a `TreeWalker` over visible text nodes only, skipping `script` / `style` / `noscript` /
+`template`. (Concatenating `textContent` duplicated nested content and leaked `function(` and `{display:flex}`.)
+Reading a page no longer creates a tab group or renames anything in your tab bar — earlier builds did, which was
+intrusive for a plain read. When two browsers both have the extension installed, messages are routed by
+`channel_epoch` ownership so one host cannot swallow another's pending command.
+
+## Plugins: from built-ins to an installable ecosystem
+
+Settings › Plugins has two tabs — Installed and Market — with search, filters (all / built-in / custom),
+enable / disable, a detail view (id, inputs, outputs, fidelity, status), self-test and uninstall. Below that are a
+**drag-and-drop install area** (`.zip`, `plugin.json`, `SKILL.md` or a whole folder) and an **import area** for
+pasting a manifest JSON that is validated before install.
+
+The market is a **read-only offline index** — 647 entries from 6 sources, no network calls, no invented listings.
+Plugin output must pass a pure-logic acceptance gate before it counts as a result. Execution bodies ship inside the
+console build; dangerous capabilities (network / disk write / shell) need explicit approval, and the console never
+injects arbitrary code into the running process.
+
+## Governance: four tiers, two orthogonal switches
+
+"Expert team" and "Max" are separate switches. Max only increases the parallelism of a single agent; the expert
+team is what enables team governance.
+
+| Tier | Expert team | Max | Governance layers |
+| --- | --- | --- | --- |
+| Normal (default) | off | off | none |
+| Normal + Max | off | on | none (Max scales one agent only) |
+| Expert team (light) | on | off | light: cost routing, file-based channel, evidence labels, hands-on acceptance, collaboration red lines, house rules |
+| Expert team + Max (full) | on | on | light + heavy: **independent review** with veto power, and multi-agent context bags |
+
+Hard rule: **no team means no team governance.** Heavy governance is bound strictly to team + Max; light governance
+to the expert team alone, regardless of Max. This is deliberately fixed in `governanceCore.mjs`.
+
+## Automation: recorded once, fired by events
+
+Pre-flight checks before a run (is the target window there, is the anchor text still findable), resume from a
+checkpoint after a mid-run failure, versioned recipes with diff and rollback, a per-run ledger (runId / steps /
+duration / outcome / failure class), a recycle bin for deleted recipes, interval / file / hotkey triggers in one
+place, and failure classification that decides whether a retry is worthwhile. Identical idempotency keys never run
+twice.
+
+## Storage: one root, layered by kind and day
+
+All artifacts live under a single user-visible `ORB存储/` root, with `recordings/ screenshots/ vidx/ exports/`
+layered as `<kind>/<day>/<file>`, plus `archive/<day>/`, `logs/<day>/`, `governance/`, `history/` and `misc/`.
+No root-level date folders. The migrator **copies only, never deletes**, skips existing names and is idempotent
+across repeated runs.
 
 ## Safety first
 
@@ -40,24 +105,35 @@ Handing your mouse to an AI raises one question before any other: *what if it go
 
 | Mechanism | Detail |
 | --- | --- |
-| **Emergency stop** | `Ctrl + Alt + Backspace`, or the red stop button in the top bar. Interrupts mid-action, nothing keeps running in the background |
+| **Emergency stop** | `Ctrl + Alt + Backspace`, or the red stop button in the top bar. Stops foreground, background and queued tasks; nothing new starts until you resume |
 | **Permission tiers** | Read-only / Workspace-writable / Full access. Persisted per session. No vision loop unless you grant full access |
 | **Observation border** | The target window lights up with a border while a foreground action runs, so you always see *what* is being operated |
 | **Human confirmation** | Irreversible actions (delete, pay, send) must raise a confirmation first |
 | **Token auth** | Every bridge endpoint requires a `X-Orb-Token` generated at process start. No random web page can drive your PC |
 | **No telemetry** | None. Keys stay in memory — never written to disk or logs |
+| **Stop is not a hard kill** | A global pause blocks new tickets but never kills a running one — killing mid-step leaves half-written state |
+| **Capability clock** | Every side effect is issued a capability validated before and after execution, so instructions from a previous policy epoch cannot leak into the current one |
+| **Local memory** | Long-term memory is a local JSON file; recall and compaction happen on this machine, nothing is uploaded |
+| **No silent downgrade** | If external search fails it reports the failure, instead of quietly falling back to screenshots or a vision loop |
 
 ---
 
-## Three execution tracks
+## Four execution tracks + one mode
 
-One sentence in, ORB picks the track — or you force one manually.
+One sentence in, ORB picks the track — or you force one manually from the selector above the input box.
 
 | Track | What it does | Good for |
 | --- | --- | --- |
 | **Foreground** | Drives your PC directly: click, type, hotkeys, scroll, press-and-hold, drag, screenshot | Launching apps, filling forms, tidying files |
 | **Background** | Dispatches heavy work to a local agent (headless, one-shot), results stream back | Reading a codebase, writing long documents, batch jobs |
 | **Vision** | A `screenshot → vision model → action → screenshot` loop; the model decides the next click itself | Apps with no API that you can only drive by looking |
+| **Browser** (v1.5.0) | Drives tabs through the extension: read page text, open, click, type, scroll — no mouse usage | Research, scraping page text, filling web forms |
+
+Foreground / Background / Vision can be selected manually. Browser is chosen automatically when the task is clearly
+web-shaped (URLs, site names, "grab the text") — there is deliberately no manual "use browser" switch, because the
+signal is unambiguous. **Expert team** is a separate toggle in the top bar and is orthogonal to the tracks: you talk
+only to the dispatcher, which splits the work across workers running in parallel. It can be on while a task still
+runs on the background track.
 
 Vision coordinates use **per-mille (0–1000)** instead of pixels, so high-DPI screens don't make the model miscount;
 it can `zoom` / `reset` the viewport on its own, and falls back to a secondary model when the primary fails.
@@ -68,15 +144,15 @@ it can `zoom` / `reset` the viewport on its own, and falls back to a secondary m
 
 | Option | Size | Notes |
 | --- | --- | --- |
-| **Portable single-file `.exe`** | ~208 MB | Grab `ORB-Console-<version>-portable.exe` from [Releases](https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases) and double-click |
-| **Portable `.zip`** | ~208 MB | Same release; unzip and run the launcher inside |
+| **Portable single-file `.exe`** | ~219 MB | Grab `ORB-Console-<version>-portable.exe` from [Releases](https://github.com/zhoukr123/ORB-Console-made-for-workbuddy/releases) and double-click |
+| **Portable `.zip`** | ~219 MB | Same release; unzip and run the launcher inside |
 | **Run from source** | — | Requires Node.js 22+, see below |
 
 The portable build is a **self-extracting single file**: it unpacks itself to `%LOCALAPPDATA%\ORBConsole` and starts.
 No installer, no registry writes, no need for a pre-installed Node or Python (runtimes ship inside).
 
 - Data directory: `%APPDATA%\ORB 控制台`
-- Uninstall: run `uninstall-ORB-Console.cmd` next to it
+- Uninstall: run `卸载 ORB 控制台.cmd` next to it
 - SmartScreen may warn on first run — choose "More info → Run anyway" (no signing certificate yet)
 - GitHub forces ASCII asset names; the Chinese names appear in each asset's description text
 
@@ -90,6 +166,23 @@ npm install --prefix orb/desktop
 :: then launch
 双击 "启动 ORB 控制台.cmd"
 ```
+
+### Upgrading
+
+1. **Data is not migrated automatically.** The first launch asks whether to move it over; you can also run the
+   offline migrator first (it copies only, never deletes).
+2. **Reload the browser extension manually.** Chrome / Quark / Edge keep the old script in memory when files change
+   on disk. Without a reload you will see `method-denied`, or a behaviour you thought was fixed comes back.
+   `browser.info` reports a `BUILD` stamp — compare it with the one on disk to check you are not running a stale copy.
+3. **Plugins are an independent switch.** Not installing any changes nothing else.
+
+### Known limitations
+
+- The browser lane covers Chromium-based browsers only (Chrome, Edge, Quark, …). Firefox is not supported, and
+  cross-browser hand-off is not implemented.
+- The plugin market is a **read-only offline index**; the panel does not fetch details over the network.
+- Plugin execution bodies must be built into the console; new executable code cannot be injected at runtime.
+- Release binaries are **unsigned** — SmartScreen will warn on first run.
 
 ---
 

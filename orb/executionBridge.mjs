@@ -126,7 +126,7 @@ export function toBrowserCall({ site, action, nodeId, params = {}, confidence = 
   };
 }
 
-/** 完整链路决策：代价路由 → 选通道 → 是否需封驳 → 生成指令。 */
+/** 完整链路决策：代价路由 → 选通道 → 是否需独立复核 → 生成指令。 */
 export function planExecution({ mode = "normal", task = {}, site, action, nodeId, url, confidence = 1 } = {}) {
   const route = routeByCost({ ...task, mode });
   const needsSeal = route === "team_seal" && isTierAEnabled(mode);

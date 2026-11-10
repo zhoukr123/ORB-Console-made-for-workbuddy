@@ -65,7 +65,7 @@
 | `outputProfile.mjs` | 输出配置：七键 profile 的默认值、归一、校验与派生工具。纯函数，零 IO。 | `DEFAULT_PROFILE` `FORMATS` `normalizeProfile` `redactValue` `resolveName` `retentionCutoff` `shouldInclude` `validateProfile` |
 | `p0Discipline.mjs` | P0 轻治理纪律：代价路由 / 证据标注 / 协作红线 / 家规。 | `COST_LEVELS` `EVIDENCE_TAGS` `INJECTABLE_DISCIPLINE` `RED_LINES` `admissibleForSeal` `checkHouseRule` `checkRedLine` `routeByCost` `tagEvidence` |
 | `p1FileChannel.mjs` | P1 文件化机间信道：派工包 / 当前状态 / 修复台 三件套。 | `CHANNEL_FILES` `INJECTABLE_CHANNEL_RULE` `createFileChannel` |
-| `p2SealReview.mjs` | P2 · Tier A 重治理：封驳评审（门下省）+ 多 agent 带上下文。 | `INJECTABLE_SEAL_RULE` `SEAL_GROUNDS` `buildContextBag` `createSealReview` `defaultTeamFactory` |
+| `p2SealReview.mjs` | P2 · Tier A 重治理：独立复核评审 + 多 agent 带上下文。 | `INJECTABLE_SEAL_RULE` `SEAL_GROUNDS` `buildContextBag` `createSealReview` `defaultTeamFactory` |
 | `p2SiteAdapter.mjs` | P2 · 站点适配器：capability 表 + actionGate 闸门 + 通用兜底。 | `CHANNELS` `CONFIDENCE_THRESHOLD` `DEEP_ADAPTED_SITES` `GENERIC_FALLBACK` `INJECTABLE_ADAPTER_RULE` `SITE_CAPABILITIES` `SITE_STATS` `actionGate` `assertVisionDecisionOnly` |
 | `p3VerifyLite.mjs` | P3 · 亲测验收 Lite + 五段验收引擎。 | `INJECTABLE_VERIFY_RULE` `STAGES` `STAGE_CHECKS` `VERIFY_SIGNALS` `checkStage` `claimDone` `verifyLite` |
 | `perfBaseline.mjs` | 性能基线：只生成 20×3 采样计划与采集/统计机制，不产生任何结果。 | `createBaseline` |

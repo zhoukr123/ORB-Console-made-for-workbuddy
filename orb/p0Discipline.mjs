@@ -12,8 +12,8 @@
 export const EVIDENCE_TAGS = Object.freeze(["已核实", "推断", "未知"]);
 
 /* ── 1. 代价分级路由 ──────────────────────────────────────────────
- * 输出：solo（单干） / team（轻量团队） / team_seal（团队 + 封驳）
- * 判据确定性：错了代价小 → 单干；代价大 → 上团队/封驳。
+ * 输出：solo（单干） / team（轻量团队） / team_seal（团队 + 独立复核）
+ * 判据确定性：错了代价小 → 单干；代价大 → 上团队/独立复核。
  * 注意：team_seal 只是"建议档"，真正能否启用仍由 governanceCore.isTierAEnabled(mode) 卡住。
  */
 export const COST_LEVELS = Object.freeze({ low: 0, medium: 1, high: 2 });
@@ -26,7 +26,7 @@ export function routeByCost({ reversible = true, blastRadius = "local", uncertai
   // 小事：无论什么档位都不上团队，token 不增（方案验收标准 1）
   if (!risky && c === 0 && reversible !== false) return "solo";
 
-  // 高代价：建议封驳，但只有 team_max 真的允许
+  // 高代价：建议独立复核，但只有 team_max 真的允许
   const wantsSeal = (reversible === false && wide) || c >= 2 || uncertainty === "high";
   if (wantsSeal) {
     // 这里 import 会造成循环，故用传入的 mode 字符串直接判；语义与 core 一致。
@@ -36,19 +36,19 @@ export function routeByCost({ reversible = true, blastRadius = "local", uncertai
 }
 
 /* ── 2. 证据标注 ──────────────────────────────────────────────────
- * 每条结论必须带标签；封驳闸（若开）只认「已核实」且带依据。
+ * 每条结论必须带标签；复核闸（若开）只认「已核实」且带依据。
  */
 export function tagEvidence(claim, { level = "推断", basis = "" } = {}) {
   if (!EVIDENCE_TAGS.includes(level)) return { ok: false, error: "bad-tag" };
   const text = String(claim ?? "").trim();
   if (!text) return { ok: false, error: "empty-claim" };
   if (level === "已核实" && !String(basis).trim()) {
-    return { ok: false, error: "verified-needs-basis" }; // 装"已核实"却无依据 = 封驳判据之一
+    return { ok: false, error: "verified-needs-basis" }; // 装"已核实"却无依据 = 复核判据之一
   }
   return { ok: true, claim: text, level, basis: String(basis).trim() };
 }
 
-/** 封驳闸的证据准入：只认带依据的「已核实」。 */
+/** 复核闸的证据准入：只认带依据的「已核实」。 */
 export function admissibleForSeal(items) {
   if (!Array.isArray(items)) return { ok: false, error: "bad-input", admissible: [] };
   const admissible = items.filter(
@@ -123,7 +123,7 @@ export function checkHouseRule(roster = {}, { addressed = "", broadcastUsed = fa
 
 /** 可注入到专家团 system prompt 的条款文本（P0 的 prompt 轨）。 */
 export const INJECTABLE_DISCIPLINE = Object.freeze([
-  "【代价路由】错了代价小就单干，别拉团队；代价大才上团队并申请封驳。",
+  "【代价路由】错了代价小就单干，别拉团队；代价大才上团队并申请独立复核。",
   "【证据标注】每条结论标注 已核实 / 推断 / 未知；标「已核实」必须附依据，否则视为「推断」。",
   "【亲测验收】声称完成 = 真跑过验证；没跑就如实说没做，不许谎报。",
   "【协作红线】不可逆动作须人工确认；没做出的别说；各守角色边界不越界。",
